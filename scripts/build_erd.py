@@ -1,6 +1,24 @@
-"""Render the cfb / pbp schema as a one-page Crow's Foot ERD (landscape Letter PDF).
+"""Render the cfb / pbp schema as a two-sheet Crow's Foot ERD (tabloid landscape PDF).
 
-    .venv/bin/python scripts/build_erd.py        -> reports/cfb_st_erd.pdf (+ .png proof)
+    .venv/bin/python scripts/build_erd.py   -> reports/cfb_pbp_erd.pdf, 2 pages
+                                               + a .png proof of each sheet
+
+ONE SHEET PER FACT FAMILY. Eleven tables and two forty-column facts do not fit on one page
+legibly, so sheet 1 is special teams and sheet 2 is scrimmage. The four dimensions and
+dim_athlete appear on BOTH, in the same position each time -- that repetition is the point,
+because the two facts hang off one shared set of dimensions and a reader flipping between
+the pages should see them land in the same place.
+
+Each sheet stands alone: both carry the full legend, the whole-schema table inventory (with
+a ·1 / ·2 / ·1,2 marker saying which sheets a table is drawn on) and their own relationship
+inventory with orphan counts measured live. Sheet 2's relationship panel drops the WHAT IT
+MEANS column, because `drive` needs the width sheet 1 gives the legend and a clipped note is
+worse than none; sheet 1 carries those explanations.
+
+Adding a table means giving it coordinates in ST_ENTITIES or SCRIM_ENTITIES. Anything in the
+schema with no box is named on stdout and listed greyed in the inventory, so the diagram
+cannot quietly fall behind the database. A wide table also needs a GROUPS entry, and that is
+checked: a column missing from its grouping aborts the render rather than vanishing.
 
 The schema, row counts and referential-integrity numbers are all read live from Postgres,
 so the diagram cannot drift from the database the way a hand-drawn one does. Only one
@@ -60,7 +78,7 @@ def warn_unplaced(cols):
     """
     # Rollback copies are deliberate, transient and not part of the model. They are named
     # for what they roll back to, so a suffix test is enough.
-    missing = [t for t in cols if t not in ENTITIES and "_pre" not in t]
+    missing = [t for t in cols if t not in ALL_PLACED and "_pre" not in t]
     if missing:
         print(f"\n  NOTE: {len(missing)} table(s) in the schema are NOT drawn on the diagram:",
               flush=True)
@@ -120,18 +138,76 @@ PLAY_GROUPS = [
 ]
 PLAY_FLOW = [[0, 1, 2], [3, 4, 5]]               # which groups sit in which internal column
 
-ENTITIES = {
-    "dim_venue":          dict(x=18,  y=52,  w=132, role="dim",    label="dim_venue"),
-    "dim_conference":     dict(x=18,  y=165, w=132, role="dim",    label="dim_conference"),
-    "dim_team_season":    dict(x=18,  y=240, w=132, role="dim",    label="dim_team_season"),
-    "dim_team":           dict(x=18,  y=335, w=132, role="dim",    label="dim_team"),
+SCRIM_GROUPS = [
+    ("IDENTITY & GRAIN", ["play_uid", "source", "game_id", "season", "week", "season_type",
+                          "play_kind", "play_type_espn"]),
+    ("DRIVE", ["drive_id", "drive_number"]),
+    ("GAME SITUATION", ["period", "clock_secs_period", "wallclock_utc", "down", "distance",
+                        "yards_to_goal", "offense_team_id", "defense_team_id",
+                        "is_home_offense", "score_diff_offense"]),
+    ("OUTCOME", ["yards_gained", "end_down", "end_distance", "end_yards_to_goal",
+                 "end_team_id", "first_down_gained", "is_complete", "is_touchdown",
+                 "is_turnover", "is_penalty", "is_scoring_play", "points_scored"]),
+    ("PEOPLE", ["passer_athlete_id", "rusher_athlete_id", "receiver_athlete_id",
+                "tackler_athlete_id"]),
+    ("TEXT & AUDIT", ["play_text", "loaded_at", "venue_id", "neutral_site",
+                      "conference_game"]),
+]
+SCRIM_FLOW = [[0, 1, 2], [3, 4, 5]]
+
+DRIVE_GROUPS = [
+    ("IDENTITY", ["drive_uid", "drive_id", "game_id", "season", "week", "season_type",
+                  "drive_number"]),
+    ("TEAMS", ["offense_team_id", "defense_team_id"]),
+    ("RESULT", ["result", "display_result", "description", "is_score"]),
+    ("COUNTS", ["offensive_plays", "plays_total", "plays_scrimmage", "yards",
+                "time_elapsed_secs"]),
+    ("START", ["start_period", "start_clock_secs", "start_yards_to_goal", "start_text"]),
+    ("END", ["end_period", "end_clock_secs", "end_yards_to_goal", "end_text"]),
+]
+DRIVE_FLOW = [[0, 1, 2], [3, 4, 5]]
+
+# Only the wide tables are grouped; everything else is one plain column of fields.
+GROUPS = {
+    "special_teams_play": (PLAY_GROUPS, PLAY_FLOW),
+    "scrimmage_play":     (SCRIM_GROUPS, SCRIM_FLOW),
+    "drive":              (DRIVE_GROUPS, DRIVE_FLOW),
+}
+
+# The four shared dimensions sit in the same place on both sheets, deliberately: the point of
+# splitting is that the two facts hang off ONE set of dimensions, and a reader flipping
+# between the pages should see them land in the same spot.
+SHARED_DIMS = {
+    "dim_venue":       dict(x=18, y=52,  w=132, role="dim", label="dim_venue"),
+    "dim_conference":  dict(x=18, y=165, w=132, role="dim", label="dim_conference"),
+    "dim_team_season": dict(x=18, y=240, w=132, role="dim", label="dim_team_season"),
+    "dim_team":        dict(x=18, y=335, w=132, role="dim", label="dim_team"),
+}
+
+ST_ENTITIES = {
+    **SHARED_DIMS,
     "fact_game":          dict(x=192, y=52,  w=148, role="fact",   label="fact_game"),
     "special_teams_play": dict(x=374, y=52,  w=282, role="fact",   label="special_teams_play"),
+    "play_athlete":       dict(x=192, y=200, w=148, role="bridge", label="play_athlete"),
     "dim_athlete":        dict(x=704, y=52,  w=196, role="dim",    label="dim_athlete"),
-    "play_athlete":       dict(x=704, y=180, w=196, role="bridge", label="play_athlete"),
+}
+
+# drive is 26 columns and needs two internal columns to stay legible, which needs ~250pt of
+# width. The only place on the page with that much room is the band the legend occupies on
+# sheet 1, so sheet 1's full legend is replaced here by a compact one in the bottom right.
+SCRIM_ENTITIES = {
+    **SHARED_DIMS,
+    "fact_game":         dict(x=192, y=52,  w=164, role="fact",   label="fact_game"),
+    "scrimmage_athlete": dict(x=192, y=200, w=164, role="bridge", label="scrimmage_athlete"),
+    "scrimmage_play":    dict(x=374, y=52,  w=282, role="fact",   label="scrimmage_play"),
+    "dim_athlete":       dict(x=704, y=52,  w=196, role="dim",    label="dim_athlete"),
+    "drive":             dict(x=18,  y=414, w=250, role="fact",   label="drive"),
 }
 
 SUBTITLE = {
+    "scrimmage_play":     "grain: one scrimmage play",
+    "scrimmage_athlete":  "bridge: play x role x athlete",
+    "drive":              "grain: one drive — spans both facts",
     "special_teams_play": "grain: one special-teams play",
     "fact_game":          "grain: one game",
     "play_athlete":       "bridge: play x role x athlete",
@@ -143,11 +219,11 @@ SUBTITLE = {
 }
 
 # parent, child, key text, waypoints, child-optional, declared-FK, note
-RELS = [
+ST_RELS = [
     # straight runs wherever the two edges can share a y; elbows only where a box is in the way
     ("dim_venue", "fact_game", "venue_id", [("R", 0.516), ("L", 0.370)], True, True, ""),
     ("dim_venue", "special_teams_play", "venue_id",
-     [("R", 0.839), ("V", 165), ("Y", 250), ("L", None)], True, False, ""),
+     [("R", 0.839), ("V", 165), ("Y", 192), ("L", None)], True, False, ""),
     ("dim_conference", "dim_team_season", "conference_id",
      [("B", 0.30), ("T", 0.30)], False, False, ""),
     ("dim_team", "dim_team_season", "team_id",
@@ -159,9 +235,9 @@ RELS = [
     ("dim_team", "special_teams_play", "receiving_team_id",
      [("R", 0.895), ("L", 0.952)], False, False, ""),
     ("dim_team", "fact_game", "home_team_id",
-     [("R", 0.128), ("V", 240), ("B", None)], False, False, ""),
+     [("R", 0.128), ("L", 0.80)], False, False, ""),
     ("dim_team", "fact_game", "away_team_id",
-     [("R", 0.384), ("V", 286), ("B", None)], False, False, ""),
+     [("R", 0.384), ("L", 0.92)], False, False, ""),
     ("fact_game", "special_teams_play", "game_id",
      [("R", 0.524), ("L", 0.199)], False, False, ""),
     ("dim_athlete", "special_teams_play", "kicker_athlete_id",
@@ -170,12 +246,54 @@ RELS = [
      [("L", 0.519), ("R", 0.155)], True, False, ""),
     ("dim_athlete", "special_teams_play", "tackler_athlete_id",
      [("L", 0.764), ("R", 0.229)], True, False, ""),
-    ("dim_athlete", "play_athlete", "athlete_id", [("B", 0.30), ("T", 0.30)], False, False, ""),
+    ("dim_athlete", "play_athlete", "athlete_id",
+     [("L", 0.930), ("H", 680), ("Y", 352), ("H", 300), ("B", None)], False, False, ""),
     ("special_teams_play", "play_athlete", "play_uid",
-     [("R", 0.727), ("H", 680), ("L", 0.5)], False, False, ""),
+     [("L", 0.670), ("R", 0.45)], False, False, ""),
     ("dim_team", "dim_athlete", "primary_team_id",
-     [("B", 0.30), ("Y", 404), ("V", 925), ("R", 0.5)], True, False, ""),
+     [("B", 0.30), ("Y", 412), ("V", 936), ("R", 0.5)], True, False, ""),
 ]
+
+SCRIM_RELS = [
+    ("dim_venue", "fact_game", "venue_id", [("R", 0.516), ("L", 0.370)], True, True, ""),
+    ("dim_venue", "scrimmage_play", "venue_id",
+     [("R", 0.839), ("V", 165), ("Y", 192), ("L", None)], True, False, ""),
+    ("dim_conference", "dim_team_season", "conference_id",
+     [("B", 0.30), ("T", 0.30)], False, False, ""),
+    ("dim_team", "dim_team_season", "team_id",
+     [("T", 0.72), ("B", 0.72)], False, False, ""),
+    ("dim_team_season", "scrimmage_play", "(offense_team_id, season)",
+     [("R", 0.805), ("V", 362), ("Y", 296), ("L", None)], False, False, ""),
+    ("dim_team", "scrimmage_play", "offense_team_id",
+     [("R", 0.639), ("V", 368), ("Y", 268), ("L", None)], False, False, ""),
+    ("dim_team", "scrimmage_play", "defense_team_id",
+     [("R", 0.895), ("V", 370), ("Y", 282), ("L", None)], False, False, ""),
+    ("dim_team", "fact_game", "home_team_id",
+     [("R", 0.128), ("L", 0.80)], False, False, ""),
+    ("dim_team", "fact_game", "away_team_id",
+     [("R", 0.384), ("L", 0.92)], False, False, ""),
+    ("fact_game", "scrimmage_play", "game_id",
+     [("R", 0.524), ("L", 0.199)], False, False, ""),
+    ("fact_game", "drive", "game_id",
+     [("B", 0.25), ("Y", 390), ("H", 143), ("T", None)], False, False, ""),
+    ("drive", "scrimmage_play", "drive_id",
+     [("R", 0.180), ("H", 340), ("Y", 292), ("L", None)], True, False, ""),
+    ("dim_athlete", "scrimmage_play", "passer_athlete_id",
+     [("L", 0.216), ("R", 0.062)], True, False, ""),
+    ("dim_athlete", "scrimmage_play", "rusher_athlete_id",
+     [("L", 0.412), ("R", 0.118)], True, False, ""),
+    ("dim_athlete", "scrimmage_play", "receiver_athlete_id",
+     [("L", 0.608), ("R", 0.174)], True, False, ""),
+    ("dim_athlete", "scrimmage_play", "tackler_athlete_id",
+     [("L", 0.804), ("R", 0.230)], True, False, ""),
+    ("dim_athlete", "scrimmage_athlete", "athlete_id",
+     [("L", 0.930), ("H", 680), ("Y", 330), ("H", 300), ("B", None)], False, False, ""),
+    ("scrimmage_play", "scrimmage_athlete", "play_uid",
+     [("L", 0.670), ("R", 0.45)], False, False, ""),
+    ("dim_team", "dim_athlete", "primary_team_id",
+     [("B", 0.30), ("Y", 412), ("V", 936), ("R", 0.5)], True, False, ""),
+]
+
 
 
 # One line per relationship explaining what it means in practice. The null shares quoted here
@@ -200,6 +318,18 @@ REL_NOTES = {
 }
 
 
+# One sheet per fact family. Both hang off the same four dimensions and the same
+# dim_athlete, which is the whole reason the split works: the shared half is drawn twice, in
+# the same position, and each sheet is readable on its own.
+SHEETS = [
+    dict(key="st", title="Special Teams",
+         entities=None, rels=None,          # filled below; the dicts are defined further up
+         blurb="kickoffs, punts, field goals and the conversion family"),
+    dict(key="scrimmage", title="Scrimmage",
+         entities=None, rels=None,
+         blurb="rushes, passes, sacks, penalties — and the drives that contain both facts"),
+]
+
 INTEGRITY = {}          # filled by load_integrity()
 
 # child table, child column(s), parent table, parent column(s) -- used to measure orphans
@@ -220,20 +350,37 @@ JOINS = {
     ("play_athlete", "athlete_id"):                  ("dim_athlete", ["athlete_id"], ["athlete_id"]),
     ("play_athlete", "play_uid"):                    ("special_teams_play", ["play_uid"], ["play_uid"]),
     ("dim_athlete", "primary_team_id"):              ("dim_team", ["primary_team_id"], ["team_id"]),
+    ("scrimmage_play", "venue_id"):                  ("dim_venue", ["venue_id"], ["venue_id"]),
+    ("scrimmage_play", "(offense_team_id, season)"): ("dim_team_season", ["offense_team_id", "season"], ["team_id", "season"]),
+    ("scrimmage_play", "offense_team_id"):           ("dim_team", ["offense_team_id"], ["team_id"]),
+    ("scrimmage_play", "defense_team_id"):           ("dim_team", ["defense_team_id"], ["team_id"]),
+    ("scrimmage_play", "game_id"):                   ("fact_game", ["game_id"], ["game_id"]),
+    ("scrimmage_play", "drive_id"):                  ("drive", ["drive_id"], ["drive_id"]),
+    ("scrimmage_play", "passer_athlete_id"):         ("dim_athlete", ["passer_athlete_id"], ["athlete_id"]),
+    ("scrimmage_play", "rusher_athlete_id"):         ("dim_athlete", ["rusher_athlete_id"], ["athlete_id"]),
+    ("scrimmage_play", "receiver_athlete_id"):       ("dim_athlete", ["receiver_athlete_id"], ["athlete_id"]),
+    ("scrimmage_play", "tackler_athlete_id"):        ("dim_athlete", ["tackler_athlete_id"], ["athlete_id"]),
+    ("scrimmage_athlete", "athlete_id"):             ("dim_athlete", ["athlete_id"], ["athlete_id"]),
+    ("scrimmage_athlete", "play_uid"):               ("scrimmage_play", ["play_uid"], ["play_uid"]),
+    ("drive", "game_id"):                            ("fact_game", ["game_id"], ["game_id"]),
 }
 
 
-def load_integrity():
+SHEETS[0]["entities"], SHEETS[0]["rels"] = ST_ENTITIES, ST_RELS
+SHEETS[1]["entities"], SHEETS[1]["rels"] = SCRIM_ENTITIES, SCRIM_RELS
+ALL_PLACED = set(ST_ENTITIES) | set(SCRIM_ENTITIES)
+
+
+def load_integrity(rels):
     """Count, for every relationship, child rows whose key finds no parent."""
     rows = []
-    for parent, child, key, _spec, optional, declared, _note in RELS:
+    for parent, child, key, _spec, optional, declared, _note in rels:
         _p, ccols, pcols = JOINS[(child, key)]
         on = " AND ".join(f"p.{a}=c.{b}" for b, a in zip(ccols, pcols))
         notnull = " AND ".join(f"c.{c} IS NOT NULL" for c in ccols)
         n = int(psql(f"SELECT count(*) FROM pbp.{child} c LEFT JOIN pbp.{parent} p ON {on} "
                      f"WHERE {notnull} AND p.{pcols[0]} IS NULL")[0][0])
         rows.append((parent, child, key, optional, declared, f"{n:,}"))
-    INTEGRITY["rows"] = rows
     return rows
 
 
@@ -278,14 +425,22 @@ class SVG:
 
 def entity_rows(name, cols, pk, fk):
     """Return the per-internal-column row lists: [(kind, text, col)] where kind is hdr/col."""
-    if name != "special_teams_play":
+    if name not in GROUPS:
         return [[("col", c) for c in cols[name]]]
+    groups, flow = GROUPS[name]
     by_name = {c["name"]: c for c in cols[name]}
+    # A grouping that has drifted from the table would silently drop columns off the diagram,
+    # which is the one failure an ERD must not have.
+    listed = {n for _t, names in groups for n in names}
+    missing = [c["name"] for c in cols[name] if c["name"] not in listed]
+    if missing:
+        raise SystemExit(f"build_erd: {name} has columns absent from its GROUPS layout: "
+                         f"{', '.join(missing)}. Add them before rendering.")
     out = []
-    for group_ids in PLAY_FLOW:
+    for group_ids in flow:
         block = []
         for gi in group_ids:
-            title, names = PLAY_GROUPS[gi]
+            title, names = groups[gi]
             block.append(("hdr", title))
             block += [("col", by_name[n]) for n in names]
         out.append(block)
@@ -350,6 +505,11 @@ LOGICAL_KEYS = {
     "special_teams_play": {"game_id", "venue_id", "kicking_team_id", "receiving_team_id",
                            "kicker_athlete_id", "returner_athlete_id", "tackler_athlete_id"},
     "play_athlete": {"play_uid", "athlete_id"},
+    "scrimmage_play": {"game_id", "venue_id", "drive_id", "offense_team_id",
+                       "defense_team_id", "end_team_id", "passer_athlete_id",
+                       "rusher_athlete_id", "receiver_athlete_id", "tackler_athlete_id"},
+    "scrimmage_athlete": {"play_uid", "athlete_id"},
+    "drive": {"game_id", "offense_team_id", "defense_team_id"},
     "dim_team_season": {"team_id", "conference_id"},
     "dim_athlete": {"primary_team_id"},
     "fact_game": {"home_team_id", "away_team_id"},
@@ -509,17 +669,22 @@ def table_inventory(svg, x, y, w, h, cols, counts, sizes):
     # silently omits a table is worse than a cramped one.
     for name in sorted(cols, key=lambda t: -counts[t]):
         ty += 11.2
-        placed = name in ENTITIES
+        placed = name in ALL_PLACED
+        role = (ST_ENTITIES.get(name) or SCRIM_ENTITIES.get(name) or {}).get("role")
         svg.rect(x + 6, ty - 4.6, 4.5, 4.5,
-                 fill=ROLE_FILL[ENTITIES[name]["role"]] if placed else "#cbd5e1", rx=0.8)
-        svg.text(x + 14, ty, name + ("" if placed else "  (not drawn)"),
-                 size=5.4, fill=INK if placed else MUTED)
+                 fill=ROLE_FILL[role] if placed else "#cbd5e1", rx=0.8)
+        sheet = "1" if name in ST_ENTITIES else ("2" if name in SCRIM_ENTITIES else "")
+        both = "1,2" if name in ST_ENTITIES and name in SCRIM_ENTITIES else sheet
+        # "(rollback)" and "(not drawn)" mean different things: the first is deliberate and
+        # transient, the second means the layout has fallen behind the schema.
+        tag = f"  ·{both}" if placed else ("  (rollback)" if "_pre" in name else "  (not drawn)")
+        svg.text(x + 14, ty, name + tag, size=5.4, fill=INK if placed else MUTED)
         svg.text(x + w - 53, ty, str(len(cols[name])), size=5.4, fill=MUTED, anchor="end")
         svg.text(x + w - 28, ty, f"{counts[name]:,}", size=5.4, fill=INK, anchor="end")
         svg.text(x + w - 4, ty, sizes.get(name, ""), size=5.0, fill=MUTED, anchor="end")
 
 
-def rel_table(svg, x, y, w, h, rows):
+def rel_table(svg, x, y, w, h, rows, notes=True):
     svg.rect(x, y, w, h, fill=PANEL_BG, stroke=RULE, rx=2.5, sw=0.6)
     svg.text(x + 7, y + 11, "RELATIONSHIP INVENTORY", size=6.4, fill=INK, weight="700", spacing=0.5)
     svg.text(x + w - 7, y + 11, "cardinality and orphan counts measured live against the data",
@@ -527,13 +692,18 @@ def rel_table(svg, x, y, w, h, rows):
     cols = [8, 62, 120, 196, 226, 263, 320]
     heads = ["PARENT (ONE)", "CHILD (MANY)", "JOIN KEY", "OPTIONAL", "ENFORCED",
              "ORPHAN ROWS", "WHAT IT MEANS"]
+    if not notes:                       # a narrow panel would clip the note mid-word
+        cols, heads = cols[:6], heads[:6]
     ty = y + 21
     for cx, hd in zip(cols, heads):
         svg.text(x + cx, ty, hd, size=4.7, fill=MUTED, weight="700", spacing=0.3)
     svg.line(x + 7, ty + 3, x + w - 7, ty + 3, RULE, 0.5)
     ty += 3
+    # Sheet 2 carries 20 relationships to sheet 1's 16. Tighten the pitch to fit rather than
+    # letting the last rows fall out of the panel and land on the footer.
+    pitch = min(8.9, (y + h - 8 - ty) / max(len(rows), 1))
     for parent, child, key, optional, declared, orphans in rows:
-        ty += 8.9
+        ty += pitch
         svg.text(x + cols[0], ty, parent, size=5.2, fill=INK)
         svg.text(x + cols[1], ty, child, size=5.2, fill=INK)
         svg.text(x + cols[2], ty, key, size=5.2, fill=MUTED)
@@ -544,15 +714,16 @@ def rel_table(svg, x, y, w, h, rows):
         svg.text(x + cols[5], ty, orphans, size=5.2,
                  fill=WARN if orphans not in ("0", "—") else MUTED,
                  weight="700" if orphans not in ("0", "—") else "400")
-        svg.text(x + cols[6], ty, REL_NOTES.get((child, key), ""), size=5.0, fill=MUTED)
+        if notes:
+            svg.text(x + cols[6], ty, REL_NOTES.get((child, key), ""), size=5.0, fill=MUTED)
 
 
-def build():
-    cols, pk, fk, counts, sizes = load_schema()
-    unplaced = warn_unplaced(cols)
-    load_integrity()
+def render_sheet(sheet, cols, pk, fk, counts, sizes, page_no, n_pages, unplaced):
+    """One page of SVG for one fact family."""
+    entities, rels = sheet["entities"], sheet["rels"]
+    integrity = load_integrity(rels)
     geos = {}
-    for name, g in ENTITIES.items():
+    for name, g in entities.items():
         g = dict(g)
         g["h"] = entity_height(name, cols, pk, fk)
         geos[name] = g
@@ -561,58 +732,97 @@ def build():
     svg.rect(0, 0, W, H, fill="#ffffff")
 
     # ---- title band
-    svg.text(18, 22, "College Football Special Teams Warehouse", size=13.5, fill=INK, weight="700")
-    svg.text(18, 32, "Entity Relationship Diagram — Crow's Foot notation · "
-                     "PostgreSQL database  cfb  ·  schema  pbp  (the only user schema)",
+    svg.text(18, 22, f"College Football Play-by-Play Warehouse — {sheet['title']}",
+             size=13.5, fill=INK, weight="700")
+    svg.text(18, 32, f"Entity Relationship Diagram — Crow's Foot notation · "
+                     f"PostgreSQL database  cfb  ·  schema  pbp  ·  {sheet['blurb']}",
              size=6.2, fill=MUTED)
     stamp = datetime.date.today().isoformat()
-    total_rows = sum(counts.values())
-    svg.text(W - 18, 18, f"{len(ENTITIES)} tables · {sum(len(c) for c in cols.values())} columns "
-                         f"· {total_rows:,} rows", size=6.2, fill=INK, anchor="end", weight="700")
+    shown = sum(counts[t] for t in entities)
+    svg.text(W - 18, 18, f"sheet {page_no} of {n_pages} · {len(entities)} tables · "
+                         f"{sum(len(cols[t]) for t in entities)} columns · {shown:,} rows",
+             size=6.2, fill=INK, anchor="end", weight="700")
     svg.text(W - 18, 27, f"seasons 2014–2026 · generated {stamp} from live schema",
              size=5.6, fill=MUTED, anchor="end")
     svg.line(18, 38, W - 18, 38, RULE, 0.7)
 
-    for rel in RELS:
+    for rel in rels:
         draw_rel(svg, geos, rel)
-    for name in ENTITIES:
+    for name in entities:
         draw_entity(svg, name, cols, pk, fk, counts, geos[name])
 
-    table_inventory(svg, 704, 268, 196, 126, cols, counts, sizes)
-    legend(svg, 18, 408, 250, 186)
-    rel_table(svg, 284, 408, W - 302, 186, INTEGRITY["rows"])
+    if sheet["key"] == "st":
+        table_inventory(svg, 704, 216, 196, 190, cols, counts, sizes)
+        legend(svg, 18, 414, 250, 184)
+        rel_table(svg, 284, 414, W - 302, 184, integrity)
+        foot = ("Every relationship above is 1:N. The only constraint Postgres actually "
+                "enforces is fact_game.venue_id → dim_venue; the rest are invariants of the "
+                "build scripts, which is why they are dashed. Sheet 2 carries the scrimmage "
+                "fact, which hangs off the same four dimensions.")
+    else:
+        table_inventory(svg, 704, 216, 196, 190, cols, counts, sizes)
+        # drive takes the width sheet 1 gives the legend, so the relationship panel loses its
+        # WHAT IT MEANS column rather than clipping it; sheet 1 carries those explanations.
+        rel_table(svg, 280, 414, 372, 184, integrity, notes=False)
+        legend(svg, 664, 414, 264, 184)
+        foot = ("The four dimensions on the left and dim_athlete are the SAME tables as on "
+                "sheet 1, drawn in the same place — one warehouse, two facts. play_uid is "
+                "unique across both facts, so they UNION cleanly; drive spans them, which is "
+                "why plays_total counts kicks that live in special_teams_play.")
+    svg.text(18, H - 6, foot, size=5.0, fill=MUTED)
+    return svg.out()
 
-    svg.text(18, H - 6, "Every relationship above is 1:N. The only constraint Postgres actually "
-                        "enforces is fact_game.venue_id → dim_venue; the other fifteen are "
-                        "invariants of the build scripts, which is why they are dashed.",
-             size=5.0, fill=MUTED)
 
-    body = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{PAGE_W}pt" height="{PAGE_H}pt" '
-            f'viewBox="0 0 {PAGE_W} {PAGE_H}">'
-            f'<g transform="scale({S:.6f})">{svg.out()}</g></svg>')
-    doc = ("<!doctype html><meta charset='utf-8'><style>"
-           "@page{size:17in 11in;margin:0}"
-           "html,body{margin:0;padding:0;background:#fff}"
-           "svg{display:block}</style>" + body)
+def build():
+    cols, pk, fk, counts, sizes = load_schema()
+    warn_unplaced(cols)
+
+    pages = []
+    for i, sheet in enumerate(SHEETS, start=1):
+        body = render_sheet(sheet, cols, pk, fk, counts, sizes, i, len(SHEETS), None)
+        pages.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{PAGE_W}pt" '
+                     f'height="{PAGE_H}pt" viewBox="0 0 {PAGE_W} {PAGE_H}">'
+                     f'<g transform="scale({S:.6f})">{body}</g></svg>')
+
+    style = ("<!doctype html><meta charset='utf-8'><style>"
+             "@page{size:17in 11in;margin:0}"
+             "html,body{margin:0;padding:0;background:#fff}"
+             "svg{display:block}"
+             ".pg{break-after:page;page-break-after:always}"
+             ".pg:last-child{break-after:auto;page-break-after:auto}</style>")
     os.makedirs(OUT, exist_ok=True)
-    # the HTML is only a vehicle for Chrome's PDF writer; keep reports/ to deliverables
-    hp = os.path.join(tempfile.gettempdir(), "cfb_st_erd.html")
-    with open(hp, "w") as f:
-        f.write(doc)
-    pdf = os.path.join(OUT, "cfb_st_erd.pdf")
+    tmp = tempfile.gettempdir()
+
+    # one PDF, one page per sheet
+    both = os.path.join(tmp, "cfb_pbp_erd.html")
+    with open(both, "w") as f:
+        f.write(style + "".join(f'<div class="pg">{p}</div>' for p in pages))
+    pdf = os.path.join(OUT, "cfb_pbp_erd.pdf")
     subprocess.run([CHROME, "--headless", "--disable-gpu", "--no-sandbox",
                     "--no-pdf-header-footer", f"--print-to-pdf={pdf}",
-                    "--virtual-time-budget=4000", f"file://{hp}"],
+                    "--virtual-time-budget=6000", f"file://{both}"],
                    capture_output=True, check=True)
-    png = os.path.join(OUT, "cfb_st_erd.png")
-    subprocess.run([CHROME, "--headless", "--disable-gpu", "--no-sandbox",
-                    "--screenshot=" + png, "--window-size=1632,1056",
-                    "--force-device-scale-factor=2", "--hide-scrollbars",
-                    "--virtual-time-budget=4000", f"file://{hp}"],
-                   capture_output=True, check=True)
-    print(f"tables={len(ENTITIES)} columns={sum(len(c) for c in cols.values())} rows={total_rows:,}")
+
+    # and one PNG proof per sheet, because a 2-page PDF is awkward to eyeball
+    pngs = []
+    for sheet, page in zip(SHEETS, pages):
+        hp = os.path.join(tmp, f"cfb_pbp_erd_{sheet['key']}.html")
+        with open(hp, "w") as f:
+            f.write(style + page)
+        png = os.path.join(OUT, f"cfb_pbp_erd_{sheet['key']}.png")
+        subprocess.run([CHROME, "--headless", "--disable-gpu", "--no-sandbox",
+                        "--screenshot=" + png, "--window-size=1632,1056",
+                        "--force-device-scale-factor=2", "--hide-scrollbars",
+                        "--virtual-time-budget=4000", f"file://{hp}"],
+                       capture_output=True, check=True)
+        pngs.append(png)
+
+    total = sum(counts.values())
+    print(f"\n{len(SHEETS)} sheets · {len(cols)} tables in schema · "
+          f"{sum(len(c) for c in cols.values())} columns · {total:,} rows")
     print(pdf)
-    print(png)
+    for x in pngs:
+        print(x)
 
 
 if __name__ == "__main__":

@@ -16,8 +16,8 @@ __pycache__/
 data/
 
 # Generated from live Postgres by scripts/build_erd.py; see the runbook in README.md.
-reports/cfb_st_erd.pdf
-reports/cfb_st_erd.png
+reports/cfb_pbp_erd.pdf
+reports/cfb_pbp_erd_*.png
 
 # scripts/flatten_game.py demo output for one game.
 scripts/usc_v_sjstate.csv

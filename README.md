@@ -101,7 +101,7 @@ cfb-pbp/
 │   ├── build_dims.py          conf | venue | athlete       -> the dimension CSVs
 │   ├── build_snapshot.py      Postgres                     -> data/out/pbp.duckdb
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
-│   └── build_erd.py           live Postgres                -> reports/cfb_st_erd.pdf
+│   └── build_erd.py           live Postgres                -> reports/cfb_pbp_erd.pdf (2 sheets)
 │
 ├── sql/               DDL and loaders. Numbered files run in order
 │   ├── schema.sql  dims.sql  enrich.sql          DDL (special teams)
@@ -1547,16 +1547,26 @@ to the team's true attempt count.
 
 ### The ERD
 
-> **Incomplete since 2026-09-08.** `ENTITIES` in `build_erd.py` is a hand-laid-out map —
-> fixed coordinates and hand-routed edge waypoints — so `scrimmage_play`, `scrimmage_athlete`
-> and `drive` do not appear on it. The script names them on every run and lists them greyed
-> in the inventory panel, marked "(not drawn)", so the diagram never claims to be the whole
-> schema. Placing them means re-laying out the page, or splitting it into one sheet per fact
-> family. Not attempted.
+**Two sheets since 2026-09-08, one per fact family.** Eleven tables and two forty-column
+facts do not fit on one page legibly. Sheet 1 is special teams, sheet 2 is scrimmage, and the
+four dimensions plus `dim_athlete` appear on **both, in the same position** — that repetition
+is the point, because the two facts hang off one shared set of dimensions.
+
+Each sheet stands alone: both carry the legend, the whole-schema inventory (with a
+`·1` / `·2` / `·1,2` marker saying where each table is drawn) and their own relationship
+inventory with orphan counts measured live against the data. Sheet 2's relationship panel
+drops the WHAT IT MEANS column because `drive` needs the width sheet 1 gives the legend, and
+a note clipped mid-word is worse than no note; sheet 1 carries the explanations.
+
+The layout is hand-authored — fixed coordinates and hand-routed edge waypoints — so a new
+table needs coordinates in `ST_ENTITIES` or `SCRIM_ENTITIES`. Two guards keep it from
+drifting behind the schema: any table with no box is named on stdout and listed greyed in the
+inventory, and a wide table with a column missing from its `GROUPS` layout **aborts the
+render** rather than silently dropping the column off the diagram.
 
 
 ```bash
-.venv/bin/python scripts/build_erd.py        # -> reports/cfb_st_erd.pdf (+ .png proof)
+.venv/bin/python scripts/build_erd.py        # -> reports/cfb_pbp_erd.pdf, 2 pages (+ 2 .png proofs)
 ```
 
 One landscape **Tabloid (17×11in)** page, Crow's Foot notation, rendered by Chrome headless
