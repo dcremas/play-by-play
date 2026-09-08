@@ -89,6 +89,50 @@ def clock_secs(disp):
         return None
 
 
+def advance_score(prev_home, prev_away, hs, aw):
+    """Carry the running score forward one play. Returns (home, away, d_home, d_away).
+
+    ESPN's homeScore/awayScore is the score AFTER the play -- verified on clean games, where
+    a touchdown row already carries the points and the PAT folded into its text. But the feed
+    is not consistent about it: 6,470 rows report a STALE, pre-scoring snapshot while the game
+    clock advances past them, concentrated on Timeout and Penalty rows. A further 765 rows
+    are simply out of chronological order. Read literally, the running score steps BACKWARD
+    at least once in 3,553 of 10,470 games.
+
+    Taken at face value that produced 7,237 negative point deltas and 14,002 plays credited
+    with points they did not score -- the stale row's deficit reappearing as a phantom gain on
+    whatever followed it.
+
+    The repair is one invariant: a score never goes down. Clamping each team's running total
+    to its own maximum absorbs a stale snapshot into the value already known, so the play that
+    follows it shows no phantom gain. Measured over 1,868,595 plays:
+
+        negative deltas          7,237  ->      0
+        illegal deltas           8,458  ->    561
+        phantom point rows      14,002  ->  1,589
+
+    and the reconstructed final score matches the official one in games_<season>.json for
+    10,053 of 10,301 games, against 10,021 before. Sorting the plays into clock order first
+    was tried and adds nothing on top of this -- the ordering fault is the smaller half, and
+    a sort large enough to fix it broke as many games as it repaired.
+
+    What remains: ~3,200 rows (0.17%) where the delta still disagrees with ESPN's own
+    scoringPlay flag in one direction or the other. See README "Known limits".
+
+    One thing clamping costs, measured rather than assumed. On a return touchdown whose row
+    is stale, both clamped deltas are 0, and `emit_pat` then falls back to possession -- which
+    on a return touchdown is the team that was scored AGAINST. 38 conversions land on the
+    wrong team that way. Feeding the raw (unclamped) deltas in as a tiebreak was tried to
+    recover them and made things considerably worse -- 99.81% -> 99.56% against game-local
+    ground truth, flipping 182 correct rows -- because once `prev_*` is a repaired running
+    maximum, a raw negative delta is a property of the repair rather than a signal about who
+    scored. Clamped-only is the better answer and the 38 stay wrong. See README "Known limits".
+    """
+    nh = max(prev_home, hs) if hs is not None else prev_home
+    na = max(prev_away, aw) if aw is not None else prev_away
+    return nh, na, nh - prev_home, na - prev_away
+
+
 def classify(play_type, text):
     k = KIND_BY_TYPE.get(play_type)
     if k:
@@ -286,11 +330,14 @@ def main(path=None, seasons=None):
                         if kind:
                             r = finish({**base, "play_uid": uid}, kind, text, PARSER[kind](text))
                             w(r); stats[(season, kind)] += 1
+                        # One repaired advance per play, shared by both branches below and
+                        # by the running total at the bottom of the loop.
+                        nh, na, dh, da = advance_score(prev_home, prev_away, hs, as_score)
+                        scorer = home if dh > da else (away if da > dh else None)
+
                         ptype = (p.get("type") or {}).get("text") or ""
                         if ptype in STANDALONE_CONV:
-                            dh = (hs - prev_home) if hs is not None else 0
-                            da = (as_score - prev_away) if as_score is not None else 0
-                            sc = home if dh > da else (away if da > dh else None)
+                            sc = scorer
                             # Held back and written after every kick in this game. A kick and
                             # a conversion can share a sequenceNumber, and the kick must keep
                             # the bare play_uid it already has in the warehouse.
@@ -305,16 +352,10 @@ def main(path=None, seasons=None):
                             # 193 of 58,542 conversions take that fallback because ESPN's
                             # own scoreboard does not move on the play; they keep whatever
                             # start.team.id says, right or wrong.
-                            dh = (hs - prev_home) if hs is not None else 0
-                            da = (as_score - prev_away) if as_score is not None else 0
-                            scorer = home if dh > da else (away if da > dh else None)
                             r = emit_pat(base, uid, text, scorer)
                             if r:
                                 w(r); stats[(season, r["play_kind"])] += 1
-                        if hs is not None:
-                            prev_home = hs
-                        if as_score is not None:
-                            prev_away = as_score
+                        prev_home, prev_away = nh, na
                 for r in deferred:
                     w(r); stats[(season, r["play_kind"])] += 1
                 ngames += 1

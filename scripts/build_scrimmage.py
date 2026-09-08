@@ -31,7 +31,7 @@ import sys, os, gzip, json, csv, argparse, collections, time
 from concurrent.futures import ProcessPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from build_table import classify, as_team, same_team, clock_secs
+from build_table import classify, as_team, same_team, clock_secs, advance_score
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ESPN, OUT = f"{HOME}/data/espn", f"{HOME}/data/out"
@@ -270,6 +270,10 @@ def rows_for_game(job):
             ptype = (p.get("type") or {}).get("text") or ""
             text = p.get("text")
             hs, aw = p.get("homeScore"), p.get("awayScore")
+            # Repaired once per play, before any branch, so the running total advances
+            # identically whether or not this play ends up in this fact. See
+            # build_table.advance_score for what it repairs and why.
+            nh, na, dh, da = advance_score(prev_home, prev_away, hs, aw)
 
             # Drive field position comes from the plays, not from drive.start.yardLine.
             # That column is measured in a fixed direction rather than from the possessing
@@ -316,9 +320,9 @@ def rows_for_game(job):
                 off_is_home = same_team(off, home) if off is not None else None
                 # The margin BEFORE the snap. homeScore/awayScore are the score AFTER the
                 # play, so they are wrong for any play that scored; prev_* carries the
-                # running score into the play. (pbp.special_teams_play.score_diff_kicking
-                # documents "before the play" but is computed from the after-play columns --
-                # see the note in the module docstring of this file's PLAN entry.)
+                # repaired running score into the play. (pbp.special_teams_play.score_diff_kicking
+                # documents "before the play" but is still computed from the after-play
+                # columns -- a separate, older inconsistency, noted in README "Known limits".)
                 diff = (None if off_is_home is None
                         else int(prev_home - prev_away if off_is_home else prev_away - prev_home))
 
@@ -329,10 +333,7 @@ def rows_for_game(job):
                 en_team = (en.get("team") or {}).get("id")
 
                 # Points the OFFENSE gained on this play, signed: a pick-six is negative.
-                pts = None
-                if hs is not None and aw is not None and off_is_home is not None:
-                    dh, da = hs - prev_home, aw - prev_away
-                    pts = int(dh - da if off_is_home else da - dh)
+                pts = None if off_is_home is None else int(dh - da if off_is_home else da - dh)
 
                 ath = {}
                 seen_pair, my_bridge = set(), []
@@ -393,10 +394,7 @@ def rows_for_game(job):
                     "_bridge": my_bridge,
                 })
 
-            if hs is not None:
-                prev_home = hs
-            if aw is not None:
-                prev_away = aw
+            prev_home, prev_away = nh, na
 
         dstart, dend = dr.get("start") or {}, dr.get("end") or {}
         drives.append({

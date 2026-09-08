@@ -165,7 +165,7 @@ explorer's header both show how old the snapshot is.
 | **In progress right now** | the 2026 season, 99 games deep. `scripts/update_season.py 2026` pulls both facts forward |
 | **Rollback tables in Postgres** | four, all deliberate: `special_teams_play_prereparse`, `special_teams_play_preathletefix`, `special_teams_play_preconvfix`, `dim_athlete_prestage3`. Drop them once the current coverage is trusted |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); the apps reading the scrimmage fact |
-| **Open follow-ups** | ESPN's score column lags a play around scoring plays, which feeds three columns — see [Known limits](#known-limits). Reconsider PATs for the explorer now that they link at 98.8%; decide whether the explorer carries the console's two fitted baselines. All in [Not built](#not-built) |
+| **Open follow-ups** | `score_diff_kicking` is computed from after-play scores despite documenting "before" — see [Known limits](#known-limits) §9. Reconsider PATs for the explorer now that they link at 98.8%; decide whether the explorer carries the console's two fitted baselines. All in [Not built](#not-built) |
 
 ---
 
@@ -920,35 +920,70 @@ in the play-level weather join if that is ever built.
 563 games against ~880 either side. Nothing flags it. Any per-season rate that treats 2020
 as a normal year is comparing a COVID-shortened season to full ones.
 
-### 9. ESPN's score column lags a play around scoring plays — affects three columns
+### 9. ESPN's score column lags a play — repaired 2026-09-08, with residue
 
-Found 2026-09-08 while adding the standalone conversions, **characterised but not fixed.**
+`homeScore`/`awayScore` on a play is the score **after** it, including the PAT folded into a
+touchdown's text. Verified on clean games. But the feed is not consistent about it:
 
-Walking the plays of a game in feed order, the running score steps *backward* at least once
-in **3,553 of 10,470 games (33.9%)**, 7,237 backward steps in all. The magnitudes give the
-cause away: they cluster at 7, 3 and 6 points — exactly touchdown-plus-PAT, field goal and
-touchdown — and they land mostly on `Timeout` and `Penalty` rows. ESPN is inconsistent about
-whether a row carries the score before or after the play, so an administrative row can hold
-a stale value and inflate the next real play's delta.
+| | rows |
+|---|---|
+| rows reporting a **stale**, pre-scoring snapshot while the clock advances past them | 6,470 |
+| rows simply **out of chronological order** | 765 |
+| games where the running score therefore steps backward at least once | 3,553 of 10,470 (33.9%) |
 
-Three columns are derived from that delta:
+Stale rows concentrate on `Timeout` (1,649) and `Penalty` (1,663), and the backward steps
+cluster at 7, 3 and 6 points — touchdown-plus-PAT, field goal, touchdown.
 
-| column | table | exposure |
+**The repair** is one invariant: a score never goes down. `build_table.advance_score` clamps
+each team's running total to its own maximum, so a stale snapshot is absorbed into the value
+already known and the play after it shows no phantom gain. Both builders call it, so they
+cannot drift.
+
+Measured over 1,868,595 plays:
+
+| | before | after |
 |---|---|---|
-| `points_scored` | `scrimmage_play` | direct |
-| `score_diff_offense` | `scrimmage_play` | direct |
-| the scoring team on a conversion | `special_teams_play` | `emit_pat` picks the team whose points went up |
+| negative point deltas | 7,237 | **0** |
+| illegal deltas (negative, both teams, or an impossible value) | 8,458 | 561 |
+| plays credited with points they did not score | 14,002 | **584** |
+| reconstructed final matches the official one in `games_<season>.json` | 10,021 of 10,301 | **10,053** |
+| conversion on the correct team, against game-local ground truth | 99.814% | **99.846%** |
 
-The conversion team assignment has independent corroboration — 98.7% of conversions link to
-a kicker, and the 2026-08-30 fix that introduced this logic moved ~94% of conversions onto
-the *correct* team — so the practical error rate is likely far below 33.9% of games. But it
-has not been measured, and until it is, `points_scored` on a scrimmage play is the weakest
-column in either fact. Do not build a scoring model on it without checking first.
+That last row uses an independent check worth knowing about: on punts, kickoffs and field
+goals the kicking team is read off `start.team.id` and never depended on the scoreboard at
+all, so a kicker who also took a real kick in the same game has his team named beyond doubt
+there. 59,724 conversions can be checked that way.
 
-A fix exists in outline: derive the delta from the last play that carries a *sane* score
-rather than the last play of any kind, or sort by `(period, -clock, sequenceNumber)` before
-walking. Both change how three shipped columns are computed, which is why neither was done
-under the heading of "add the missing conversions".
+**Two things were tried and rejected, both on measurement.** Sorting plays into clock order
+before walking adds nothing on top of the clamp — the ordering fault is the smaller half, and
+a sort aggressive enough to fix it broke as many games as it repaired (fixed 175, broke 143).
+Feeding the raw unclamped deltas back in as a tiebreak made things markedly worse, 99.81% →
+99.56%, flipping 182 correct conversions: once `prev_*` is a repaired running maximum, a raw
+negative delta is a property of the repair, not a signal about who scored.
+
+**What still remains, and it is small but real:**
+
+- **584 plays** carry points ESPN does not call a scoring play, and **1,085** are scoring
+  plays that came out with zero points. Both are cases where the feed's own `scoringPlay`
+  flag and its score column disagree, and neither can be resolved from the data.
+- **240 plays** have a `points_scored` magnitude outside {1,2,3,6,7,8}.
+- **38 conversions** sit on the wrong team. All are return touchdowns — kickoff, punt, fumble
+  and interception returns — where the row is stale, both clamped deltas are therefore zero,
+  and `emit_pat` falls back to possession, which on a return touchdown is the side that was
+  scored against. Fixing them needs a return-touchdown detector, and `build_table`'s own
+  docstring is on record that a play-type whitelist does not separate those reliably.
+- Negative `points_scored` is **correct** on 3,513 rows and should stay: the column is signed
+  from the offence's perspective, so a pick-six is genuinely negative. Every remaining
+  negative is an interception or fumble return touchdown, a safety, or a sack in the end
+  zone.
+
+**One thing this did NOT change.** `special_teams_play.score_diff_kicking` documents "the
+kicking team's margin before the play" but is still computed from the after-play scoreboard
+columns, so on a made field goal or PAT it includes the points just scored. That is an older
+inconsistency, unrelated to the lag, and it was left alone rather than folded into this fix:
+`is_clutch` in the snapshot is derived from it and would move.
+`scrimmage_play.score_diff_offense` does not have the problem — it is the margin before the
+snap, and the repair improved it on 29,821 rows.
 
 ### 10. ESPN reuses one sequenceNumber for two different plays — 507 rows carry a `#n` suffix
 
@@ -1665,6 +1700,7 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-08 | **Standalone conversions recovered** | `emit_pat` fires on `scoringPlay or "kick attempt" in text`, read off the *touchdown* play, so it never saw the conversions ESPN emits as their own row | 48 two-point attempts (mostly overtime) and 75 `defensive_conversion` rows — the defence returning a blocked PAT, a different event from the offence's failed try. `emit_pat` also assigned the scoring team by *swapping* two ids, which fails when `start.team.id` is NULL: all three conversions in the 9OT Illinois–Penn State game were on Penn State |
 | 2026-09-08 | **Empty-staging guard on both athlete loaders** | every other guard passes vacuously on an empty set, so `TRUNCATE pbp.dim_athlete` emptied the dimension, the bridge `DELETE` removed a season, the apply put nothing back — and psql exited **0**. One mistyped `\copy` path is enough | both loaders now refuse. Found by making that exact mistake |
 | 2026-09-08 | **Renamed `st` → `pbp`, repo → `cfb-pbp`** | the schema was named for special teams and now holds every play | 374 references across 29 files, matched on table names rather than the bare `st.` prefix — `app.py` does `import streamlit as st`. The DuckDB view named `st` in `web/data.py` was deliberately left alone: it still means special teams |
+| 2026-09-08 | **Score-lag repaired** | ESPN's score column reports a stale, pre-scoring snapshot on 6,470 rows and is out of order on 765 more, so the running score stepped backward in 33.9% of games. Read literally that produced 7,237 negative point deltas and credited 14,002 plays with points they did not score | one invariant — a score never goes down — clamps each team's running total to its own maximum, in a helper both builders call. Negative deltas 7,237 → **0**, phantom point rows 14,002 → **584**, reconstructed finals matching the official score 10,021 → **10,053** of 10,301, conversions on the correct team 99.814% → **99.846%** against game-local ground truth. Sorting into clock order first, and using raw deltas as a tiebreak, were both tried and both measured worse |
 
 ---
 
@@ -1718,8 +1754,9 @@ completion, and a two-point conversion counts in neither passing nor rushing tot
 rules have to be written down and agreed before a leaderboard means anything. The raw
 material is all present — `play_kind`, `is_complete`, `yards_gained` and the role bridge.
 
-Before building any of it, read [Known limits §9](#9-espns-score-column-lags-a-play-around-scoring-plays--affects-three-columns):
-`points_scored` is the one column in either fact that has a known, unquantified defect.
+Before building any of it, read [Known limits §9](#9-espns-score-column-lags-a-play--repaired-2026-09-08-with-residue).
+`points_scored` was repaired on 2026-09-08 and is now sound on 99.9% of plays, but the
+residue is enumerated there and matters for a scoring model.
 
 ### The apps do not read the scrimmage fact
 
