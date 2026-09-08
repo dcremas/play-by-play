@@ -163,9 +163,9 @@ explorer's header both show how old the snapshot is.
 |---|---|
 | **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts; all three applications; the weekly in-season update; the ERD |
 | **In progress right now** | the 2026 season, 99 games deep. `scripts/update_season.py 2026` pulls both facts forward |
-| **Rollback tables in Postgres** | four, all deliberate: `special_teams_play_prereparse`, `special_teams_play_preathletefix`, `special_teams_play_preconvfix`, `dim_athlete_prestage3`. Drop them once the current coverage is trusted |
+| **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); the apps reading the scrimmage fact |
-| **Open follow-ups** | `score_diff_kicking` is computed from after-play scores despite documenting "before" — see [Known limits](#known-limits) §9. Reconsider PATs for the explorer now that they link at 98.8%; decide whether the explorer carries the console's two fitted baselines. All in [Not built](#not-built) |
+| **Open follow-ups** | Reconsider PATs for the explorer now that they link at 98.8%; decide whether the explorer carries the console's two fitted baselines; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9). All in [Not built](#not-built) |
 
 ---
 
@@ -977,13 +977,24 @@ negative delta is a property of the repair, not a signal about who scored.
   negative is an interception or fumble return touchdown, a safety, or a sack in the end
   zone.
 
-**One thing this did NOT change.** `special_teams_play.score_diff_kicking` documents "the
-kicking team's margin before the play" but is still computed from the after-play scoreboard
-columns, so on a made field goal or PAT it includes the points just scored. That is an older
-inconsistency, unrelated to the lag, and it was left alone rather than folded into this fix:
-`is_clutch` in the snapshot is derived from it and would move.
-`scrimmage_play.score_diff_offense` does not have the problem — it is the margin before the
-snap, and the repair improved it on 29,821 rows.
+**`score_diff_kicking` was fixed separately, right after.** It documents "the kicking team's
+margin before the play" but was computed from the after-play scoreboard, so a made field goal
+carried a margin that already included the three points it had just scored. It now comes from
+the repaired running score entering the play, like `scrimmage_play.score_diff_offense`.
+
+Two checks say it landed: **22,562 of 23,220 made field goals moved by exactly −3**, and
+**7,813 of 8,044 missed field goals did not move at all** — a miss scores nothing, so its
+margin must not change. The remainder in each case are rows the score-lag repair also touched.
+
+Conversion rows needed their own rule. A `pat` row is DERIVED from the touchdown play, so
+"before the play" would be the margin before the *touchdown* — not what the kicker faced. It
+is instead the margin after the touchdown and before his own kick, computed as the score
+after the whole play minus what the conversion itself was worth.
+
+The one downstream consumer is `is_clutch` in the snapshot, which tests `abs(...) <= 8`. It
+flips on **662 of 316,397 rows** — mostly field goals that put a team up by ten, previously
+outside the one-score window and now inside it, and the reverse. No measured column moved:
+field goal percentage is 74.27% before and after.
 
 ### 10. ESPN reuses one sequenceNumber for two different plays — 507 rows carry a `#n` suffix
 
@@ -1432,25 +1443,12 @@ referential-integrity counts.
 
 ### Rollback points currently in Postgres
 
-**Four**, all from the 2026-09-08 expansion and all safe to drop once the new coverage is
-trusted:
-
-| table | rows | holds |
-|---|---|---|
-| `pbp.dim_athlete_prestage3` | 33,891 | the special-teams-only athlete dimension, before it was rebuilt over both facts |
-| `pbp.special_teams_play_preconvfix` | 316,232 | `play_uid`, `play_kind`, `kicking_team_id`, `converted` before the standalone conversions were added |
-| `pbp.special_teams_play_preathletefix` | 316,397 | the three athlete id columns before the last apply |
-| `pbp.special_teams_play_prereparse` | — | recreated by `reparse.sql` whenever it runs |
-
-`reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time
-they run, so this list refills itself. `stg_*` tables are transient — every load script drops
-them on the way out.
-
-```sql
--- when they are no longer wanted
-DROP TABLE IF EXISTS pbp.dim_athlete_prestage3, pbp.special_teams_play_preconvfix,
-                     pbp.special_teams_play_preathletefix, pbp.special_teams_play_prereparse;
-```
+**None.** The four the 2026-09-08 expansion created — `dim_athlete_prestage3`,
+`special_teams_play_preconvfix`, `special_teams_play_preathletefix` and
+`special_teams_play_prereparse` — were dropped once the new coverage was trusted, taking the
+database from 1,369 MB to 1,327 MB. `reparse.sql` and `load_athletes_2_apply.sql` each
+recreate the one they own the next time they run, so this list refills itself as soon as
+either is used. `stg_*` tables are transient — every load script drops them on the way out.
 
 One rollback point is still on disk rather than in Postgres:
 `data/espn/participants_pre20260831/` holds 454 participants files as they were before the
@@ -1719,6 +1717,8 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-08 | **Empty-staging guard on both athlete loaders** | every other guard passes vacuously on an empty set, so `TRUNCATE pbp.dim_athlete` emptied the dimension, the bridge `DELETE` removed a season, the apply put nothing back — and psql exited **0**. One mistyped `\copy` path is enough | both loaders now refuse. Found by making that exact mistake |
 | 2026-09-08 | **Renamed `st` → `pbp`, repo → `cfb-pbp`** | the schema was named for special teams and now holds every play | 374 references across 29 files, matched on table names rather than the bare `st.` prefix — `app.py` does `import streamlit as st`. The DuckDB view named `st` in `web/data.py` was deliberately left alone: it still means special teams |
 | 2026-09-08 | **Score-lag repaired** | ESPN's score column reports a stale, pre-scoring snapshot on 6,470 rows and is out of order on 765 more, so the running score stepped backward in 33.9% of games. Read literally that produced 7,237 negative point deltas and credited 14,002 plays with points they did not score | one invariant — a score never goes down — clamps each team's running total to its own maximum, in a helper both builders call. Negative deltas 7,237 → **0**, phantom point rows 14,002 → **584**, reconstructed finals matching the official score 10,021 → **10,053** of 10,301, conversions on the correct team 99.814% → **99.846%** against game-local ground truth. Sorting into clock order first, and using raw deltas as a tiebreak, were both tried and both measured worse |
+| 2026-09-08 | **`score_diff_kicking` means what it says** | it documented "the kicking team's margin before the play" but was computed from ESPN's after-play scoreboard, so a made field goal carried a margin that already included the three points it had just scored | now taken from the repaired running score entering the play, like `score_diff_offense`. **22,562 of 23,220 made field goals moved by exactly −3**; **7,813 of 8,044 missed field goals did not move at all**, which is the control. Conversion rows get the margin the KICKER faced — after the touchdown, before his own kick — since a `pat` row is derived from the touchdown play. `is_clutch` flips on 662 of 316,397 rows; no measured column moved, FG% is 74.27% before and after |
+| 2026-09-08 | **Rollback tables dropped** | four tables from the expansion, kept until the new coverage was trusted | `cfb` 1,369 MB → 1,327 MB; the schema holds exactly the eleven tables the pipeline needs |
 
 ---
 

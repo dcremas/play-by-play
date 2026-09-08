@@ -158,7 +158,7 @@ def finish(row, kind, text, parsed):
     return row
 
 
-def emit_pat(base, uid, text, scoring_team):
+def emit_pat(base, uid, text, scoring_team, after_home=None, after_away=None):
     p = parse_pat(text)
     if not p:
         return None
@@ -186,6 +186,16 @@ def emit_pat(base, uid, text, scoring_team):
               "onside", "fair_catch", "downed", "out_of_bounds", "returned", "punt_net_yds",
               "fg_made", "returned_for_td", "miss_reason"):
         r[f] = None
+    # A conversion row is DERIVED from the touchdown play, so the base row's "before the
+    # snap" margin is the margin before the TOUCHDOWN -- not what the kicker is looking at.
+    # The margin he faces is the one after the touchdown and before his own kick, which is
+    # the score after the whole play minus whatever the conversion itself was worth.
+    if after_home is not None and r["is_home_kicking"] is not None:
+        worth = 0
+        if r["converted"]:
+            worth = 2 if r["play_kind"] == "two_point" else 1
+        after = (after_home - after_away) if r["is_home_kicking"] else (after_away - after_home)
+        r["score_diff_kicking"] = int(after - worth)
     return r
 
 
@@ -215,7 +225,8 @@ STANDALONE_CONV = {"Two Point Pass": "two_point", "Two Point Rush": "two_point",
 _2PT_TYPE = {"Two Point Pass": "pass", "Two Point Rush": "rush"}
 
 
-def emit_standalone_conv(base, uid, play_type, text, scoring, scorer, home, away):
+def emit_standalone_conv(base, uid, play_type, text, scoring, scorer, home, away,
+                        prev_home=None, prev_away=None):
     """A conversion ESPN gave its own play row. Returns a fact row, or None."""
     kind = STANDALONE_CONV[play_type]
     r = dict(base)
@@ -249,6 +260,11 @@ def emit_standalone_conv(base, uid, play_type, text, scoring, scorer, home, away
     # right for a failed try.
     r["is_home_kicking"] = (None if r["kicking_team_id"] is None or base["_home"] is None
                             else same_team(r["kicking_team_id"], base["_home"]))
+    # These rows are their own play, so the base margin is already "before the snap" -- but
+    # the team on the row may have just been reassigned, which flips the sign.
+    if prev_home is not None and r["is_home_kicking"] is not None:
+        r["score_diff_kicking"] = int(prev_home - prev_away if r["is_home_kicking"]
+                                      else prev_away - prev_home)
     r["parse_confidence"] = "exact" if text else "partial"
     return r
 
@@ -310,9 +326,16 @@ def main(path=None, seasons=None):
                         recv = away if same_team(kick, home) else home
                         hs, as_score = p.get("homeScore"), p.get("awayScore")
                         kick_is_home = same_team(kick, home) if kick is not None else None
-                        diff = None
-                        if hs is not None and as_score is not None and kick_is_home is not None:
-                            diff = int((hs - as_score) if kick_is_home else (as_score - hs))
+                        # The margin BEFORE the snap, which is what the column has always
+                        # documented. Until 2026-09-08 it was computed from homeScore /
+                        # awayScore, which are the score AFTER the play -- so a made field
+                        # goal carried a margin that already included the three points it had
+                        # just scored, and a kickoff the touchdown that preceded it.
+                        # prev_home / prev_away are the repaired running score coming INTO
+                        # the play; see advance_score.
+                        diff = (None if kick_is_home is None
+                                else int(prev_home - prev_away if kick_is_home
+                                         else prev_away - prev_home))
                         seq = p.get("sequenceNumber") or p.get("id")
                         uid = f"espn:{gid}:{seq}"
                         base = {**blank(),
@@ -342,7 +365,8 @@ def main(path=None, seasons=None):
                             # a conversion can share a sequenceNumber, and the kick must keep
                             # the bare play_uid it already has in the warehouse.
                             deferred.append(emit_standalone_conv(
-                                base, uid, ptype, text, p.get("scoringPlay"), sc, home, away))
+                                base, uid, ptype, text, p.get("scoringPlay"), sc, home, away,
+                                prev_home, prev_away))
                         if p.get("scoringPlay") or "kick attempt" in (text or "").lower():
                             # homeScore / awayScore are the score AFTER the play, so the
                             # side that gained points on it is the side that scored. A
@@ -352,7 +376,7 @@ def main(path=None, seasons=None):
                             # 193 of 58,542 conversions take that fallback because ESPN's
                             # own scoreboard does not move on the play; they keep whatever
                             # start.team.id says, right or wrong.
-                            r = emit_pat(base, uid, text, scorer)
+                            r = emit_pat(base, uid, text, scorer, nh, na)
                             if r:
                                 w(r); stats[(season, r["play_kind"])] += 1
                         prev_home, prev_away = nh, na

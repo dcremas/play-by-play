@@ -98,9 +98,9 @@ COMMENT ON COLUMN pbp.scrimmage_play.end_yards_to_goal IS
    On a turnover it flips to the other goal line, so it is NOT comparable with yards_to_goal
    unless end_team_id = offense_team_id.';
 COMMENT ON COLUMN pbp.scrimmage_play.score_diff_offense IS
-  'The margin BEFORE the snap, from the running score carried into the play. Note this
-   differs from pbp.special_teams_play.score_diff_kicking, which documents the same intent but
-   is computed from the after-play scoreboard columns.';
+  'The margin BEFORE the snap, from the repaired running score carried into the play. Its
+   counterpart on the kicks fact, score_diff_kicking, means the same thing and is computed
+   the same way as of 2026-09-08.';
 COMMENT ON COLUMN pbp.scrimmage_play.points_scored IS
   'Points the OFFENSE gained on this play, signed: a pick-six is negative. Includes the
    conversion when ESPN folds it into the touchdown play text, so 7 is the common value.';

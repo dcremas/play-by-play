@@ -67,6 +67,12 @@ CREATE INDEX ON pbp.special_teams_play (game_id);
 COMMENT ON COLUMN pbp.special_teams_play.return_yds IS
   'Actual yards returned. 0 means the ball was not advanced (touchback, fair catch, downed,
    out of bounds) -- check `returned` to exclude those from return averages.';
+COMMENT ON COLUMN pbp.special_teams_play.score_diff_kicking IS
+  'The kicking team''s margin BEFORE the play, from the repaired running score. On a
+   conversion row -- which is derived from the touchdown play -- it is the margin the KICKER
+   faced: after the touchdown, before his own kick. Until 2026-09-08 this was computed from
+   ESPN''s homeScore/awayScore, which are the score AFTER the play, so a made field goal
+   carried a margin that already included the three points it had just scored.';
 COMMENT ON COLUMN pbp.special_teams_play.kicking_team_id IS
   'ESPN start.team.id. Verified over 105k plays: this is the kicking team for every kind --
    the offense on punts/FGs, the defense on kickoffs.';
