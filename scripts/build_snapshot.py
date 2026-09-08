@@ -39,8 +39,9 @@ SELECT
     -- people
     p.kicker_athlete_id, p.returner_athlete_id, p.tackler_athlete_id,
     p.kicker_name, p.returner_name, p.blocker_name,
-    ka.known_name      AS kicker_known_name,
-    ka.name_confidence AS kicker_name_confidence,
+    ka.known_name           AS kicker_known_name,
+    ka.text_name_confidence AS kicker_name_confidence,
+    ka.position             AS kicker_position,
 
 
     -- game / venue

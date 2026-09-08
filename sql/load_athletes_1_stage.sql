@@ -17,8 +17,9 @@
 
 DROP TABLE IF EXISTS st.stg_dim_athlete;
 CREATE TABLE st.stg_dim_athlete (
-  athlete_id text, known_name text, name_confidence text, primary_role text,
-  primary_team_id text, first_season text, last_season text, st_plays text
+  athlete_id text, known_name text, full_name text, position text, jersey text,
+  text_name text, text_name_confidence text, primary_role text, primary_team_id text,
+  first_season text, last_season text, st_plays text, scrimmage_plays text
 );
 
 DROP TABLE IF EXISTS st.stg_play_athlete;

@@ -16,10 +16,24 @@ Athlete is derived from fetched participants plus the names the parser already e
 `conf` and `venue` always write the whole window; the tables are small (3.4k team-seasons,
 200 venues) and sql/load_dims.sql replaces them wholesale, so there is nothing to scope.
 
-`athlete` is different, and the difference matters for the in-season update. dim_athlete is
-a CAREER aggregate -- first_season, last_season, st_plays, the modal known_name and
-primary_team_id are all taken across every season at once -- so it must be derived from the
-whole corpus even when only one season is being loaded:
+`athlete` builds ONE dimension over BOTH fact tables (PLAN.md §10d). The union is 62,879
+athletes: 33,891 from special teams, 58,800 from scrimmage, 29,812 in both. A receiver who
+also returns kicks has to be a single row or every cross-phase question double-counts him.
+
+Names come from data/espn/athletes.json.gz, fetched by scripts/fetch_athletes.py, not from
+play text. Voting names out of the text only ever named 25.9% of the special-teams athletes
+and would have done worse on scrimmage. The voted name survives in `text_name` beside its
+confidence, because it is derived from a different source than the fetched one and a
+disagreement between them points at a bad athlete-to-play link.
+
+The scrimmage side is rolled up in DuckDB rather than Python dicts -- it joins 3.1M bridge
+rows to a 382 MB fact, and the ST path walks the participants files directly only because it
+also needs the parsed names off each play.
+
+`athlete` is different from `conf` and `venue`, and the difference matters for the in-season
+update. dim_athlete is a CAREER aggregate -- first_season, last_season, the play counts,
+primary_role and primary_team_id are all taken across every season at once -- so it must be
+derived from the whole corpus even when only one season is being loaded:
 
     python build_dims.py athlete --plays data/out/st_plays.csv data/out/st_plays_2026.csv \
                                  --only-season 2026
@@ -203,7 +217,75 @@ def stage_venue():
     print(f"  surfaces: {dict(surf)}; non-US venues: {intl}")
 
 
-def stage_athlete(plays_csvs=None, only_season=None):
+def load_identity():
+    """Authoritative names, positions and jerseys from scripts/fetch_athletes.py.
+
+    Absent is not fatal -- the dimension falls back to the voted text name, which is what it
+    used before this existed. It just names 25.9% of athletes instead of ~100%.
+    """
+    path = f"{ESPN}/athletes.json.gz"
+    if not os.path.exists(path):
+        print("  WARNING: no data/espn/athletes.json.gz -- run scripts/fetch_athletes.py.\n"
+              "           Falling back to text-voted names only.", flush=True)
+        return {}
+    with gzip.open(path, "rt") as f:
+        d = json.load(f)
+    print(f"  identity store: {len(d):,} athletes", flush=True)
+    return d
+
+
+def scrimmage_rollup(fact_csv, bridge_csv):
+    """Per-athlete role, team, season and play counts over the scrimmage fact.
+
+    DuckDB rather than Python dicts: this joins 3.1M bridge rows to a 1.5M-row, 382 MB fact,
+    and holding a play -> (season, team) map for all of it in a dict costs more memory than
+    the rest of this script put together. The ST path above stays as it was -- it walks the
+    participants files directly because it also needs the parsed names off each play, which
+    have no equivalent here.
+
+    Team attribution follows the role. A tackler belongs to the DEFENCE; counting him for the
+    offense -- which is what a single `offense_team_id` join would do -- would put every
+    defender on the wrong roster, and primary_team_id is derived from exactly this count.
+    """
+    import duckdb
+    con = duckdb.connect()
+    con.execute(f"CREATE VIEW f AS SELECT * FROM read_csv_auto('{fact_csv}', sample_size=-1)")
+    con.execute(f"CREATE VIEW b AS SELECT * FROM read_csv_auto('{bridge_csv}', sample_size=-1)")
+    rows = con.execute("""
+        SELECT b.athlete_id, b.role, f.season,
+               CASE WHEN b.role IN ('tackler','assistedBy','sackedBy','passDefender',
+                                    'forcedBy','recoverer')
+                    THEN f.defense_team_id ELSE f.offense_team_id END AS team_id,
+               count(*) AS n
+        FROM b JOIN f ON f.play_uid = b.play_uid
+        GROUP BY 1,2,3,4
+    """).fetchall()
+    # Separately, because an athlete can hold two roles on one play (rusher and scorer) and
+    # summing a per-group DISTINCT would count that play twice.
+    playcount = con.execute("""
+        SELECT athlete_id, count(DISTINCT play_uid) FROM b GROUP BY 1
+    """).fetchall()
+    con.close()
+
+    roles = collections.defaultdict(collections.Counter)
+    teams = collections.defaultdict(collections.Counter)
+    seasons = collections.defaultdict(set)
+    plays = collections.Counter()
+    for aid, role, season, team_id, n in rows:
+        a = str(aid)
+        roles[a][role] += n
+        if team_id is not None:
+            teams[a][str(int(team_id))] += n
+        if season is not None:
+            seasons[a].add(int(season))
+    for aid, npl in playcount:
+        plays[str(aid)] = npl
+    print(f"  scrimmage rollup: {len(roles):,} athletes over {sum(plays.values()):,} "
+          f"athlete-plays", flush=True)
+    return roles, teams, seasons, plays
+
+
+def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_bridge=None):
     """Link plays to ESPN athlete ids, and derive an athlete dimension from the data itself.
 
     ESPN tags the kick as role 'kicker' (kickoffs, field goals) or 'punter' (punts), plus
@@ -250,6 +332,7 @@ def stage_athlete(plays_csvs=None, only_season=None):
     teams = collections.defaultdict(collections.Counter)
     roles = collections.defaultdict(collections.Counter)
     seasons = collections.defaultdict(set)
+    st_plays = collections.defaultdict(set)     # distinct ST play_uids per athlete
     for path in glob.glob(f"{ESPN}/participants/*.json.gz"):
         gid = os.path.basename(path).split(".")[0]
         try:
@@ -271,6 +354,8 @@ def stage_athlete(plays_csvs=None, only_season=None):
             # when it feeds both a kick row and a conversion row.
             for role, aid in parts:
                 roles[aid][ROLE_CANON.get(role, role)] += 1
+            for role, aid in parts:
+                st_plays[aid].add(base)
             for uid in targets:
                 season, kteam, rteam, kname, rname = plays[uid]
                 is_conv = uid.endswith(":pat")
@@ -316,12 +401,36 @@ def stage_athlete(plays_csvs=None, only_season=None):
         for uid, d in wide_out.items():
             w.writerow([uid, d.get("kicker_athlete_id"), d.get("returner_athlete_id"),
                         d.get("tackler_athlete_id")])
+    # ---- merge the scrimmage side in -------------------------------------------------
+    # Both facts feed ONE dimension. A receiver who also returns kicks has to be one row or
+    # every cross-phase question double-counts him -- that is the whole reason this project
+    # keys on ESPN athlete ids instead of name strings (PLAN.md §10d).
+    ident = load_identity()
+    s_roles, s_teams, s_seasons, s_plays = ({}, {}, {}, collections.Counter())
+    if scrim_bridge and os.path.exists(scrim_bridge):
+        s_roles, s_teams, s_seasons, s_plays = scrimmage_rollup(scrim_fact, scrim_bridge)
+        for aid, c in s_roles.items():
+            # Same canonicalisation the ST side applies. A placekicker is tagged patScorer on
+            # every touchdown his team scores, and those rows live on SCRIMMAGE plays, so
+            # merging the raw role would hand most placekickers primary_role='patScorer' --
+            # precisely the mislabelling ROLE_CANON exists to prevent.
+            for role, n in c.items():
+                roles[aid][ROLE_CANON.get(role, role)] += n
+        for aid, c in s_teams.items():
+            teams[aid].update(c)
+        for aid, ss in s_seasons.items():
+            seasons[aid] |= ss
+
+    everyone = names.keys() | roles.keys() | ident.keys() | s_plays.keys()
+
     with open(f"{OUT}/dim_athlete.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["athlete_id", "known_name", "name_confidence", "primary_role",
-                    "primary_team_id", "first_season", "last_season", "st_plays"])
+        w.writerow(["athlete_id", "known_name", "full_name", "position", "jersey",
+                    "text_name", "text_name_confidence", "primary_role",
+                    "primary_team_id", "first_season", "last_season",
+                    "st_plays", "scrimmage_plays"])
         weak = 0
-        for aid in sorted(names.keys() | roles.keys(), key=int):
+        for aid in sorted(everyone, key=int):
             # Names come from play text, and a player tagged in a kick role on a play whose
             # text names someone else inherits the wrong name. That is harmless for a kicker
             # with hundreds of plays and dominant for one with two, so require the modal name
@@ -348,7 +457,15 @@ def stage_athlete(plays_csvs=None, only_season=None):
             tm = teams[aid].most_common(1)[0][0] if teams[aid] else None
             pr = roles[aid].most_common(1)[0][0] if roles[aid] else None
             ss = sorted(seasons[aid]) or [None]
-            w.writerow([aid, nm, conf, pr, tm, ss[0], ss[-1], sum(roles[aid].values())])
+            # known_name is ESPN's, with the voted text name as fallback where the fetch has
+            # no record. The voted name and its confidence are kept in their own columns
+            # rather than discarded: they are the only INDEPENDENT signal that an athlete id
+            # is attached to the right play, and a fetched name would paper straight over a
+            # bad link.
+            idn = ident.get(str(aid)) or {}
+            w.writerow([aid, idn.get("displayName") or nm, idn.get("fullName"),
+                        idn.get("position"), idn.get("jersey"), nm, conf, pr, tm,
+                        ss[0], ss[-1], len(st_plays[aid]), s_plays.get(str(aid), 0)])
     linked = sum(1 for d in wide.values() if d.get("kicker_athlete_id"))
     kick_linked = sum(1 for u, d in wide.items()
                       if d.get("kicker_athlete_id") and not u.endswith(":pat"))
@@ -357,8 +474,12 @@ def stage_athlete(plays_csvs=None, only_season=None):
           f"({100*len(wide)/max(len(plays),1):.1f}% of plays linked)")
     print(f"  with a kicker id: {linked:,} ({100*linked/max(len(plays),1):.1f}%)"
           f"  -- {kick_linked:,} kicks, {conv_linked:,} conversions")
-    print(f"dim_athlete: {len(names.keys() | roles.keys()):,} athletes "
-          f"({weak:,} name candidates rejected as low-confidence)")
+    named = sum(1 for a in everyone if (ident.get(str(a)) or {}).get("displayName"))
+    print(f"dim_athlete: {len(everyone):,} athletes -- {named:,} named from the identity "
+          f"store ({100*named/max(len(everyone),1):.1f}%), "
+          f"{weak:,} text-name candidates rejected as low-confidence")
+    both = sum(1 for a in everyone if len(st_plays[a]) and s_plays.get(str(a), 0))
+    print(f"  {both:,} appear in BOTH facts -- one row each, which is the point")
 
 
 if __name__ == "__main__":
@@ -371,6 +492,10 @@ if __name__ == "__main__":
             while i < len(a) and not a[i].startswith("--"):
                 csvs.append(a[i]); i += 1
         stage_athlete(csvs,
-                      int(a[a.index("--only-season") + 1]) if "--only-season" in a else None)
+                      int(a[a.index("--only-season") + 1]) if "--only-season" in a else None,
+                      a[a.index("--scrim-fact") + 1] if "--scrim-fact" in a
+                      else f"{OUT}/scrimmage_plays.csv",
+                      a[a.index("--scrim-bridge") + 1] if "--scrim-bridge" in a
+                      else f"{OUT}/scrimmage_athlete.csv")
     else:
         {"conf": stage_conf, "venue": stage_venue}[a[0]]()

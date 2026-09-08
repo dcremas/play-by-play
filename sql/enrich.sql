@@ -2,6 +2,10 @@
 -- Names collide across ten seasons and 130+ teams; the ESPN athlete id is the stable key.
 -- ESPN exposes no 'blocker' role, so blocker identity remains a parsed name string only.
 
+-- SUPERSEDED 2026-09-08 by sql/schema_dim_athlete.sql, which rebuilds this table over both
+-- fact tables and takes names from ESPN rather than voting them out of play text. The block
+-- below is the special-teams-only original, kept for history; do not run it against the
+-- current warehouse or you will drop the scrimmage half of the dimension.
 DROP TABLE IF EXISTS st.dim_athlete CASCADE;
 CREATE TABLE st.dim_athlete (
   athlete_id      bigint PRIMARY KEY,

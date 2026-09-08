@@ -31,16 +31,23 @@ FROM st.stg_play_athlete
 ORDER BY play_uid, role, athlete_id::bigint, NULLIF(ordinal,'')::numeric::smallint;
 
 TRUNCATE st.dim_athlete;
-INSERT INTO st.dim_athlete (athlete_id, known_name, name_confidence, primary_role,
-                            primary_team_id, first_season, last_season, st_plays)
+INSERT INTO st.dim_athlete (athlete_id, known_name, full_name, position, jersey,
+                            text_name, text_name_confidence, primary_role,
+                            primary_team_id, first_season, last_season,
+                            st_plays, scrimmage_plays)
 SELECT athlete_id::bigint,
        NULLIF(known_name,''),
-       NULLIF(name_confidence,'')::numeric,
+       NULLIF(full_name,''),
+       NULLIF(position,''),
+       NULLIF(jersey,''),
+       NULLIF(text_name,''),
+       NULLIF(text_name_confidence,'')::numeric,
        NULLIF(primary_role,''),
        NULLIF(primary_team_id,'')::numeric::integer,
        NULLIF(first_season,'')::numeric::smallint,
        NULLIF(last_season,'')::numeric::smallint,
-       NULLIF(st_plays,'')::numeric::integer
+       NULLIF(st_plays,'')::numeric::integer,
+       NULLIF(scrimmage_plays,'')::numeric::integer
 FROM st.stg_dim_athlete;
 
 -- Clear first, then apply. The staging set is the complete truth from the participants
