@@ -1547,6 +1547,14 @@ to the team's true attempt count.
 
 ### The ERD
 
+> **Incomplete since 2026-09-08.** `ENTITIES` in `build_erd.py` is a hand-laid-out map —
+> fixed coordinates and hand-routed edge waypoints — so `scrimmage_play`, `scrimmage_athlete`
+> and `drive` do not appear on it. The script names them on every run and lists them greyed
+> in the inventory panel, marked "(not drawn)", so the diagram never claims to be the whole
+> schema. Placing them means re-laying out the page, or splitting it into one sheet per fact
+> family. Not attempted.
+
+
 ```bash
 .venv/bin/python scripts/build_erd.py        # -> reports/cfb_st_erd.pdf (+ .png proof)
 ```

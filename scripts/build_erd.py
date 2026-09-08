@@ -1,4 +1,4 @@
-"""Render the cfb / st schema as a one-page Crow's Foot ERD (landscape Letter PDF).
+"""Render the cfb / pbp schema as a one-page Crow's Foot ERD (landscape Letter PDF).
 
     .venv/bin/python scripts/build_erd.py        -> reports/cfb_st_erd.pdf (+ .png proof)
 
@@ -50,31 +50,52 @@ def psql(sql):
     return [ln.split("\x1f") for ln in r.stdout.strip().split("\n") if ln]
 
 
+def warn_unplaced(cols):
+    """Say loudly which tables exist in the schema but have no box on this page.
+
+    The diagram is hand-laid out -- fixed coordinates, hand-routed edges -- so new tables do
+    not appear by themselves. After the 2026-09-08 expansion the schema holds three the
+    layout has never had room for. They are listed in the inventory panel and named here;
+    placing them properly means re-laying out the page, which is a design job.
+    """
+    # Rollback copies are deliberate, transient and not part of the model. They are named
+    # for what they roll back to, so a suffix test is enough.
+    missing = [t for t in cols if t not in ENTITIES and "_pre" not in t]
+    if missing:
+        print(f"\n  NOTE: {len(missing)} table(s) in the schema are NOT drawn on the diagram:",
+              flush=True)
+        for t in sorted(missing):
+            print(f"        {t}", flush=True)
+        print("        They appear in the inventory panel, greyed, marked '(not drawn)'.\n",
+              flush=True)
+    return missing
+
+
 def load_schema():
     cols = {}
     for t, _, name, typ, nullable in psql("""
         select table_name, ordinal_position, column_name, data_type, is_nullable
-        from information_schema.columns where table_schema='st'
+        from information_schema.columns where table_schema='pbp'
         order by table_name, ordinal_position"""):
         cols.setdefault(t, []).append({"name": name, "type": TYPE_ABBR.get(typ, typ),
                                        "nn": nullable == "NO"})
     pk, fk = {}, {}
     for tbl, kind, definition in psql("""
         select conrelid::regclass::text, contype::text, pg_get_constraintdef(oid)
-        from pg_constraint where connamespace='st'::regnamespace and contype in ('p','f')"""):
+        from pg_constraint where connamespace='pbp'::regnamespace and contype in ('p','f')"""):
         t = tbl.split(".")[-1]
         inner = re.search(r"\(([^)]*)\)", definition)
         names = [c.strip() for c in inner.group(1).split(",")] if inner else []
         (pk if kind == "p" else fk).setdefault(t, set()).update(names)
     counts = {t: int(n) for t, n in psql("""
-        select relname, n_live_tup from pg_stat_user_tables where schemaname='st'""")}
+        select relname, n_live_tup from pg_stat_user_tables where schemaname='pbp'""")}
     exact = {}
     for t in cols:
-        exact[t] = int(psql(f"select count(*) from st.{t}")[0][0])
+        exact[t] = int(psql(f"select count(*) from pbp.{t}")[0][0])
     sizes = {t: s for t, s in psql("""
         select c.relname, pg_size_pretty(pg_total_relation_size(c.oid))
         from pg_class c join pg_namespace n on n.oid=c.relnamespace
-        where n.nspname='st' and c.relkind='r'""")}
+        where n.nspname='pbp' and c.relkind='r'""")}
     return cols, pk, fk, exact, sizes
 
 
@@ -209,7 +230,7 @@ def load_integrity():
         _p, ccols, pcols = JOINS[(child, key)]
         on = " AND ".join(f"p.{a}=c.{b}" for b, a in zip(ccols, pcols))
         notnull = " AND ".join(f"c.{c} IS NOT NULL" for c in ccols)
-        n = int(psql(f"SELECT count(*) FROM st.{child} c LEFT JOIN st.{parent} p ON {on} "
+        n = int(psql(f"SELECT count(*) FROM pbp.{child} c LEFT JOIN pbp.{parent} p ON {on} "
                      f"WHERE {notnull} AND p.{pcols[0]} IS NULL")[0][0])
         rows.append((parent, child, key, optional, declared, f"{n:,}"))
     INTEGRITY["rows"] = rows
@@ -483,10 +504,16 @@ def table_inventory(svg, x, y, w, h, cols, counts, sizes):
     svg.text(x + w - 28, y + 21, "ROWS", size=4.5, fill=MUTED, weight="700", anchor="end", spacing=0.3)
     svg.text(x + w - 4, y + 21, "SIZE", size=4.5, fill=MUTED, weight="700", anchor="end", spacing=0.3)
     ty = y + 22
+    # ENTITIES is a hand-laid-out diagram, so a table nobody has placed on the page cannot be
+    # drawn. It still gets a row here, in grey, rather than being dropped: an inventory that
+    # silently omits a table is worse than a cramped one.
     for name in sorted(cols, key=lambda t: -counts[t]):
         ty += 11.2
-        svg.rect(x + 6, ty - 4.6, 4.5, 4.5, fill=ROLE_FILL[ENTITIES[name]["role"]], rx=0.8)
-        svg.text(x + 14, ty, name, size=5.4, fill=INK)
+        placed = name in ENTITIES
+        svg.rect(x + 6, ty - 4.6, 4.5, 4.5,
+                 fill=ROLE_FILL[ENTITIES[name]["role"]] if placed else "#cbd5e1", rx=0.8)
+        svg.text(x + 14, ty, name + ("" if placed else "  (not drawn)"),
+                 size=5.4, fill=INK if placed else MUTED)
         svg.text(x + w - 53, ty, str(len(cols[name])), size=5.4, fill=MUTED, anchor="end")
         svg.text(x + w - 28, ty, f"{counts[name]:,}", size=5.4, fill=INK, anchor="end")
         svg.text(x + w - 4, ty, sizes.get(name, ""), size=5.0, fill=MUTED, anchor="end")
@@ -522,6 +549,7 @@ def rel_table(svg, x, y, w, h, rows):
 
 def build():
     cols, pk, fk, counts, sizes = load_schema()
+    unplaced = warn_unplaced(cols)
     load_integrity()
     geos = {}
     for name, g in ENTITIES.items():
@@ -535,13 +563,13 @@ def build():
     # ---- title band
     svg.text(18, 22, "College Football Special Teams Warehouse", size=13.5, fill=INK, weight="700")
     svg.text(18, 32, "Entity Relationship Diagram — Crow's Foot notation · "
-                     "PostgreSQL database  cfb  ·  schema  st  (the only user schema)",
+                     "PostgreSQL database  cfb  ·  schema  pbp  (the only user schema)",
              size=6.2, fill=MUTED)
     stamp = datetime.date.today().isoformat()
     total_rows = sum(counts.values())
     svg.text(W - 18, 18, f"{len(ENTITIES)} tables · {sum(len(c) for c in cols.values())} columns "
                          f"· {total_rows:,} rows", size=6.2, fill=INK, anchor="end", weight="700")
-    svg.text(W - 18, 27, f"seasons 2014–2025 · generated {stamp} from live schema",
+    svg.text(W - 18, 27, f"seasons 2014–2026 · generated {stamp} from live schema",
              size=5.6, fill=MUTED, anchor="end")
     svg.line(18, 38, W - 18, 38, RULE, 0.7)
 
