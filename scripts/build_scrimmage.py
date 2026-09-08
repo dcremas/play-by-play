@@ -94,6 +94,23 @@ COMPLETE_BY_TYPE = {
 ROLE_COLUMN = {"passer": "passer_athlete_id", "rusher": "rusher_athlete_id",
                "receiver": "receiver_athlete_id", "tackler": "tackler_athlete_id"}
 
+# The full-fidelity people bridge. The four id columns on the fact are a denormalised
+# convenience for the hot path; this is the truth, because a play has many tacklers and
+# `assistedBy` alone is hundreds of thousands of rows. Every role ESPN reports is kept --
+# filtering to "interesting" roles here would be a decision the query layer can make and
+# this one cannot undo.
+BRIDGE_COLUMNS = ["play_uid", "role", "athlete_id", "ordinal"]
+
+# One row per drive. Drives span BOTH facts -- a drive that ends in a punt contains the punt
+# -- so this table is deliberately not scrimmage-only, and play counts here cover every play
+# in the drive, not just the ones in st.scrimmage_play.
+DRIVE_COLUMNS = ["drive_uid", "drive_id", "game_id", "season", "week", "season_type",
+                 "drive_number", "offense_team_id", "defense_team_id", "result",
+                 "display_result", "description", "is_score", "offensive_plays",
+                 "plays_total", "plays_scrimmage", "yards", "time_elapsed_secs",
+                 "start_period", "start_clock_secs", "start_yards_to_goal", "start_text",
+                 "end_period", "end_clock_secs", "end_yards_to_goal", "end_text"]
+
 COLUMNS = ["play_uid", "source", "game_id", "season", "week", "season_type", "play_kind",
            "play_type_espn", "drive_id", "drive_number", "period", "clock_secs_period",
            "wallclock_utc", "down", "distance", "yards_to_goal", "offense_team_id",
@@ -149,6 +166,17 @@ def participants_for(gid):
     return out
 
 
+def elapsed_secs(disp):
+    """'6:16' -> 376. Drive clocks run mm:ss and occasionally h:mm:ss on a reviewed drive."""
+    if not disp or ":" not in str(disp):
+        return None
+    bits = str(disp).split(":")
+    try:
+        return sum(int(b) * 60 ** i for i, b in enumerate(reversed(bits)))
+    except ValueError:
+        return None
+
+
 def kind_of(play_type, roles):
     k = KIND_BY_TYPE.get(play_type)
     if k:
@@ -182,16 +210,21 @@ def first_down(st_team, en_team, st_down, en_down, touchdown):
 
 
 def rows_for_game(job):
-    """One game -> its scrimmage rows. Runs in a worker process."""
+    """One game -> (fact rows, bridge rows, drive rows). Runs in a worker process.
+
+    All three come out of one read of the summary and one read of the participants file.
+    Splitting them into separate scripts would triple the I/O over 10,470 gzipped games for
+    no gain, and drive_id has to be stamped on the fact rows anyway.
+    """
     gid, g, season = job
     spath = f"{ESPN}/summaries/{gid}.json.gz"
     if not os.path.exists(spath):
-        return gid, [], collections.Counter()
+        return gid, [], [], collections.Counter()
     try:
         with gzip.open(spath, "rt") as f:
             summary = json.load(f)
     except Exception:
-        return gid, [], collections.Counter({"unreadable": 1})
+        return gid, [], [], collections.Counter({"unreadable": 1})
 
     parts = participants_for(gid)
     home = as_team(next((t["id"] for t in g["teams"] if t["home_away"] == "home"), None))
@@ -214,13 +247,33 @@ def rows_for_game(job):
             if pt not in ADMIN and pt not in CONVERSION and classify(pt, p.get("text")):
                 st_seqs.add(str(p.get("sequenceNumber") or p.get("id")))
 
-    out, stats = [], collections.Counter()
+    out, drives, stats = [], [], collections.Counter()
     prev_home = prev_away = 0
     for dnum, dr in enumerate(summary.get("drives") or [], start=1):
-        for p in dr.get("plays") or []:
+        dplays = dr.get("plays") or []
+        d_scrim = 0
+        d_first_ytg = d_last_ytg = None
+        d_defense = None
+        for p in dplays:
             ptype = (p.get("type") or {}).get("text") or ""
             text = p.get("text")
             hs, aw = p.get("homeScore"), p.get("awayScore")
+
+            # Drive field position comes from the plays, not from drive.start.yardLine.
+            # That column is measured in a fixed direction rather than from the possessing
+            # team's own goal, so it reads 25 for one team's own 25 and 76 for the other's
+            # own 24. start.yardsToEndzone on the play is offense-relative and 100%
+            # populated, so the drive's endpoints are taken from its first and last play.
+            _st, _en = p.get("start") or {}, p.get("end") or {}
+            if ptype not in ADMIN:
+                if d_first_ytg is None:
+                    d_first_ytg = _st.get("yardsToEndzone")
+                if _en.get("yardsToEndzone") is not None:
+                    d_last_ytg = _en.get("yardsToEndzone")
+                if d_defense is None:
+                    for t in p.get("teamParticipants") or []:
+                        if t.get("type") == "defense":
+                            d_defense = as_team(t.get("id"))
 
             if ptype in ADMIN:
                 stats["admin"] += 1
@@ -270,10 +323,20 @@ def rows_for_game(job):
                     pts = int(dh - da if off_is_home else da - dh)
 
                 ath = {}
-                for role, aid in pairs:
+                seen_pair, my_bridge = set(), []
+                for i, (role, aid) in enumerate(pairs):
                     col = ROLE_COLUMN.get(role)
                     if col and col not in ath:        # first named in the role wins
                         ath[col] = aid
+                    # (play_uid, role, athlete_id) is the bridge's primary key, matching
+                    # st.play_athlete. ESPN occasionally repeats a pair on one play; the
+                    # repeat is dropped here rather than failing the load.
+                    if (role, aid) in seen_pair:
+                        stats["bridge_dup_pair"] += 1
+                        continue
+                    seen_pair.add((role, aid))
+                    my_bridge.append((role, aid, i))
+                d_scrim += 1
 
                 kind = kind_of(ptype, roles)
                 stats[f"kind:{kind}"] += 1
@@ -310,29 +373,64 @@ def rows_for_game(job):
                     "is_penalty": p.get("isPenalty"),
                     "is_scoring_play": p.get("scoringPlay"), "points_scored": pts,
                     "play_text": text, **ath,
-                    # consumed by main(); extrasaction='ignore' keeps it out of the CSV
+                    # consumed by main(); extrasaction='ignore' keeps them out of the CSV.
+                    # The bridge rides on its fact row rather than being accumulated
+                    # separately, so a '#n' suffix applied below cannot leave the bridge
+                    # pointing at a play_uid the fact table does not have.
                     "_st_seq_collision": str(seq) in st_seqs,
+                    "_bridge": my_bridge,
                 })
 
             if hs is not None:
                 prev_home = hs
             if aw is not None:
                 prev_away = aw
-    return gid, out, stats
+
+        dstart, dend = dr.get("start") or {}, dr.get("end") or {}
+        drives.append({
+            "drive_uid": f"espn:{gid}:d{dnum}", "drive_id": dr.get("id"), "game_id": gid,
+            "season": season, "week": g["week"], "season_type": season_type,
+            "drive_number": dnum,
+            "offense_team_id": as_team((dr.get("team") or {}).get("id")),
+            "defense_team_id": d_defense,
+            "result": dr.get("result"), "display_result": dr.get("displayResult"),
+            "description": dr.get("description"), "is_score": dr.get("isScore"),
+            "offensive_plays": dr.get("offensivePlays"),
+            "plays_total": len(dplays), "plays_scrimmage": d_scrim,
+            "yards": dr.get("yards"),
+            "time_elapsed_secs": elapsed_secs((dr.get("timeElapsed") or {}).get("displayValue")),
+            "start_period": ((dstart.get("period") or {}).get("number")),
+            "start_clock_secs": clock_secs((dstart.get("clock") or {}).get("displayValue")),
+            "start_yards_to_goal": d_first_ytg, "start_text": dstart.get("text"),
+            "end_period": ((dend.get("period") or {}).get("number")),
+            "end_clock_secs": clock_secs((dend.get("clock") or {}).get("displayValue")),
+            "end_yards_to_goal": d_last_ytg, "end_text": dend.get("text"),
+        })
+    return gid, out, drives, stats
 
 
-def main(path=None, seasons=None, workers=WORKERS):
+def main(path=None, seasons=None, workers=WORKERS, bridge_path=None, drives_path=None):
     os.makedirs(OUT, exist_ok=True)
     seasons = seasons or SEASONS
     path = path or f"{OUT}/scrimmage_plays.csv"
+    bridge_path = bridge_path or f"{OUT}/scrimmage_athlete.csv"
+    drives_path = drives_path or f"{OUT}/drives.csv"
     stats = collections.Counter()
     per_season = collections.Counter()
     seen = set()
+    nfact = nbridge = ndrives = 0
+    drive_ids = set()
     t0 = time.time()
 
-    with open(path, "w", newline="") as fh:
+    with open(path, "w", newline="") as fh, \
+         open(bridge_path, "w", newline="") as bh, \
+         open(drives_path, "w", newline="") as dh:
         wr = csv.DictWriter(fh, fieldnames=COLUMNS, extrasaction="ignore")
         wr.writeheader()
+        bw = csv.DictWriter(bh, fieldnames=BRIDGE_COLUMNS, extrasaction="ignore")
+        bw.writeheader()
+        dw = csv.DictWriter(dh, fieldnames=DRIVE_COLUMNS, extrasaction="ignore")
+        dw.writeheader()
         for season in seasons:
             gpath = f"{ESPN}/games_{season}.json"
             if not os.path.exists(gpath):
@@ -342,11 +440,18 @@ def main(path=None, seasons=None, workers=WORKERS):
             jobs = [(gid, g, season) for gid, g in games.items()]
             ngames = 0
             with ProcessPoolExecutor(max_workers=workers) as ex:
-                for gid, rows, s in ex.map(rows_for_game, jobs, chunksize=25):
+                for gid, rows, dvs, s in ex.map(rows_for_game, jobs, chunksize=25):
                     stats.update(s)
                     if not rows and not s:
                         continue
                     ngames += 1
+                    for d in dvs:
+                        if d["drive_id"] in drive_ids:
+                            stats["duplicate_drive_id"] += 1
+                        elif d["drive_id"] is not None:
+                            drive_ids.add(d["drive_id"])
+                        dw.writerow(d)
+                        ndrives += 1
                     for r in rows:
                         # ESPN sometimes gives two genuinely different plays in the same game
                         # the same sequenceNumber -- 281 collisions over 170 games, costing
@@ -378,10 +483,18 @@ def main(path=None, seasons=None, workers=WORKERS):
                                 stats["duplicate_seq"] += 1
                         seen.add(r["play_uid"])
                         wr.writerow(r)
+                        nfact += 1
                         per_season[season] += 1
+                        for role, aid, ordinal in r.pop("_bridge", ()):
+                            bw.writerow({"play_uid": r["play_uid"], "role": role,
+                                         "athlete_id": aid, "ordinal": ordinal})
+                            nbridge += 1
+                            stats[f"role:{role}"] += 1
             print(f"  {season}: {ngames:,} games, {per_season[season]:,} plays", flush=True)
 
-    print(f"\nwrote {len(seen):,} rows -> {path}   ({time.time() - t0:.0f}s)")
+    print(f"\nwrote {nfact:,} rows -> {path}")
+    print(f"      {nbridge:,} rows -> {bridge_path}")
+    print(f"      {ndrives:,} rows -> {drives_path}   ({time.time() - t0:.0f}s)")
     print(f"\n{'season':8s} {'plays':>10s}")
     for s in seasons:
         print(f"{s:<8} {per_season[s]:>10,}")
@@ -396,6 +509,15 @@ def main(path=None, seasons=None, workers=WORKERS):
           f"(unresolved -> 'other': {stats['unresolved_outcome_type']:,})")
     if stats["offense_from_start_team"]:
         print(f"offense fell back to start.team.id on {stats['offense_from_start_team']:,} plays")
+    print(f"\n{'bridge role':<18s} {'rows':>10s}")
+    for k in sorted((k for k in stats if k.startswith("role:")), key=lambda x: -stats[x]):
+        print(f"{k[5:]:<18s} {stats[k]:>10,}")
+    if stats["bridge_dup_pair"]:
+        print(f"  (dropped {stats['bridge_dup_pair']:,} repeated (role, athlete) pairs)")
+    if stats["duplicate_drive_id"]:
+        print(f"\nWARNING: ESPN drive_id repeats on {stats['duplicate_drive_id']:,} drives; "
+              f"drive_uid is the key, drive_id is not unique")
+
     oor = {k: v for k, v in stats.items() if k.startswith("out_of_range:")}
     if oor:
         print("\nout-of-range values nulled (ESPN sentinels and feed corruption):")
@@ -415,7 +537,10 @@ def main(path=None, seasons=None, workers=WORKERS):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out", help="write here instead of data/out/scrimmage_plays.csv")
+    ap.add_argument("--out-bridge", help="default data/out/scrimmage_athlete.csv")
+    ap.add_argument("--out-drives", help="default data/out/drives.csv")
     ap.add_argument("--seasons", help="comma-separated, e.g. 2026")
     ap.add_argument("--workers", type=int, default=WORKERS)
     a = ap.parse_args()
-    main(a.out, [int(x) for x in a.seasons.split(",")] if a.seasons else None, a.workers)
+    main(a.out, [int(x) for x in a.seasons.split(",")] if a.seasons else None, a.workers,
+         a.out_bridge, a.out_drives)

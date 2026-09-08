@@ -104,3 +104,26 @@ COMMENT ON COLUMN st.scrimmage_play.score_diff_offense IS
 COMMENT ON COLUMN st.scrimmage_play.points_scored IS
   'Points the OFFENSE gained on this play, signed: a pick-six is negative. Includes the
    conversion when ESPN folds it into the touchdown play text, so 7 is the common value.';
+
+
+-- ---------------------------------------------------------------------------------------
+-- The people bridge. Same shape as st.play_athlete, and the same reason for existing: the
+-- four id columns on st.scrimmage_play are a denormalised hot path that keeps only the FIRST
+-- athlete in each of four roles, while a real play has many tacklers and twelve roles.
+-- 3,135,126 rows against 1,510,679 plays.
+DROP TABLE IF EXISTS st.scrimmage_athlete;
+CREATE TABLE st.scrimmage_athlete (
+  play_uid    text NOT NULL,
+  role        text NOT NULL,      -- rusher | passer | receiver | tackler | assistedBy | ...
+  athlete_id  bigint NOT NULL,
+  ordinal     smallint,           -- position within the play's participant list
+  PRIMARY KEY (play_uid, role, athlete_id)
+);
+
+CREATE INDEX ON st.scrimmage_athlete (athlete_id);
+CREATE INDEX ON st.scrimmage_athlete (role);
+
+COMMENT ON TABLE st.scrimmage_athlete IS
+  'One row per (play, role, athlete) on a scrimmage play. ESPN emits a (role, athlete) pair twice on one
+   play often enough to cost 161,676 duplicate rows -- the same receiver listed twice -- and
+   the repeat is dropped at build time so the primary key holds; ordinal keeps the feed order of what survives.';
