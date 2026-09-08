@@ -234,7 +234,20 @@ def load_identity():
     return d
 
 
-def scrimmage_rollup(fact_csv, bridge_csv):
+def _dedup_view(con, name, paths):
+    """One view over several extracts, later files winning on play_uid.
+
+    Same rule as --plays above: the in-season run has a frozen global CSV plus a
+    single-season one, and the season file is the fresher truth for the rows it holds.
+    """
+    parts = " UNION ALL BY NAME ".join(
+        f"SELECT *, {i} AS _ord FROM read_csv_auto('{p}', sample_size=-1)"
+        for i, p in enumerate(paths))
+    con.execute(f"""CREATE VIEW {name} AS SELECT * EXCLUDE (_ord) FROM ({parts})
+                    QUALIFY row_number() OVER (PARTITION BY play_uid ORDER BY _ord DESC) = 1""")
+
+
+def scrimmage_rollup(fact_csvs, bridge_csvs):
     """Per-athlete role, team, season and play counts over the scrimmage fact.
 
     DuckDB rather than Python dicts: this joins 3.1M bridge rows to a 1.5M-row, 382 MB fact,
@@ -249,8 +262,14 @@ def scrimmage_rollup(fact_csv, bridge_csv):
     """
     import duckdb
     con = duckdb.connect()
-    con.execute(f"CREATE VIEW f AS SELECT * FROM read_csv_auto('{fact_csv}', sample_size=-1)")
-    con.execute(f"CREATE VIEW b AS SELECT * FROM read_csv_auto('{bridge_csv}', sample_size=-1)")
+    _dedup_view(con, "f", fact_csvs)
+    con.execute("CREATE VIEW b_all AS " + " UNION ALL BY NAME ".join(
+        f"SELECT play_uid, role, athlete_id, ordinal "
+        f"FROM read_csv_auto('{p}', sample_size=-1)" for p in bridge_csvs))
+    # The bridge has no play_uid uniqueness -- many rows per play -- so dedupe it on the
+    # full key instead of letting _dedup_view collapse it to one row per play.
+    con.execute("CREATE VIEW b AS SELECT DISTINCT play_uid, role, athlete_id, ordinal "
+                "FROM b_all")
     rows = con.execute("""
         SELECT b.athlete_id, b.role, f.season,
                CASE WHEN b.role IN ('tackler','assistedBy','sackedBy','passDefender',
@@ -309,7 +328,11 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
         n0 = len(plays)
         with open(path) as f:
             for r in csv.DictReader(f):
-                if r["play_kind"] in ("punt", "kickoff", "field_goal", "pat", "two_point"):
+                # 'defensive_conversion' is in this list because those plays have
+                # participants like any other -- somebody returned the blocked kick. Omitting
+                # it silently left 75 plays with no athlete link at all.
+                if r["play_kind"] in ("punt", "kickoff", "field_goal", "pat", "two_point",
+                                      "defensive_conversion"):
                     plays[r["play_uid"]] = (r["season"], r["kicking_team_id"],
                                             r["receiving_team_id"], r["kicker_name"],
                                             r["returner_name"])
@@ -407,8 +430,10 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
     # keys on ESPN athlete ids instead of name strings (PLAN.md §10d).
     ident = load_identity()
     s_roles, s_teams, s_seasons, s_plays = ({}, {}, {}, collections.Counter())
-    if scrim_bridge and os.path.exists(scrim_bridge):
-        s_roles, s_teams, s_seasons, s_plays = scrimmage_rollup(scrim_fact, scrim_bridge)
+    facts = [p for p in (scrim_fact or []) if os.path.exists(p)]
+    bridges = [p for p in (scrim_bridge or []) if os.path.exists(p)]
+    if facts and bridges:
+        s_roles, s_teams, s_seasons, s_plays = scrimmage_rollup(facts, bridges)
         for aid, c in s_roles.items():
             # Same canonicalisation the ST side applies. A placekicker is tagged patScorer on
             # every touchdown his team scores, and those rows live on SCRIMMAGE plays, so
@@ -482,6 +507,17 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
     print(f"  {both:,} appear in BOTH facts -- one row each, which is the point")
 
 
+def _multi(argv, flag, default):
+    """Collect the several paths that may follow a flag, or fall back to the default."""
+    if flag not in argv:
+        return default
+    i = argv.index(flag) + 1
+    out = []
+    while i < len(argv) and not argv[i].startswith("--"):
+        out.append(argv[i]); i += 1
+    return out or default
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     if a[0] == "athlete":
@@ -493,9 +529,7 @@ if __name__ == "__main__":
                 csvs.append(a[i]); i += 1
         stage_athlete(csvs,
                       int(a[a.index("--only-season") + 1]) if "--only-season" in a else None,
-                      a[a.index("--scrim-fact") + 1] if "--scrim-fact" in a
-                      else f"{OUT}/scrimmage_plays.csv",
-                      a[a.index("--scrim-bridge") + 1] if "--scrim-bridge" in a
-                      else f"{OUT}/scrimmage_athlete.csv")
+                      _multi(a, "--scrim-fact", [f"{OUT}/scrimmage_plays.csv"]),
+                      _multi(a, "--scrim-bridge", [f"{OUT}/scrimmage_athlete.csv"]))
     else:
         {"conf": stage_conf, "venue": stage_venue}[a[0]]()

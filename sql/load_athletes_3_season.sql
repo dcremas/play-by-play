@@ -31,6 +31,25 @@ SELECT set_config('st.season', :'season', false);
 
 BEGIN;
 
+-- Staging must not be EMPTY. Without this the script is a loaded gun: every guard below
+-- passes vacuously on an empty set (no orphans, no strays), TRUNCATE st.dim_athlete then
+-- empties the dimension, the bridge DELETE removes the season's rows, and the apply puts
+-- nothing back -- all with exit code 0. One mistyped \copy path is enough to trigger it,
+-- and that is exactly how it was found.
+DO $$
+DECLARE d bigint; b bigint; w bigint;
+BEGIN
+  SELECT count(*) INTO d FROM st.stg_dim_athlete;
+  SELECT count(*) INTO b FROM st.stg_play_athlete;
+  SELECT count(*) INTO w FROM st.stg_play_athlete_wide;
+  IF d = 0 OR b = 0 OR w = 0 THEN
+    RAISE EXCEPTION 'staging is empty (dim_athlete=%, play_athlete=%, wide=%) -- '
+                    'the \copy steps did not run; refusing to replace the dimension',
+                    d, b, w;
+  END IF;
+  RAISE NOTICE 'staging: % athletes, % bridge rows, % wide rows', d, b, w;
+END $$;
+
 -- Same guard as load_athletes_2_apply.sql: staging naming a play the fact table does not
 -- have means the two halves were built from different extracts.
 DO $$

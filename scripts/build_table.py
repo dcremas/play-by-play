@@ -10,12 +10,17 @@ Team convention, verified against 105k plays with zero exceptions:
   start.team.id is ALWAYS the KICKING team -- on punts and field goals it equals the
   offense, on kickoffs it equals the defense. Do not "simplify" this to pos_team.
 
-That verification covers the three kicks, which are read straight off the play. PAT and
+That verification covers the three kicks, which are read straight off the play. Most PAT and
 two-point rows are DERIVED from the touchdown play instead, and the team there cannot be
 taken from start.team.id in either direction: on an ordinary touchdown the scorer is the
 offense that already holds it, on a pick-six or a punt return it is the other side, and
 ESPN types both as "Punt" or "Sack" often enough that a type whitelist will not separate
 them. `emit_pat` reads the scorer off the scoreboard instead -- see the note there.
+
+A minority of conversions get their own play row from ESPN rather than living inside the
+touchdown text, and those are read directly -- see STANDALONE_CONV. That is also where
+play_kind='defensive_conversion' comes from: the defence returning a blocked PAT for two is
+a scoring event of its own, not something the offence attempted.
 
 Output is a CSV for `\\copy` into Postgres via sql/load.sql, which casts through an all-text
 staging table.
@@ -140,6 +145,70 @@ def emit_pat(base, uid, text, scoring_team):
     return r
 
 
+# ESPN sometimes emits a conversion as its OWN play row rather than only folding it into the
+# touchdown text. emit_pat above fires on `scoringPlay or "kick attempt" in text`, which is
+# read off the TOUCHDOWN play, so it never sees these -- 123 plays that were in neither fact
+# table until 2026-09-08. Two unrelated families, and they must not be merged:
+#
+#   Two Point Pass / Two Point Rush   48 rows, 17 games, overwhelmingly overtime. A real
+#                                     two-point attempt with its own sequenceNumber. 42 of
+#                                     the 48 have no derived sibling anywhere near them.
+#   Defensive 2pt Conversion          75 rows. NOT a conversion attempt -- it is the DEFENCE
+#                                     returning a blocked or failed PAT for two points, a
+#                                     separate scoring event that follows the touchdown:
+#                                       [Rushing Touchdown] "... (Z. Gonzalez BLOCKED)"
+#                                       [Defensive 2pt Conversion] "Brandon Branch return..."
+#                                     The touchdown already produced a 'pat' row recording the
+#                                     block; this row records who scored off it. Filing it as
+#                                     two_point would claim the offence attempted something it
+#                                     did not.
+#
+# These carry their own sequenceNumber, so their play_uid cannot collide with the ':pat' rows
+# derived from the touchdown play, and build_scrimmage.CONVERSION excludes the same three
+# types so nothing lands in both facts.
+STANDALONE_CONV = {"Two Point Pass": "two_point", "Two Point Rush": "two_point",
+                   "Defensive 2pt Conversion": "defensive_conversion"}
+_2PT_TYPE = {"Two Point Pass": "pass", "Two Point Rush": "rush"}
+
+
+def emit_standalone_conv(base, uid, play_type, text, scoring, scorer, home, away):
+    """A conversion ESPN gave its own play row. Returns a fact row, or None."""
+    kind = STANDALONE_CONV[play_type]
+    r = dict(base)
+    r["play_uid"] = uid
+    r["play_kind"] = kind
+    r["play_text"] = text
+    lo = (text or "").lower()
+    if kind == "two_point":
+        # Ten of these read only "Two-Point Conversion failed" and three carry no text at
+        # all, so the scoreboard is the better witness than the prose: two points moving is
+        # the definition of a successful try.
+        r["converted"] = bool(scoring) and scorer is not None
+        if "fail" in lo or "no good" in lo or "intercepted" in lo:
+            r["converted"] = False
+        r["two_point_type"] = _2PT_TYPE.get(play_type)
+    else:
+        # The defence converted; the offence did not. `converted` describes the team on the
+        # row, and the team on the row is whoever scored.
+        r["converted"] = True
+        r["two_point_type"] = None
+    # The team on the row is the one that scored. emit_pat SWAPS the two ids to achieve that,
+    # which works there because a touchdown play always has a start.team.id to swap against.
+    # These do not: start.team.id is NULL on every overtime conversion ESPN emits standalone,
+    # and a swap against NULL silently assigns all of them to the same team -- all three
+    # conversions in the 9OT Illinois-Penn State game came out as Penn State before this.
+    # So assign outright rather than swapping.
+    if scorer is not None:
+        r["kicking_team_id"] = scorer
+        r["receiving_team_id"] = away if same_team(scorer, home) else home
+    # else: no points moved and start.team.id stands -- the attempting offence, which is
+    # right for a failed try.
+    r["is_home_kicking"] = (None if r["kicking_team_id"] is None or base["_home"] is None
+                            else same_team(r["kicking_team_id"], base["_home"]))
+    r["parse_confidence"] = "exact" if text else "partial"
+    return r
+
+
 def main(path=None, seasons=None):
     os.makedirs(OUT, exist_ok=True)
     seasons = seasons or SEASONS
@@ -152,8 +221,19 @@ def main(path=None, seasons=None):
         wr.writeheader()
 
         def w(row):
-            if row["play_uid"] in seen:
-                return
+            # ESPN reuses one sequenceNumber for two different plays -- 281 collisions inside
+            # the scrimmage set alone, and they reach here too. This used to `return`, which
+            # silently dropped the second play; a real kickoff vanished that way the first
+            # time the standalone-conversion rows were added, because the conversion sits in
+            # an out-of-order drive and got written first. Suffix instead, matching
+            # build_scrimmage.py, so no play is ever lost. Find them with play_uid LIKE '%#%'.
+            uid = row["play_uid"]
+            if uid in seen:
+                n = 2
+                while f"{uid}#{n}" in seen:
+                    n += 1
+                row["play_uid"] = f"{uid}#{n}"
+                stats["duplicate_seq"] += 1
             seen.add(row["play_uid"])
             wr.writerow(row)
 
@@ -176,6 +256,7 @@ def main(path=None, seasons=None):
                 home = as_team(next((t["id"] for t in g["teams"] if t["home_away"] == "home"), None))
                 away = as_team(next((t["id"] for t in g["teams"] if t["home_away"] == "away"), None))
                 prev_home = prev_away = 0
+                deferred = []
                 for dr in d.get("drives") or []:
                     for p in dr.get("plays") or []:
                         text = p.get("text")
@@ -205,6 +286,16 @@ def main(path=None, seasons=None):
                         if kind:
                             r = finish({**base, "play_uid": uid}, kind, text, PARSER[kind](text))
                             w(r); stats[(season, kind)] += 1
+                        ptype = (p.get("type") or {}).get("text") or ""
+                        if ptype in STANDALONE_CONV:
+                            dh = (hs - prev_home) if hs is not None else 0
+                            da = (as_score - prev_away) if as_score is not None else 0
+                            sc = home if dh > da else (away if da > dh else None)
+                            # Held back and written after every kick in this game. A kick and
+                            # a conversion can share a sequenceNumber, and the kick must keep
+                            # the bare play_uid it already has in the warehouse.
+                            deferred.append(emit_standalone_conv(
+                                base, uid, ptype, text, p.get("scoringPlay"), sc, home, away))
                         if p.get("scoringPlay") or "kick attempt" in (text or "").lower():
                             # homeScore / awayScore are the score AFTER the play, so the
                             # side that gained points on it is the side that scored. A
@@ -224,15 +315,22 @@ def main(path=None, seasons=None):
                             prev_home = hs
                         if as_score is not None:
                             prev_away = as_score
+                for r in deferred:
+                    w(r); stats[(season, r["play_kind"])] += 1
                 ngames += 1
             print(f"  {season}: {ngames:,} games", flush=True)
 
+    if stats["duplicate_seq"]:
+        print(f"\nduplicate sequenceNumber, kept with a '#n' suffix: "
+              f"{stats['duplicate_seq']:,}")
     print(f"\nwrote {len(seen):,} rows -> {path}")
-    hdr = f"{'season':8s} {'kickoff':>9s} {'punt':>8s} {'field_goal':>11s} {'pat':>8s} {'two_point':>10s} {'TOTAL':>9s}"
-    print(hdr)
+    kinds = ("kickoff", "punt", "field_goal", "pat", "two_point", "defensive_conversion")
+    print(f"{'season':8s} {'kickoff':>9s} {'punt':>8s} {'field_goal':>11s} {'pat':>8s} "
+          f"{'two_point':>10s} {'def_conv':>9s} {'TOTAL':>9s}")
     for s in seasons:
-        row = [stats[(s, k)] for k in ("kickoff", "punt", "field_goal", "pat", "two_point")]
-        print(f"{s:<8} {row[0]:9,} {row[1]:8,} {row[2]:11,} {row[3]:8,} {row[4]:10,} {sum(row):9,}")
+        row = [stats[(s, k)] for k in kinds]
+        print(f"{s:<8} {row[0]:9,} {row[1]:8,} {row[2]:11,} {row[3]:8,} {row[4]:10,} "
+              f"{row[5]:9,} {sum(row):9,}")
 
 
 if __name__ == "__main__":

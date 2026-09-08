@@ -23,12 +23,18 @@ Where the season boundary sits, and why:
 
   fetched   games list, summaries, participants   season-scoped (--seasons / SEASONS env)
   built     st_plays_<season>.csv                 season-scoped (build_table --seasons)
+            scrimmage_plays_<season>.csv,
+            scrimmage_athlete_<season>.csv,
+            drives_<season>.csv                   season-scoped (build_scrimmage --seasons)
+            athletes.json.gz                      GLOBAL, incremental -- only new ids
             dim_team_season, dim_venue, dim_team,
             fact_game, dim_athlete                GLOBAL -- small, and dim_athlete is a
                                                   career aggregate that a season-scoped
                                                   rebuild would corrupt
             play_athlete, play_athlete_wide       season-scoped (--only-season)
   loaded    st.special_teams_play                 season-scoped DELETE + INSERT
+            st.scrimmage_play, st.scrimmage_athlete,
+            st.drive                              season-scoped DELETE + INSERT
             st.play_athlete + the three id cols   season-scoped
             everything else                       full replace
 """
@@ -38,6 +44,8 @@ HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
 OUT = f"{HOME}/data/out"
 FULL_PLAYS = f"{OUT}/st_plays.csv"
+FULL_SCRIM = f"{OUT}/scrimmage_plays.csv"
+FULL_SCRIM_BRIDGE = f"{OUT}/scrimmage_athlete.csv"
 
 
 def run(cmd, env=None, cwd=HOME):
@@ -85,6 +93,9 @@ def main():
     a = ap.parse_args()
     s = a.season
     plays_csv = f"{OUT}/st_plays_{s}.csv"
+    scrim_csv = f"{OUT}/scrimmage_plays_{s}.csv"
+    scrim_bridge_csv = f"{OUT}/scrimmage_athlete_{s}.csv"
+    drives_csv = f"{OUT}/drives_{s}.csv"
 
     if not os.path.exists(FULL_PLAYS):
         sys.exit(f"{FULL_PLAYS} is missing. The athlete dimension is a career aggregate and "
@@ -104,8 +115,17 @@ def main():
         run([PY, "scripts/build_dims.py", "conf"])
     run([PY, "scripts/build_dims.py", "venue"])
     run([PY, "scripts/build_table.py", "--seasons", str(s), "--out", plays_csv])
+    run([PY, "scripts/build_scrimmage.py", "--seasons", str(s), "--out", scrim_csv,
+         "--out-bridge", scrim_bridge_csv, "--out-drives", drives_csv])
+    # New players appear every week. This only fetches ids the store has not seen, so in a
+    # steady week it is a few hundred calls, not 63,000.
+    run([PY, "scripts/fetch_athletes.py", "--sources",
+         f"play_athlete_{s}.csv", scrim_bridge_csv, FULL_SCRIM_BRIDGE, "play_athlete.csv"])
     run([PY, "scripts/build_dims.py", "athlete",
-         "--plays", FULL_PLAYS, plays_csv, "--only-season", str(s)])
+         "--plays", FULL_PLAYS, plays_csv,
+         "--scrim-fact", FULL_SCRIM, scrim_csv,
+         "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv,
+         "--only-season", str(s)])
 
     # A skipped conference fetch is only safe once the season is already in the CSV. On the
     # first run of a new season it is not, and load_dims.sql would replace dim_team_season
@@ -120,6 +140,8 @@ def main():
 
     # ---------------------------------------------------------------- report
     built = csv_rows(plays_csv)
+    built_scrim = csv_rows(scrim_csv)
+    live_scrim = scalar(a.db, f"SELECT count(*) FROM st.scrimmage_play WHERE season = {s}")
     live = scalar(a.db, f"SELECT count(*) FROM st.special_teams_play WHERE season = {s}")
     total = scalar(a.db, "SELECT count(*) FROM st.special_teams_play")
     games = scalar(a.db, f"SELECT count(DISTINCT game_id) FROM st.special_teams_play "
@@ -127,6 +149,7 @@ def main():
     print(f"\n\033[1m{s}\033[0m  in Postgres now: {live or '?'} plays over {games or '?'} games"
           f"\n      built from ESPN: {built:,} plays"
           f"\n      other seasons ({int(total or 0) - int(live or 0):,} plays) are untouched by this load")
+    print(f"      scrimmage: {live_scrim or '?'} in Postgres, {built_scrim:,} built from ESPN")
 
     if a.dry_run:
         print(f"\n--dry-run: the database was not modified. To apply:\n"
@@ -134,6 +157,10 @@ def main():
               f"  psql -d {a.db} -f sql/load_1_stage.sql\n"
               f"  psql -d {a.db} -c \"\\copy st.stg_plays FROM '{plays_csv}' WITH (FORMAT csv, HEADER true)\"\n"
               f"  psql -d {a.db} -v season={s} -f sql/load_3_season.sql\n"
+              f"  psql -d {a.db} -f sql/load_scrimmage_1_stage.sql\n"
+              f"  psql -d {a.db} -f sql/load_bridge_drive_1_stage.sql\n"
+              f"  ... three \\copy commands, then\n"
+              f"  psql -d {a.db} -v season={s} -f sql/load_scrimmage_3_season.sql\n"
               f"  ... then the athlete steps, then build_snapshot.py")
         return
 
@@ -143,6 +170,13 @@ def main():
     psql(a.db, "-f", "sql/load_1_stage.sql")
     psql(a.db, "-c", f"\\copy st.stg_plays FROM '{plays_csv}' WITH (FORMAT csv, HEADER true)")
     psql(a.db, "-v", f"season={s}", "-f", "sql/load_3_season.sql")
+
+    psql(a.db, "-f", "sql/load_scrimmage_1_stage.sql")
+    psql(a.db, "-f", "sql/load_bridge_drive_1_stage.sql")
+    for tbl, f in (("stg_scrimmage", scrim_csv), ("stg_scrimmage_athlete", scrim_bridge_csv),
+                   ("stg_drive", drives_csv)):
+        psql(a.db, "-c", f"\\copy st.{tbl} FROM '{f}' WITH (FORMAT csv, HEADER true)")
+    psql(a.db, "-v", f"season={s}", "-f", "sql/load_scrimmage_3_season.sql")
 
     psql(a.db, "-f", "sql/load_athletes_1_stage.sql")
     # dim_athlete.csv is the global career dimension; the other two are this season only and

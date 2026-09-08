@@ -240,12 +240,24 @@ def rows_for_game(job):
     #
     # Detected from the summary alone rather than by reading st_plays.csv or the database, so
     # this script keeps build_table's property of depending on nothing but data/espn/.
-    st_seqs = set()
+    # A COUNT, not a set. build_table writes the first play on a given sequenceNumber under
+    # the bare uid and suffixes the rest '#2', '#3'... exactly as this script does. If both
+    # number their collisions from 2 independently they collide with each other -- which they
+    # did: espn:401752915:116#2 was simultaneously a punt and a rush. Counting how many uids
+    # build_table will consume for each sequenceNumber lets this script start numbering after
+    # them, so the two facts share one namespace without sharing any uid.
+    #
+    # CONVERSION types count here even though they are excluded below: build_table emits them
+    # as standalone conversion rows on the same bare uid. Its ':pat' rows do not count -- they
+    # carry their own suffix and cannot collide.
+    st_seq_counts = collections.Counter()
     for dr in summary.get("drives") or []:
         for p in dr.get("plays") or []:
             pt = (p.get("type") or {}).get("text") or ""
-            if pt not in ADMIN and pt not in CONVERSION and classify(pt, p.get("text")):
-                st_seqs.add(str(p.get("sequenceNumber") or p.get("id")))
+            if pt in ADMIN:
+                continue
+            if pt in CONVERSION or classify(pt, p.get("text")):
+                st_seq_counts[str(p.get("sequenceNumber") or p.get("id"))] += 1
 
     out, drives, stats = [], [], collections.Counter()
     prev_home = prev_away = 0
@@ -377,7 +389,7 @@ def rows_for_game(job):
                     # The bridge rides on its fact row rather than being accumulated
                     # separately, so a '#n' suffix applied below cannot leave the bridge
                     # pointing at a play_uid the fact table does not have.
-                    "_st_seq_collision": str(seq) in st_seqs,
+                    "_st_seq_n": st_seq_counts.get(str(seq), 0),
                     "_bridge": my_bridge,
                 })
 
@@ -470,10 +482,15 @@ def main(path=None, seasons=None, workers=WORKERS, bridge_path=None, drives_path
                         # of them is right. 335 rows out of 1.5M, flagged rather than hidden
                         # -- find them with  play_uid LIKE '%#%'.
                         uid = r["play_uid"]
-                        st_hit = r.pop("_st_seq_collision", False)
-                        if st_hit:
+                        st_n = r.pop("_st_seq_n", 0)
+                        if st_n:
                             stats["collides_with_special_teams"] += 1
-                            seen.add(uid)          # reserve it for build_table's kick row
+                            # Reserve every uid build_table will take for this sequence
+                            # number: the bare one, plus '#2'..'#n' if it saw n such plays.
+                            seen.add(uid)
+                            for i in range(2, st_n + 1):
+                                seen.add(f"{uid}#{i}")
+                        st_hit = bool(st_n)
                         if uid in seen:
                             n = 2
                             while f"{uid}#{n}" in seen:

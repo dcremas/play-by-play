@@ -12,6 +12,9 @@ the corpus ended in 2025 and the conference was down to two members.
 
     python scripts/build_snapshot.py            -> data/out/st.duckdb
     python scripts/build_snapshot.py --db cfb   -> different source database
+
+Two facts since 2026-09-08: `play` is special teams, `scrimmage` is everything else, and the
+two are disjoint with play_uid unique across both. `drive` spans them.
 """
 import argparse, os, sys, time
 
@@ -83,6 +86,79 @@ LEFT JOIN pg.st.dim_team_season rts ON rts.team_id = p.receiving_team_id AND rts
 LEFT JOIN pg.st.dim_athlete     ka  ON ka.athlete_id = p.kicker_athlete_id
 """
 
+# One row per scrimmage play, dimensions flattened on -- the mirror of PLAY_SQL above.
+#
+# The apps do not read this table yet (PLAN.md §10j.4 keeps them special-teams-only until the
+# data has been queried directly), but it belongs in the snapshot regardless: the whole point
+# of deferring the UI decision was to be able to query the new fact offline, and the snapshot
+# is what "offline" means here.
+#
+# Team naming joins dim_team_season on (team_id, season), never team_id alone, for the same
+# realignment reason spelled out above.
+SCRIMMAGE_SQL = """
+CREATE OR REPLACE TABLE scrimmage AS
+SELECT
+    p.play_uid, p.source, p.game_id, p.season, p.week, p.season_type,
+    p.play_kind, p.play_type_espn, p.drive_id, p.drive_number,
+
+    -- situation
+    p.period, p.clock_secs_period, p.wallclock_utc, p.down, p.distance, p.yards_to_goal,
+    p.offense_team_id, p.defense_team_id, p.is_home_offense, p.score_diff_offense,
+
+    -- outcome
+    p.yards_gained, p.end_down, p.end_distance, p.end_yards_to_goal, p.end_team_id,
+    p.first_down_gained, p.is_complete, p.is_touchdown, p.is_turnover, p.is_penalty,
+    p.is_scoring_play, p.points_scored,
+
+    -- people
+    p.passer_athlete_id, p.rusher_athlete_id, p.receiver_athlete_id, p.tackler_athlete_id,
+    pa.known_name AS passer_name,   pa.position AS passer_position,
+    ra.known_name AS rusher_name,   ra.position AS rusher_position,
+    wa.known_name AS receiver_name, wa.position AS receiver_position,
+    ta.known_name AS tackler_name,  ta.position AS tackler_position,
+
+    -- game / venue
+    g.kickoff_utc, g.attendance, p.neutral_site, p.conference_game,
+    p.venue_id, v.venue_name, v.city AS venue_city, v.state AS venue_state,
+    v.country AS venue_country, v.surface,
+
+    -- team-season identity (realignment-safe)
+    ot.display_name AS offense_team, dt.display_name AS defense_team,
+    ots.conference_name AS offense_conference, ots.division AS offense_division,
+    dts.conference_name AS defense_conference, dts.division AS defense_division,
+
+    p.play_text,
+
+    -- ---- derived, computed once here so the app never recomputes them ----
+    CASE WHEN p.period IS NULL OR p.clock_secs_period IS NULL THEN NULL
+         WHEN p.period > 4 THEN 0
+         ELSE (4 - p.period) * 900 + p.clock_secs_period END AS game_secs_remaining,
+    (p.period >= 4 AND abs(p.score_diff_offense) <= 8
+        AND (p.period > 4 OR p.clock_secs_period <= 300)) AS is_clutch,
+    -- the standard down-and-distance buckets, so every consumer cuts them the same way
+    CASE WHEN p.down IS NULL OR p.distance IS NULL THEN NULL
+         WHEN p.distance <= 3 THEN 'short'
+         WHEN p.distance <= 7 THEN 'medium'
+         ELSE 'long' END AS distance_bucket,
+    CASE WHEN p.yards_to_goal IS NULL THEN NULL
+         WHEN p.yards_to_goal <= 20 THEN 'red zone'
+         WHEN p.yards_to_goal <= 50 THEN 'opponent half'
+         ELSE 'own half' END AS field_zone,
+    month(g.kickoff_utc) AS game_month,
+    (ots.division = 'FBS' AND dts.division = 'FBS') AS fbs_vs_fbs
+FROM pg.st.scrimmage_play p
+LEFT JOIN pg.st.fact_game       g   ON g.game_id = p.game_id
+LEFT JOIN pg.st.dim_venue       v   ON v.venue_id = p.venue_id
+LEFT JOIN pg.st.dim_team        ot  ON ot.team_id = p.offense_team_id
+LEFT JOIN pg.st.dim_team        dt  ON dt.team_id = p.defense_team_id
+LEFT JOIN pg.st.dim_team_season ots ON ots.team_id = p.offense_team_id AND ots.season = p.season
+LEFT JOIN pg.st.dim_team_season dts ON dts.team_id = p.defense_team_id AND dts.season = p.season
+LEFT JOIN pg.st.dim_athlete     pa  ON pa.athlete_id = p.passer_athlete_id
+LEFT JOIN pg.st.dim_athlete     ra  ON ra.athlete_id = p.rusher_athlete_id
+LEFT JOIN pg.st.dim_athlete     wa  ON wa.athlete_id = p.receiver_athlete_id
+LEFT JOIN pg.st.dim_athlete     ta  ON ta.athlete_id = p.tackler_athlete_id
+"""
+
 # One row per season, so both apps can tell a season that is still being played from one
 # that is finished without either of them hardcoding a year. The rule is deliberately
 # self-maintaining: a season is in progress while its most recent game is recent. Nothing
@@ -104,11 +180,14 @@ ORDER BY season
 """
 
 COPIES = {
-    "dim_athlete":     "SELECT * FROM pg.st.dim_athlete",
-    "dim_team_season": "SELECT * FROM pg.st.dim_team_season",
-    "dim_venue":       "SELECT * FROM pg.st.dim_venue",
-    "fact_game":       "SELECT * FROM pg.st.fact_game",
-    "play_athlete":    "SELECT * FROM pg.st.play_athlete",
+    "dim_athlete":       "SELECT * FROM pg.st.dim_athlete",
+    "dim_team":          "SELECT * FROM pg.st.dim_team",
+    "dim_team_season":   "SELECT * FROM pg.st.dim_team_season",
+    "dim_venue":         "SELECT * FROM pg.st.dim_venue",
+    "fact_game":         "SELECT * FROM pg.st.fact_game",
+    "play_athlete":      "SELECT * FROM pg.st.play_athlete",
+    "scrimmage_athlete": "SELECT * FROM pg.st.scrimmage_athlete",
+    "drive":             "SELECT * FROM pg.st.drive",
 }
 
 
@@ -117,12 +196,23 @@ def build(db: str, out: str) -> None:
         os.remove(out)
     con = duckdb.connect(out)
     con.execute("INSTALL postgres; LOAD postgres;")
+    # The scanner parallelises a table read by opening one COPY stream per ctid range, up to
+    # pg_connection_limit (64 by default). At 316k rows that is fine; at 1.5M it exhausted the
+    # machine's socket buffers and Postgres killed the transfer with "No buffer space
+    # available" / "connection to client lost". The extract is I/O bound on one local disk
+    # anyway, so the cap costs nothing measurable.
+    con.execute("SET pg_connection_limit = 4")
     con.execute(f"ATTACH '{'dbname=' + db}' AS pg (TYPE POSTGRES, READ_ONLY)")
 
     t0 = time.time()
     con.execute(PLAY_SQL)
     n = con.execute("SELECT count(*) FROM play").fetchone()[0]
     print(f"play              {n:>9,} rows   {time.time() - t0:5.1f}s")
+
+    t1 = time.time()
+    con.execute(SCRIMMAGE_SQL)
+    ns = con.execute("SELECT count(*) FROM scrimmage").fetchone()[0]
+    print(f"scrimmage         {ns:>9,} rows   {time.time() - t1:5.1f}s")
 
     con.execute(SEASON_STATUS_SQL)
     live = con.execute("SELECT season, games, plays FROM season_status "
@@ -138,7 +228,8 @@ def build(db: str, out: str) -> None:
 
     # Stamp the snapshot so the app can show its age rather than pretend it is live.
     con.execute("CREATE OR REPLACE TABLE snapshot_meta AS "
-                "SELECT now() AS built_at, ? AS source_db, ? AS rows", [db, n])
+                "SELECT now() AS built_at, ? AS source_db, ? AS rows, ? AS scrimmage_rows",
+                [db, n, ns])
     con.execute("DETACH pg")
     con.close()
     print(f"\n{out}  ({os.path.getsize(out) / 1e6:.1f} MB)")
