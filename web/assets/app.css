@@ -1,0 +1,144 @@
+/* Special Teams Instance Explorer -- surfaces, ink and grid chrome.
+   Light and dark are both selected palettes, not an automatic flip. */
+
+:root {
+  --st-surface: #fcfcfb;
+  --st-plane: #f9f9f7;
+  --st-ink: #0b0b0b;
+  --st-ink2: #52514e;
+  --st-muted: #898781;
+  --st-grid: #e1e0d9;
+  --st-axis: #c3c2b7;
+  --st-border: rgba(11, 11, 11, 0.10);
+}
+[data-mantine-color-scheme="dark"] {
+  --st-surface: #1a1a19;
+  --st-plane: #0d0d0d;
+  --st-ink: #ffffff;
+  --st-ink2: #c3c2b7;
+  --st-muted: #898781;
+  --st-grid: #2c2c2a;
+  --st-axis: #383835;
+  --st-border: rgba(255, 255, 255, 0.10);
+}
+
+body { background: var(--st-plane); }
+
+/* ------------------------------------------------------------------ shell */
+.st-header {
+  background: var(--st-surface);
+  border-bottom: 1px solid var(--st-border);
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+}
+.st-navbar {
+  background: var(--st-surface);
+  border-right: 1px solid var(--st-border);
+  overflow-y: auto;
+}
+.st-brand { font-weight: 650; letter-spacing: -0.01em; }
+
+/* ------------------------------------------------------------------ tiles */
+.tile { background: var(--st-surface); }
+.tile-label { text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+.tile-value {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--st-ink);
+  /* proportional figures for a standalone number, per the type spec */
+}
+.tile-sub { min-height: 14px; }
+
+/* ------------------------------------------------------------------ notes */
+.note { padding: 2px 0; }
+.note-icon {
+  min-width: 14px; text-align: center; font-weight: 700;
+  color: var(--st-muted);
+}
+.note-warn .note-icon { color: #fab219; }
+
+/* ------------------------------------------------------------------ charts */
+.viz {
+  background: var(--st-surface);
+  border: 1px solid var(--st-border);
+  border-radius: 8px;
+}
+
+/* ------------------------------------------------------------------ grid */
+.st-grid {
+  --ag-font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ag-font-size: 12px;
+  /* Every colour is set here rather than relying on a theme variant: only the
+     light quartz stylesheet is bundled, so a dark theme class does nothing. */
+  --ag-foreground-color: var(--st-ink);
+  --ag-data-color: var(--st-ink);
+  --ag-header-foreground-color: var(--st-muted);
+  --ag-secondary-foreground-color: var(--st-muted);
+  --ag-disabled-foreground-color: var(--st-muted);
+  --ag-icon-font-color: var(--st-ink2);
+  --ag-menu-background-color: var(--st-plane);
+  --ag-menu-foreground-color: var(--st-ink);
+  --ag-panel-background-color: var(--st-plane);
+  --ag-control-panel-background-color: var(--st-plane);
+  --ag-input-background-color: var(--st-plane);
+  --ag-input-border-color: var(--st-border);
+  --ag-input-focus-box-shadow: none;
+  --ag-checkbox-unchecked-color: var(--st-axis);
+  --ag-checkbox-checked-color: #3987e5;
+  --ag-range-selection-border-color: #3987e5;
+  --ag-tooltip-background-color: var(--st-plane);
+  --ag-chip-background-color: var(--st-plane);
+  --ag-background-color: var(--st-surface);
+  --ag-header-background-color: var(--st-surface);
+  --ag-odd-row-background-color: var(--st-surface);
+  --ag-border-color: var(--st-border);
+  --ag-row-border-color: var(--st-border);
+  --ag-header-column-separator-display: none;
+  --ag-wrapper-border-radius: 8px;
+  --ag-row-hover-color: color-mix(in srgb, var(--st-ink) 5%, transparent);
+  --ag-selected-row-background-color: color-mix(in srgb, var(--st-ink) 9%, transparent);
+  --ag-cell-horizontal-padding: 10px;
+}
+.st-grid .ag-header-cell-text {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--st-muted); text-transform: uppercase;
+}
+.st-grid .ag-row { cursor: pointer; }
+.st-grid .num-cell { font-variant-numeric: tabular-nums; }
+.st-grid .name-cell { font-weight: 550; }
+.st-grid .bool-cell { text-align: center; color: var(--st-ink2); }
+.st-grid .mono-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: var(--st-ink2);
+}
+
+/* ------------------------------------------------------------------ detail drawer */
+.kv-row {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 5px 0; border-bottom: 1px solid var(--st-border);
+}
+.kv-row:last-child { border-bottom: none; }
+.kv-key { color: var(--st-muted); font-size: 12px; }
+.kv-val { color: var(--st-ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.person-card { background: var(--st-surface); }
+.person-role {
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px;
+  color: var(--st-muted);
+}
+.person-name { font-size: 16px; font-weight: 600; color: var(--st-ink); }
+.playtext {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.55; color: var(--st-ink2);
+  background: var(--st-plane); border: 1px solid var(--st-border);
+  border-radius: 6px; padding: 10px;
+}
+
+/* ------------------------------------------------------------------ misc */
+.filter-label {
+  text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 10px; font-weight: 600; color: var(--st-muted);
+}
+a.st-link { color: inherit; text-decoration: none; border-bottom: 1px solid var(--st-axis); }
+a.st-link:hover { border-bottom-color: var(--st-ink); }

@@ -1,0 +1,27 @@
+# Virtualenv -- 1.0 GB, rebuild with: python -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Every fetched, built and materialised byte -- 393 MB.
+#
+# NOTE: data/espn/ is the real source of truth for every table in the warehouse, and it is
+# NOT protected by this repository. It is reproducible only by re-running
+# scripts/fetch_espn.py and scripts/fetch_participants.py against ESPN, which takes hours
+# and depends on ESPN still serving twelve-year-old games. Back it up separately.
+#
+# Nothing under data/ is authored by hand.
+data/
+
+# Generated from live Postgres by scripts/build_erd.py; see the runbook in README.md.
+reports/cfb_st_erd.pdf
+reports/cfb_st_erd.png
+
+# scripts/flatten_game.py demo output for one game.
+scripts/usc_v_sjstate.csv
+scripts/usc_v_sjstate.xlsx
+
+# macOS
+.DS_Store
