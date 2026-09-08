@@ -669,17 +669,104 @@ script and SQL file — mechanical but wide. Recommend **keeping `st` and accept
 misnomer**: a rename touches working code for cosmetic gain, and the README can carry the
 one-line explanation instead.
 
-### 10j. Open decisions
+> **Overridden 2026-09-08 — see §10j.6.** The rename is happening: repo, schema and snapshot
+> filename all move to `cfb-pbp` / `pbp`. The blast radius was measured rather than assumed
+> and is smaller than this section supposed, but it has two traps worth reading before
+> touching anything — §10l.
 
-1. **Should `play_kind` split `pass` into complete/incomplete, or keep `is_complete`?** A flag
-   keeps the kind vocabulary short and matches how the ST table treats `fg_made`. Recommend
-   the flag.
-2. **Do penalty plays belong in the fact at all,** or in a sibling table? 93,871 rows, and a
-   penalty is a real down-consuming event. Recommend keeping them with
-   `play_kind='penalty'` and letting queries filter, matching decision §8.2's "ingest
-   everything, filter at query time".
-3. **Two-point conversions already live in `st.special_teams_play`** as `play_kind='two_point'`
-   (3,642 rows). Leave them there; do not duplicate.
-4. **Is the app in scope?** `app.py` and `web/` are built around a single `play` table in the
-   DuckDB snapshot. A second fact means either a second snapshot table or a union view, and
-   that is a real UI decision, not a data one.
+### 10j. Decisions — settled 2026-09-08
+
+The four questions below were open when §10 was written. All are now decided. Numbers were
+re-measured against the local files on 2026-09-08, so where they differ from §10a–§10h the
+figure here is the current one: §10 counted 2014–2025, this counts 2014–2026-to-date and
+uses `build_table.classify()` itself as the special-teams exclusion rather than a
+hand-listed type set.
+
+| | 2026-08-31 (§10) | 2026-09-08 (re-measured) |
+|---|---|---|
+| scrimmage plays | 1,497,044 | **1,510,802** |
+| drives | ~246,500 | **258,795** |
+| penalty plays | 93,871 | **93,438** |
+| `statYardage` coverage | 100.00% | **100.00%** |
+| `start.down` coverage | 100.00% | **100.00%** |
+| offense/defense team ids | 99.77% | **99.78%** |
+| athlete participants | 96.3% | **~99% every season** |
+
+The participant figure moved because the earlier measure did not normalise the two key
+shapes documented in `fetch_participants.one()`. Keys written before the 2025 id/sequence
+divergence was found carry the game id as a prefix; stripping it, as `build_dims.py`
+already does, lifts coverage on rush/pass/sack plays to 98–100% in every season from 2014
+to 2026. Any new reader of `data/espn/participants/` must do the same normalisation or it
+will silently see about a fifth of the athletes.
+
+**1. `play_kind` keeps `is_complete` as a flag.** Recommendation of §10j.1 accepted. The
+kind vocabulary stays short and matches how the ST table treats `fg_made`.
+
+**2. Penalty plays stay in the fact** as `play_kind='penalty'`, 93,438 rows, filtered at
+query time. Recommendation of §10j.2 accepted; it matches decision §8.2.
+
+**3. Two-point conversions stay in `st.special_teams_play`.** Not duplicated. Unchanged.
+
+**4. The apps are out of scope this round.** `app.py` and `web/` stay special-teams-only,
+and player profile pages stay kicking-side only. The UI question is deferred *deliberately*
+until the new tables can be queried directly — the shape of an offensive play page is not
+knowable before looking at the data. §10j.4 asked whether the app was in scope; the answer
+is "not yet, and not because it is hard".
+
+**5. Scope stops at play-level facts.** `scrimmage_play`, the athlete bridge, and drives.
+No derived player stat lines (per-game / per-season passing, rushing, receiving, defence)
+and no team box scores. Both are `GROUP BY`s over the fact and can be added later without
+reloading anything.
+
+**6. Full rename to `cfb-pbp`, schema `pbp`** — repo directory, schema, and the DuckDB
+snapshot filename all move. **This overrides §10i's recommendation to keep `st`.**
+
+**7. Build first, rename last.** The rename is a single sweep over a finished thing, so the
+documentation is rewritten once instead of twice and a rename bug can never masquerade as a
+build bug.
+
+**8. The weekly in-season loader takes the new fact in the same round.**
+`scripts/update_season.py` gains the scrimmage path, so 2026 stays current on both facts
+rather than the new one freezing on the day it ships.
+
+**9. `git init` first.** The project had no version control of any kind. This is what makes
+step 3 of the sequence below revertible.
+
+### 10k. Build sequence
+
+Stages are ordered so that each one leaves both existing apps working.
+
+0. **`git init`**, `.gitignore` for `.venv/`, `__pycache__/`, `data/`, commit the current
+   state. Nothing else moves until this exists.
+1. **`scripts/build_scrimmage.py`** → `data/out/scrimmage_plays.csv`, 1,510,802 rows.
+   Call `build_table.classify()` as the exclusion filter rather than re-deriving the rule;
+   the ~2,300 plays it rescues into the ST fact must not appear in both tables.
+2. **Bridge and drives**, built in the same pass — `scrimmage_athlete` (~3.3M rows, all
+   twelve roles) and the drives table (258,795 rows). `drive_id` is on every play, so
+   carrying it now is cheaper than backfilling a key later.
+3. **Rebuild `dim_athlete` over both facts**, 33,891 → ~42.7k. The one non-additive step:
+   it mutates a table both facts and both apps already depend on, and `primary_role` will
+   move for two-phase players. Re-run `sql/load_athletes_2_apply.sql` for the ST side
+   afterwards.
+4. **`build_snapshot.py`** gains the second table; **`update_season.py`** gains the weekly
+   scrimmage path.
+5. **Rename** to `cfb-pbp` / schema `pbp`, and rewrite the documentation.
+
+### 10l. Rename traps — measured, not guessed
+
+Blast radius is smaller than §10i assumed, but two of these will cause real damage if the
+sweep is done with a naive substitution.
+
+- **`app.py` does `import streamlit as st`.** A blanket `s/st\./pbp./` would rewrite 150+
+  Streamlit calls — `st.subheader`, `st.sidebar`, `st.dataframe` and the rest. The sweep
+  must target the table names (`st.special_teams_play`, `st.dim_athlete`, `st.play_athlete`,
+  `st.fact_game`, `st.dim_team_season`, `st.dim_team`, `st.dim_venue`, `st.dim_conference`,
+  `st.stg_*`), never the bare prefix.
+- **`web/data.py` creates a DuckDB view literally named `st`.** Unrelated to the Postgres
+  schema and independently named; decide it separately rather than letting the sweep catch it.
+- **The repo path is hardcoded in six files, one line each**: `scripts/fetch_espn.py`,
+  `fetch_participants.py`, `build_table.py`, `build_dims.py`, `flatten_game.py`, and
+  `README.md`.
+- **`data/out/st.duckdb` has seven references** across the two apps and the snapshot builder.
+- **~180 prose mentions of "special teams"**, concentrated in `scripts/build_erd.py` (32),
+  `PLAN.md` (18), `README.md` (16) and the verification SQL.
