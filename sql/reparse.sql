@@ -18,20 +18,20 @@
 --
 --   .venv/bin/python scripts/build_table.py         -- regenerate data/out/st_plays.csv
 --   psql -d cfb -f sql/load_1_stage.sql
---   psql -d cfb -c "\copy st.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d cfb -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
 --   psql -d cfb -f sql/reparse.sql
 
 BEGIN;
 
 -- Reversible by construction: the pre-update values are kept until they are not wanted.
-DROP TABLE IF EXISTS st.special_teams_play_prereparse;
-CREATE TABLE st.special_teams_play_prereparse AS
+DROP TABLE IF EXISTS pbp.special_teams_play_prereparse;
+CREATE TABLE pbp.special_teams_play_prereparse AS
 SELECT play_uid, kicking_team_id, receiving_team_id, is_home_kicking,
        fg_distance_yds, fg_made, punt_gross_yds, punt_net_yds, kickoff_yds,
        return_yds, returned, touchback, onside, fair_catch, downed, out_of_bounds,
        kick_blocked, returned_for_td, converted, two_point_type, miss_reason,
        negated_by_penalty, kicker_name, returner_name, blocker_name, parse_confidence
-FROM st.special_teams_play;
+FROM pbp.special_teams_play;
 
 -- Every row must be present on both sides; a mismatch means the CSV was built from a
 -- different fetch and this is the wrong operation.
@@ -39,14 +39,14 @@ DO $$
 DECLARE missing bigint;
 BEGIN
   SELECT count(*) INTO missing
-  FROM st.special_teams_play p
-  WHERE NOT EXISTS (SELECT 1 FROM st.stg_plays s WHERE s.play_uid = p.play_uid);
+  FROM pbp.special_teams_play p
+  WHERE NOT EXISTS (SELECT 1 FROM pbp.stg_plays s WHERE s.play_uid = p.play_uid);
   IF missing > 0 THEN
     RAISE EXCEPTION 'staging is missing % existing plays -- refusing to reparse', missing;
   END IF;
 END $$;
 
-UPDATE st.special_teams_play p SET
+UPDATE pbp.special_teams_play p SET
   kicking_team_id    = NULLIF(s.kicking_team_id,'')::numeric::integer,
   receiving_team_id  = NULLIF(s.receiving_team_id,'')::numeric::integer,
   is_home_kicking    = NULLIF(s.is_home_kicking,'')::boolean,
@@ -72,10 +72,10 @@ UPDATE st.special_teams_play p SET
   returner_name      = NULLIF(s.returner_name,''),
   blocker_name       = NULLIF(s.blocker_name,''),
   parse_confidence   = NULLIF(s.parse_confidence,'')
-FROM st.stg_plays s
+FROM pbp.stg_plays s
 WHERE s.play_uid = p.play_uid;
 
-DROP TABLE st.stg_plays;
+DROP TABLE pbp.stg_plays;
 COMMIT;
 
 \echo '=== punts and kickoffs with no outcome flag set, by season (was ~5% pre-2021)'
@@ -88,4 +88,4 @@ SELECT season,
              OR coalesce(out_of_bounds,false) OR coalesce(returned,false)
              OR coalesce(fair_catch,false) OR coalesce(downed,false)))::int)
              FILTER (WHERE play_kind='kickoff'), 1) AS ko_pct_unclassified
-FROM st.special_teams_play GROUP BY season ORDER BY season;
+FROM pbp.special_teams_play GROUP BY season ORDER BY season;

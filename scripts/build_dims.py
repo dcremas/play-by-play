@@ -44,7 +44,7 @@ a single-season one can be read together without re-running build_table over twe
 global. Scoping the dimension instead would give every returning kicker first_season=2026.
 
 A scoped run writes play_athlete_<season>.csv and play_athlete_wide_<season>.csv rather than
-overwriting the global pair. sql/load_athletes_2_apply.sql TRUNCATEs st.play_athlete and
+overwriting the global pair. sql/load_athletes_2_apply.sql TRUNCATEs pbp.play_athlete and
 reloads it from whatever play_athlete.csv holds, so leaving one season's rows under the
 global name would arm that script to destroy the other twelve.
 """
@@ -52,7 +52,7 @@ import sys, os, json, gzip, csv, re, time, glob, collections, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/college-football"
-HOME = os.path.expanduser("~/projects/cfb-special-teams")
+HOME = os.path.expanduser("~/projects/cfb-pbp")
 ESPN, OUT = f"{HOME}/data/espn", f"{HOME}/data/out"
 SEASONS = list(range(2014, 2027))
 DIVISIONS = {"80": "FBS", "81": "FCS"}

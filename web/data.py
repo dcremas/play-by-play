@@ -20,7 +20,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "out" / "st.duckdb"
+DB_PATH = Path(__file__).resolve().parent.parent / "data" / "out" / "pbp.duckdb"
 
 PHASES = {"field_goal": "Field goal", "punt": "Punt", "kickoff": "Kickoff"}
 PHASE_ORDER = ["field_goal", "punt", "kickoff"]

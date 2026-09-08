@@ -9,7 +9,7 @@ let me take them apart."
 .venv/bin/python -m web.app          # http://127.0.0.1:8060
 ```
 
-It reads `data/out/st.duckdb` **read-only**, attached to an in-memory database, so it
+It reads `data/out/pbp.duckdb` **read-only**, attached to an in-memory database, so it
 runs alongside the Streamlit console without contending for the file.
 
 ## Scope

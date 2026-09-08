@@ -1,13 +1,13 @@
 -- Stage-2 load, step 2 of 2: cast staging into the typed tables and drop staging.
-TRUNCATE st.scrimmage_athlete;
-INSERT INTO st.scrimmage_athlete (play_uid, role, athlete_id, ordinal)
+TRUNCATE pbp.scrimmage_athlete;
+INSERT INTO pbp.scrimmage_athlete (play_uid, role, athlete_id, ordinal)
 SELECT play_uid, role,
        NULLIF(athlete_id,'')::numeric::bigint,
        NULLIF(ordinal,'')::numeric::smallint
-FROM st.stg_scrimmage_athlete;
+FROM pbp.stg_scrimmage_athlete;
 
-TRUNCATE st.drive;
-INSERT INTO st.drive (
+TRUNCATE pbp.drive;
+INSERT INTO pbp.drive (
   drive_uid, drive_id, game_id, season, week, season_type, drive_number,
   offense_team_id, defense_team_id, result, display_result, description, is_score,
   offensive_plays, plays_total, plays_scrimmage, yards, time_elapsed_secs,
@@ -37,9 +37,9 @@ SELECT
   NULLIF(end_clock_secs,'')::numeric::integer,
   NULLIF(end_yards_to_goal,'')::numeric::smallint,
   NULLIF(end_text,'')
-FROM st.stg_drive;
+FROM pbp.stg_drive;
 
-DROP TABLE st.stg_scrimmage_athlete;
-DROP TABLE st.stg_drive;
-ANALYZE st.scrimmage_athlete;
-ANALYZE st.drive;
+DROP TABLE pbp.stg_scrimmage_athlete;
+DROP TABLE pbp.stg_drive;
+ANALYZE pbp.scrimmage_athlete;
+ANALYZE pbp.drive;

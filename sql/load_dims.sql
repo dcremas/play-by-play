@@ -10,42 +10,42 @@
 --
 -- All five are full replacements, not merges. They are small -- 200 venues, 246 teams,
 -- 3.4k team-seasons, 10.4k games -- and build_dims.py always writes the entire window, so a
--- wholesale swap cannot leave a stale row behind. st.special_teams_play has no foreign key
+-- wholesale swap cannot leave a stale row behind. pbp.special_teams_play has no foreign key
 -- to any of them, so nothing here cascades into the fact table.
 
 \set ON_ERROR_STOP on
 BEGIN;
 
 -- dim_venue first: fact_game.venue_id references it.
-DELETE FROM st.fact_game;
-DELETE FROM st.dim_venue;
-DELETE FROM st.dim_team_season;
-DELETE FROM st.dim_conference;
-DELETE FROM st.dim_team;
+DELETE FROM pbp.fact_game;
+DELETE FROM pbp.dim_venue;
+DELETE FROM pbp.dim_team_season;
+DELETE FROM pbp.dim_conference;
+DELETE FROM pbp.dim_team;
 
-\copy st.dim_venue       (venue_id, venue_name, city, state, zip, country, surface) FROM 'data/out/dim_venue.csv' WITH (FORMAT csv, HEADER true)
-\copy st.dim_team        (team_id, display_name) FROM 'data/out/dim_team.csv' WITH (FORMAT csv, HEADER true)
-\copy st.dim_conference  (conference_id, conference_name, short_name) FROM 'data/out/dim_conference.csv' WITH (FORMAT csv, HEADER true)
-\copy st.dim_team_season (team_id, season, conference_id, conference_name, division) FROM 'data/out/dim_team_season.csv' WITH (FORMAT csv, HEADER true)
-\copy st.fact_game       (game_id, season, week, season_type, kickoff_utc, home_team_id, away_team_id, venue_id, attendance, neutral_site, conference_game) FROM 'data/out/fact_game.csv' WITH (FORMAT csv, HEADER true)
+\copy pbp.dim_venue       (venue_id, venue_name, city, state, zip, country, surface) FROM 'data/out/dim_venue.csv' WITH (FORMAT csv, HEADER true)
+\copy pbp.dim_team        (team_id, display_name) FROM 'data/out/dim_team.csv' WITH (FORMAT csv, HEADER true)
+\copy pbp.dim_conference  (conference_id, conference_name, short_name) FROM 'data/out/dim_conference.csv' WITH (FORMAT csv, HEADER true)
+\copy pbp.dim_team_season (team_id, season, conference_id, conference_name, division) FROM 'data/out/dim_team_season.csv' WITH (FORMAT csv, HEADER true)
+\copy pbp.fact_game       (game_id, season, week, season_type, kickoff_utc, home_team_id, away_team_id, venue_id, attendance, neutral_site, conference_game) FROM 'data/out/fact_game.csv' WITH (FORMAT csv, HEADER true)
 
 COMMIT;
 
-ANALYZE st.dim_venue;
-ANALYZE st.dim_team;
-ANALYZE st.dim_conference;
-ANALYZE st.dim_team_season;
-ANALYZE st.fact_game;
+ANALYZE pbp.dim_venue;
+ANALYZE pbp.dim_team;
+ANALYZE pbp.dim_conference;
+ANALYZE pbp.dim_team_season;
+ANALYZE pbp.fact_game;
 
 \echo '=== dimensions after load'
-SELECT 'dim_venue' AS t, count(*) FROM st.dim_venue
-UNION ALL SELECT 'dim_team', count(*) FROM st.dim_team
-UNION ALL SELECT 'dim_conference', count(*) FROM st.dim_conference
-UNION ALL SELECT 'dim_team_season', count(*) FROM st.dim_team_season
-UNION ALL SELECT 'fact_game', count(*) FROM st.fact_game;
+SELECT 'dim_venue' AS t, count(*) FROM pbp.dim_venue
+UNION ALL SELECT 'dim_team', count(*) FROM pbp.dim_team
+UNION ALL SELECT 'dim_conference', count(*) FROM pbp.dim_conference
+UNION ALL SELECT 'dim_team_season', count(*) FROM pbp.dim_team_season
+UNION ALL SELECT 'fact_game', count(*) FROM pbp.fact_game;
 
 \echo '=== games and FBS team-seasons by season (a new season should appear in both)'
 SELECT g.season, count(*) AS games,
-       (SELECT count(*) FROM st.dim_team_season ts
+       (SELECT count(*) FROM pbp.dim_team_season ts
          WHERE ts.season = g.season AND ts.division = 'FBS') AS fbs_teams
-FROM st.fact_game g GROUP BY g.season ORDER BY g.season;
+FROM pbp.fact_game g GROUP BY g.season ORDER BY g.season;

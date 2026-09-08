@@ -1,10 +1,10 @@
 -- Step 1 of 2. Creates the all-text staging table.
--- Then:  \copy st.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)
+-- Then:  \copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)
 -- Then:  psql -f sql/load_2_insert.sql
 -- Load via an all-text staging table: a feed that renders integers as "4.0" would be
 -- rejected by a direct \copy into smallint. Casting through numeric absorbs both forms.
-DROP TABLE IF EXISTS st.stg_plays;
-CREATE TABLE st.stg_plays (
+DROP TABLE IF EXISTS pbp.stg_plays;
+CREATE TABLE pbp.stg_plays (
   play_uid text, source text, game_id text, season text, week text, season_type text,
   play_kind text, period text, clock_secs_period text, wallclock_utc text, down text,
   distance text, yards_to_goal text, kicking_team_id text, receiving_team_id text,

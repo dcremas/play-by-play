@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/college-football"
-HOME = os.path.expanduser("~/projects/cfb-special-teams")
+HOME = os.path.expanduser("~/projects/cfb-pbp")
 ESPN = f"{HOME}/data/espn"
 OUT = f"{ESPN}/participants"
 SEASONS = [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]

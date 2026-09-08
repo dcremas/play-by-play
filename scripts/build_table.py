@@ -32,7 +32,7 @@ import sys, os, gzip, json, csv, collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from st_parser import parse_field_goal, parse_punt, parse_kickoff, parse_pat
 
-HOME = os.path.expanduser("~/projects/cfb-special-teams")
+HOME = os.path.expanduser("~/projects/cfb-pbp")
 ESPN, OUT = f"{HOME}/data/espn", f"{HOME}/data/out"
 SEASONS = [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 

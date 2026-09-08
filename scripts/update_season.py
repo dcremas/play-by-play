@@ -32,10 +32,10 @@ Where the season boundary sits, and why:
                                                   career aggregate that a season-scoped
                                                   rebuild would corrupt
             play_athlete, play_athlete_wide       season-scoped (--only-season)
-  loaded    st.special_teams_play                 season-scoped DELETE + INSERT
-            st.scrimmage_play, st.scrimmage_athlete,
-            st.drive                              season-scoped DELETE + INSERT
-            st.play_athlete + the three id cols   season-scoped
+  loaded    pbp.special_teams_play                 season-scoped DELETE + INSERT
+            pbp.scrimmage_play, pbp.scrimmage_athlete,
+            pbp.drive                              season-scoped DELETE + INSERT
+            pbp.play_athlete + the three id cols   season-scoped
             everything else                       full replace
 """
 import argparse, csv, os, subprocess, sys, time
@@ -141,10 +141,10 @@ def main():
     # ---------------------------------------------------------------- report
     built = csv_rows(plays_csv)
     built_scrim = csv_rows(scrim_csv)
-    live_scrim = scalar(a.db, f"SELECT count(*) FROM st.scrimmage_play WHERE season = {s}")
-    live = scalar(a.db, f"SELECT count(*) FROM st.special_teams_play WHERE season = {s}")
-    total = scalar(a.db, "SELECT count(*) FROM st.special_teams_play")
-    games = scalar(a.db, f"SELECT count(DISTINCT game_id) FROM st.special_teams_play "
+    live_scrim = scalar(a.db, f"SELECT count(*) FROM pbp.scrimmage_play WHERE season = {s}")
+    live = scalar(a.db, f"SELECT count(*) FROM pbp.special_teams_play WHERE season = {s}")
+    total = scalar(a.db, "SELECT count(*) FROM pbp.special_teams_play")
+    games = scalar(a.db, f"SELECT count(DISTINCT game_id) FROM pbp.special_teams_play "
                          f"WHERE season = {s}")
     print(f"\n\033[1m{s}\033[0m  in Postgres now: {live or '?'} plays over {games or '?'} games"
           f"\n      built from ESPN: {built:,} plays"
@@ -155,7 +155,7 @@ def main():
         print(f"\n--dry-run: the database was not modified. To apply:\n"
               f"  psql -d {a.db} -f sql/load_dims.sql\n"
               f"  psql -d {a.db} -f sql/load_1_stage.sql\n"
-              f"  psql -d {a.db} -c \"\\copy st.stg_plays FROM '{plays_csv}' WITH (FORMAT csv, HEADER true)\"\n"
+              f"  psql -d {a.db} -c \"\\copy pbp.stg_plays FROM '{plays_csv}' WITH (FORMAT csv, HEADER true)\"\n"
               f"  psql -d {a.db} -v season={s} -f sql/load_3_season.sql\n"
               f"  psql -d {a.db} -f sql/load_scrimmage_1_stage.sql\n"
               f"  psql -d {a.db} -f sql/load_bridge_drive_1_stage.sql\n"
@@ -168,7 +168,7 @@ def main():
     psql(a.db, "-f", "sql/load_dims.sql")
 
     psql(a.db, "-f", "sql/load_1_stage.sql")
-    psql(a.db, "-c", f"\\copy st.stg_plays FROM '{plays_csv}' WITH (FORMAT csv, HEADER true)")
+    psql(a.db, "-c", f"\\copy pbp.stg_plays FROM '{plays_csv}' WITH (FORMAT csv, HEADER true)")
     psql(a.db, "-v", f"season={s}", "-f", "sql/load_3_season.sql")
 
     psql(a.db, "-f", "sql/load_scrimmage_1_stage.sql")

@@ -130,7 +130,7 @@ dimension tables across realignment.
                                      v
                       transform + conform to one grain
                                      v
-                        st.special_teams_play  (~200k rows)
+                        pbp.special_teams_play  (~200k rows)
                                      ^
                       ESPN enrichment: athlete_id, venue, surface
                                      ^
@@ -217,7 +217,7 @@ The touchback jump landing exactly on the 2018 rule change is independent confir
 parser is reading the field it thinks it is.
 
 **Phase 3 — Fetch, unify, load. [COMPLETE 2026-08-30]**
-All 8,634 games 2016–2025 fetched from ESPN; `st.special_teams_play` loaded with
+All 8,634 games 2016–2025 fetched from ESPN; `pbp.special_teams_play` loaded with
 **258,614 rows / 102 MB**. 99.6% of rows parse `exact`.
 
 *The CFBD API key was never needed.* The bulk archive turned out to be parsed ESPN data —
@@ -303,7 +303,7 @@ The football sanity checks are unchanged: FG accuracy still declines monotonical
 
 Landed with `sql/reparse.sql`, which UPDATEs only the 22 parser-derived columns in place
 rather than the TRUNCATE + INSERT of `load_2_insert.sql` — that path would have wiped the
-Phase 4 enrichment. Old values kept in `st.special_teams_play_prereparse`.
+Phase 4 enrichment. Old values kept in `pbp.special_teams_play_prereparse`.
 
 **What is left, and why a regex cannot fix it.** 18,329 of the 19,716 remaining rows read
 `"Joshua Brown punt for 34 yds"` and state no outcome anywhere in the text. The fix is to
@@ -410,7 +410,7 @@ no performance reason to split. Type-specific columns are nullable; typed views 
 ```sql
 CREATE SCHEMA st;
 
-CREATE TABLE st.special_teams_play (
+CREATE TABLE pbp.special_teams_play (
   play_uid           text PRIMARY KEY,        -- source-prefixed, e.g. 'espn:401520281101849906'
   source             text NOT NULL,           -- 'espn'
   game_id            bigint NOT NULL,
@@ -536,7 +536,7 @@ One row per scrimmage play. **1,497,044 rows**, 2014–2025, after two exclusion
 - **111,510 administrative rows** — `Timeout`, `End Period`, `End of Half`, `Coin Toss`.
   Not plays; they would corrupt any per-play rate.
 - **2,294 plays the special-teams classifier already claims.** These are typed `Penalty`
-  (1,356) or `Punt Return` (847) but rescued into `st.special_teams_play` by `TEXT_HINT`.
+  (1,356) or `Punt Return` (847) but rescued into `pbp.special_teams_play` by `TEXT_HINT`.
   They must be excluded here or they live in both tables. Reuse `build_table.classify()` as
   the exclusion filter rather than re-deriving the rule — one definition, two callers.
 
@@ -546,12 +546,12 @@ Penalty 93,871 · Sack 39,608 · Rushing TD 33,997 · Passing TD 32,628 · Inter
 
 ### 10c. Schema
 
-Mirrors `st.special_teams_play` deliberately: same `play_uid` convention, same source column,
+Mirrors `pbp.special_teams_play` deliberately: same `play_uid` convention, same source column,
 same denormalised game-context columns, so the two facts can be `UNION`ed for whole-game
 questions and so `enrich_game_context.sql` works on both.
 
 ```sql
-CREATE TABLE st.scrimmage_play (
+CREATE TABLE pbp.scrimmage_play (
   play_uid            text PRIMARY KEY,      -- 'espn:<game_id><sequenceNumber>'
   source              text NOT NULL,         -- 'espn'
   game_id             bigint NOT NULL,
@@ -596,8 +596,8 @@ CREATE TABLE st.scrimmage_play (
 );
 ```
 
-Plus `st.scrimmage_athlete`, the full-fidelity bridge, identical in shape to
-`st.play_athlete` (`play_uid`, `role`, `athlete_id`, `ordinal`). **~3.27M rows.** The four id
+Plus `pbp.scrimmage_athlete`, the full-fidelity bridge, identical in shape to
+`pbp.play_athlete` (`play_uid`, `role`, `athlete_id`, `ordinal`). **~3.27M rows.** The four id
 columns on the fact are a denormalised convenience; the bridge is the truth, because a play
 has many tacklers and `assistedBy` is 383,400 rows on its own.
 
@@ -607,7 +607,7 @@ Roles available: `rusher` 712,787 · `receiver` 701,702 · `passer` 676,197 · `
 
 ### 10d. dim_athlete becomes shared — decided
 
-**Rebuild `st.dim_athlete` as the union of both fact tables.** 23,327 distinct athletes appear
+**Rebuild `pbp.dim_athlete` as the union of both fact tables.** 23,327 distinct athletes appear
 on scrimmage plays; **13,790 are already in it** from special teams. The dimension grows
 33,139 → **42,676** (+29%).
 
@@ -705,7 +705,7 @@ kind vocabulary stays short and matches how the ST table treats `fg_made`.
 **2. Penalty plays stay in the fact** as `play_kind='penalty'`, 93,438 rows, filtered at
 query time. Recommendation of §10j.2 accepted; it matches decision §8.2.
 
-**3. Two-point conversions stay in `st.special_teams_play`.** Not duplicated. Unchanged.
+**3. Two-point conversions stay in `pbp.special_teams_play`.** Not duplicated. Unchanged.
 
 **4. The apps are out of scope this round.** `app.py` and `web/` stay special-teams-only,
 and player profile pages stay kicking-side only. The UI question is deferred *deliberately*
@@ -759,14 +759,14 @@ sweep is done with a naive substitution.
 
 - **`app.py` does `import streamlit as st`.** A blanket `s/st\./pbp./` would rewrite 150+
   Streamlit calls — `st.subheader`, `st.sidebar`, `st.dataframe` and the rest. The sweep
-  must target the table names (`st.special_teams_play`, `st.dim_athlete`, `st.play_athlete`,
-  `st.fact_game`, `st.dim_team_season`, `st.dim_team`, `st.dim_venue`, `st.dim_conference`,
+  must target the table names (`pbp.special_teams_play`, `pbp.dim_athlete`, `pbp.play_athlete`,
+  `pbp.fact_game`, `pbp.dim_team_season`, `pbp.dim_team`, `pbp.dim_venue`, `pbp.dim_conference`,
   `st.stg_*`), never the bare prefix.
 - **`web/data.py` creates a DuckDB view literally named `st`.** Unrelated to the Postgres
   schema and independently named; decide it separately rather than letting the sweep catch it.
 - **The repo path is hardcoded in six files, one line each**: `scripts/fetch_espn.py`,
   `fetch_participants.py`, `build_table.py`, `build_dims.py`, `flatten_game.py`, and
   `README.md`.
-- **`data/out/st.duckdb` has seven references** across the two apps and the snapshot builder.
+- **`data/out/pbp.duckdb` has seven references** across the two apps and the snapshot builder.
 - **~180 prose mentions of "special teams"**, concentrated in `scripts/build_erd.py` (32),
   `PLAN.md` (18), `README.md` (16) and the verification SQL.

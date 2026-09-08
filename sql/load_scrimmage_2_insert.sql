@@ -3,8 +3,8 @@
 -- TRUNCATE clears venue_id / neutral_site / conference_game, which are NOT in this column
 -- list -- they come from sql/enrich_game_context.sql. Run that afterwards or every join to
 -- dim_venue silently returns nothing, exactly as documented for the special-teams loader.
-TRUNCATE st.scrimmage_play;
-INSERT INTO st.scrimmage_play (
+TRUNCATE pbp.scrimmage_play;
+INSERT INTO pbp.scrimmage_play (
   play_uid, source, game_id, season, week, season_type, play_kind, play_type_espn,
   drive_id, drive_number, period, clock_secs_period, wallclock_utc, down, distance,
   yards_to_goal, offense_team_id, defense_team_id, is_home_offense, score_diff_offense,
@@ -46,7 +46,7 @@ SELECT
   NULLIF(receiver_athlete_id,'')::numeric::bigint,
   NULLIF(tackler_athlete_id,'')::numeric::bigint,
   NULLIF(play_text,'')
-FROM st.stg_scrimmage;
+FROM pbp.stg_scrimmage;
 
-DROP TABLE st.stg_scrimmage;
-ANALYZE st.scrimmage_play;
+DROP TABLE pbp.stg_scrimmage;
+ANALYZE pbp.scrimmage_play;

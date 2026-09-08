@@ -44,7 +44,7 @@ ADMIN = {"Timeout", "End Period", "End of Half", "End of Game", "Coin Toss",
          "End of Regulation", "Official Timeout"}
 
 # Conversion attempts, not scrimmage downs -- no down, no distance, and one fixed yard line.
-# PLAN.md §10j.3 puts the conversion family in st.special_teams_play and says not to
+# PLAN.md §10j.3 puts the conversion family in pbp.special_teams_play and says not to
 # duplicate it here, so these 123 corpus-wide plays are excluded.
 #
 # CAVEAT, and it is a real one: build_table.emit_pat DERIVES conversion rows from the
@@ -103,7 +103,7 @@ BRIDGE_COLUMNS = ["play_uid", "role", "athlete_id", "ordinal"]
 
 # One row per drive. Drives span BOTH facts -- a drive that ends in a punt contains the punt
 # -- so this table is deliberately not scrimmage-only, and play counts here cover every play
-# in the drive, not just the ones in st.scrimmage_play.
+# in the drive, not just the ones in pbp.scrimmage_play.
 DRIVE_COLUMNS = ["drive_uid", "drive_id", "game_id", "season", "week", "season_type",
                  "drive_number", "offense_team_id", "defense_team_id", "result",
                  "display_result", "description", "is_score", "offensive_plays",
@@ -316,7 +316,7 @@ def rows_for_game(job):
                 off_is_home = same_team(off, home) if off is not None else None
                 # The margin BEFORE the snap. homeScore/awayScore are the score AFTER the
                 # play, so they are wrong for any play that scored; prev_* carries the
-                # running score into the play. (st.special_teams_play.score_diff_kicking
+                # running score into the play. (pbp.special_teams_play.score_diff_kicking
                 # documents "before the play" but is computed from the after-play columns --
                 # see the note in the module docstring of this file's PLAN entry.)
                 diff = (None if off_is_home is None
@@ -341,7 +341,7 @@ def rows_for_game(job):
                     if col and col not in ath:        # first named in the role wins
                         ath[col] = aid
                     # (play_uid, role, athlete_id) is the bridge's primary key, matching
-                    # st.play_athlete. ESPN occasionally repeats a pair on one play; the
+                    # pbp.play_athlete. ESPN occasionally repeats a pair on one play; the
                     # repeat is dropped here rather than failing the load.
                     if (role, aid) in seen_pair:
                         stats["bridge_dup_pair"] += 1
@@ -542,7 +542,7 @@ def main(path=None, seasons=None, workers=WORKERS, bridge_path=None, drives_path
             lo, hi = RANGE[k.split(":")[1]]
             print(f"  {k.split(':')[1]:<20s} {oor[k]:>8,}   legal {lo}-{hi}")
     if stats["collides_with_special_teams"]:
-        print(f"sequenceNumber also claimed by a kick in st.special_teams_play, suffixed: "
+        print(f"sequenceNumber also claimed by a kick in pbp.special_teams_play, suffixed: "
               f"{stats['collides_with_special_teams']:,}")
     if stats["duplicate_seq"]:
         print(f"duplicate sequenceNumber, kept with a '#n' suffix: {stats['duplicate_seq']:,} "

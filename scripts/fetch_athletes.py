@@ -1,7 +1,7 @@
 """Fetch authoritative athlete identity from ESPN's core API.
 
 The participants feed gives an athlete id and nothing else, so until now every name in
-st.dim_athlete was voted out of play text -- and that only ever named 25.9% of the athletes
+pbp.dim_athlete was voted out of play text -- and that only ever named 25.9% of the athletes
 special teams knew about (8,794 of 33,891). The scrimmage fact makes that worse rather than
 better: of 698 distinct passers in 2024, 107 had a name.
 

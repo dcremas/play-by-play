@@ -2,10 +2,10 @@
 -- One row per placekick, kickoff, or punt, 2014 onward.
 -- Source: ESPN play-by-play, fetched directly for every season.
 
-CREATE SCHEMA IF NOT EXISTS st;
+CREATE SCHEMA IF NOT EXISTS pbp;
 
-DROP TABLE IF EXISTS st.special_teams_play;
-CREATE TABLE st.special_teams_play (
+DROP TABLE IF EXISTS pbp.special_teams_play;
+CREATE TABLE pbp.special_teams_play (
   play_uid            text PRIMARY KEY,
   source              text NOT NULL,          -- 'espn'
   game_id             bigint NOT NULL,
@@ -58,15 +58,15 @@ CREATE TABLE st.special_teams_play (
   loaded_at           timestamptz DEFAULT now()
 );
 
-CREATE INDEX ON st.special_teams_play (season, play_kind);
-CREATE INDEX ON st.special_teams_play (kicking_team_id, season);
-CREATE INDEX ON st.special_teams_play (play_kind, fg_distance_yds) WHERE play_kind = 'field_goal';
-CREATE INDEX ON st.special_teams_play (wallclock_utc);
-CREATE INDEX ON st.special_teams_play (game_id);
+CREATE INDEX ON pbp.special_teams_play (season, play_kind);
+CREATE INDEX ON pbp.special_teams_play (kicking_team_id, season);
+CREATE INDEX ON pbp.special_teams_play (play_kind, fg_distance_yds) WHERE play_kind = 'field_goal';
+CREATE INDEX ON pbp.special_teams_play (wallclock_utc);
+CREATE INDEX ON pbp.special_teams_play (game_id);
 
-COMMENT ON COLUMN st.special_teams_play.return_yds IS
+COMMENT ON COLUMN pbp.special_teams_play.return_yds IS
   'Actual yards returned. 0 means the ball was not advanced (touchback, fair catch, downed,
    out of bounds) -- check `returned` to exclude those from return averages.';
-COMMENT ON COLUMN st.special_teams_play.kicking_team_id IS
+COMMENT ON COLUMN pbp.special_teams_play.kicking_team_id IS
   'ESPN start.team.id. Verified over 105k plays: this is the kicking team for every kind --
    the offense on punts/FGs, the defense on kickoffs.';

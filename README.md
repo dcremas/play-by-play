@@ -20,7 +20,7 @@ answer-key agreement tables and the unbuilt scrimmage-play design) and `web/READ
 | **Window** | 2014–2026. 2026 is in progress and flagged as such |
 | **Source** | ESPN site API (play text, venue) + ESPN core API (per-play athlete ids). No API key, no other feed |
 | **Warehouse** | PostgreSQL 18.6, database `cfb`, schema `st`, 8 tables, 235 MB |
-| **Read path** | `data/out/st.duckdb` — one wide `play` table, 44 MB, rebuilt from Postgres in one command |
+| **Read path** | `data/out/pbp.duckdb` — one wide `play` table, 44 MB, rebuilt from Postgres in one command |
 | **Parse quality** | 98.51% of rows `exact`; 100% of kicks match a known text format |
 | **People** | 98.7% of plays carry an ESPN athlete id for the kicker; 675,856-row play × role × athlete bridge |
 | **Apps** | Streamlit validation console · Dash instance explorer · Excel reports · one-page ERD |
@@ -67,7 +67,7 @@ exact season the rule changed.
 ### The map
 
 ```
-cfb-special-teams/
+cfb-pbp/
 ├── PLAN.md            design record: source recon, parser answer-key proof, phase log,
 │                      §10 scrimmage-play design (unbuilt)
 ├── README.md          this file
@@ -79,7 +79,7 @@ cfb-special-teams/
 │   ├── st_parser.py           the play-text parser. 495 lines, four dialects, no deps
 │   ├── build_table.py         ESPN JSON + parser           -> data/out/st_plays.csv
 │   ├── build_dims.py          conf | venue | athlete       -> the dimension CSVs
-│   ├── build_snapshot.py      Postgres                     -> data/out/st.duckdb
+│   ├── build_snapshot.py      Postgres                     -> data/out/pbp.duckdb
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
 │   └── build_erd.py           live Postgres                -> reports/cfb_st_erd.pdf
 │
@@ -107,7 +107,7 @@ cfb-special-teams/
         ├── st_plays.csv                 80 MB, the frozen full extract
         ├── st_plays_2026.csv            the current in-progress season
         ├── dim_*.csv  fact_game.csv  play_athlete*.csv
-        ├── st.duckdb                    44 MB — what every app reads
+        ├── pbp.duckdb                    44 MB — what every app reads
         └── fg_by_distance.xlsx
 ```
 
@@ -124,7 +124,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt   # first time
 machine were compiled without `blake2`, which breaks `hashlib` and therefore pip. The venv
 runs 3.14.7.
 
-Nothing in either app talks to Postgres at runtime. They open `data/out/st.duckdb`
+Nothing in either app talks to Postgres at runtime. They open `data/out/pbp.duckdb`
 read-only, so both start cold in about a second, run side by side without contending for
 the file, and keep working when the database is down. The console's sidebar and the
 explorer's header both show how old the snapshot is.
@@ -359,7 +359,7 @@ returned. Always measure returner coverage on `WHERE returned`.
 **There is no `blocker` role in ESPN.** Blocker identity is a parsed name string
 (`blocker_name`, 0.5% of rows) and cannot be resolved to an id.
 
-`st.play_athlete` is the full-fidelity bridge — one row per (play, role, athlete), 675,856
+`pbp.play_athlete` is the full-fidelity bridge — one row per (play, role, athlete), 675,856
 rows — and it is the truth. The three id columns on the fact table are a denormalised
 convenience for the hot path. A play has many tacklers; only the bridge knows them all.
 
@@ -439,7 +439,7 @@ conference was down to two members. 2026 rebuilt it to eight and the error shran
 without anything about 2018 changing. A wrong answer whose magnitude drifts with the present
 day is the worst kind to have in a report.
 
-Two defences are in place. `st.dim_team_season` carries a `COMMENT` saying so, and
+Two defences are in place. `pbp.dim_team_season` carries a `COMMENT` saying so, and
 `build_snapshot.py` resolves every conference at **build time** on `(team_id, season)` —
 so the snapshot's `play` table has `kicking_conference` and `receiving_conference` already
 correct and a query cannot get it wrong later. `verify_phase4.sql` runs both versions of
@@ -468,7 +468,7 @@ Three things to know before reading it:
   same columns minus `loaded_at`, plus flattened dimension attributes and six derived
   columns. Both are listed.
 
-### `st.special_teams_play` — the fact table
+### `pbp.special_teams_play` — the fact table
 
 313,583 rows, 117 MB. `play_uid text PRIMARY KEY`.
 
@@ -607,13 +607,13 @@ the derived columns, so no query has to repeat a join or a `CASE`. Everything ab
 
 | table | rows | grain | columns |
 |---|---|---|---|
-| `st.fact_game` | 10,379 | one game | `game_id` PK · `season` · `week` · `season_type` · `kickoff_utc` · `home_team_id` · `away_team_id` · `venue_id` **(the only declared FK in the schema)** · `attendance` · `neutral_site` · `conference_game` |
-| `st.play_athlete` | 675,856 | play × role × athlete | `play_uid` · `role` · `athlete_id` · `ordinal`; PK on the first three |
-| `st.dim_athlete` | 33,194 | one athlete, **career** | `athlete_id` PK · `known_name` · `name_confidence` · `primary_role` · `primary_team_id` · `first_season` · `last_season` · `st_plays` |
-| `st.dim_team_season` | 3,368 | team × season | `team_id`, `season` PK · `conference_id` · `conference_name` · `division` (`FBS` \| `FCS`) |
-| `st.dim_team` | 246 | one team | `team_id` PK · `display_name` (the team's *most recent* name in the window) |
-| `st.dim_venue` | 200 | one venue | `venue_id` PK · `venue_name` · `city` · `state` · `zip` · `country` · `surface` (73 grass / 127 turf). **No roof field** and no lat/lon |
-| `st.dim_conference` | 31 | one conference | `conference_id` PK · `conference_name` · `short_name` |
+| `pbp.fact_game` | 10,379 | one game | `game_id` PK · `season` · `week` · `season_type` · `kickoff_utc` · `home_team_id` · `away_team_id` · `venue_id` **(the only declared FK in the schema)** · `attendance` · `neutral_site` · `conference_game` |
+| `pbp.play_athlete` | 675,856 | play × role × athlete | `play_uid` · `role` · `athlete_id` · `ordinal`; PK on the first three |
+| `pbp.dim_athlete` | 33,194 | one athlete, **career** | `athlete_id` PK · `known_name` · `name_confidence` · `primary_role` · `primary_team_id` · `first_season` · `last_season` · `st_plays` |
+| `pbp.dim_team_season` | 3,368 | team × season | `team_id`, `season` PK · `conference_id` · `conference_name` · `division` (`FBS` \| `FCS`) |
+| `pbp.dim_team` | 246 | one team | `team_id` PK · `display_name` (the team's *most recent* name in the window) |
+| `pbp.dim_venue` | 200 | one venue | `venue_id` PK · `venue_name` · `city` · `state` · `zip` · `country` · `surface` (73 grass / 127 turf). **No roof field** and no lat/lon |
+| `pbp.dim_conference` | 31 | one conference | `conference_id` PK · `conference_name` · `short_name` |
 
 `dim_athlete` is a **career aggregate**, and that is load-bearing: `first_season`,
 `last_season`, `st_plays`, the modal `known_name` and `primary_team_id` are all taken across
@@ -838,7 +838,7 @@ something averaged over 100+ punts.
                     │  build_snapshot.py — DuckDB postgres extension,
                     │  read-only ATTACH, one CREATE TABLE AS per table
                     v
-             data/out/st.duckdb  (44 MB)
+             data/out/pbp.duckdb  (44 MB)
                     │
      ┌──────────────┼──────────────────┐
      v              v                  v
@@ -861,7 +861,7 @@ snapshot is a build artifact — delete it and rebuild rather than repairing it.
 | venues, teams, games | `build_dims.py venue` | every stored summary on disk | `dim_venue.csv`, `dim_team.csv`, `fact_game.csv` | the slow local stage — re-reads all 10,379 summaries |
 | the fact table | `build_table.py` | summaries + `st_parser` | `st_plays.csv` — 40 columns, 80 MB | a few minutes for the full window |
 | the athlete link | `build_dims.py athlete` | participants + `st_plays.csv` | `dim_athlete.csv`, `play_athlete.csv`, `play_athlete_wide.csv` | reads all participants files |
-| the snapshot | `build_snapshot.py` | Postgres | `st.duckdb` | seconds |
+| the snapshot | `build_snapshot.py` | Postgres | `pbp.duckdb` | seconds |
 
 Two properties hold across every stage and are worth relying on:
 
@@ -897,7 +897,7 @@ zero rows, so the field-goal-by-surface section of `verify_phase4.sql` goes sile
 the same transaction, so the enrichment cannot be forgotten.
 
 Both `reparse.sql` and `load_athletes_2_apply.sql` write a rollback table before they touch
-anything (`st.special_teams_play_prereparse`, `st.special_teams_play_preathletefix`). Both
+anything (`pbp.special_teams_play_prereparse`, `pbp.special_teams_play_preathletefix`). Both
 refuse to run if staging and the fact table disagree about which plays exist — a mismatch
 means the CSV was built from a different fetch, and that is the wrong operation, not a
 warning. **The in-season loaders deliberately write no rollback table**: copying 313k rows
@@ -939,9 +939,9 @@ one worth remembering:
 |---|---|---|
 | games list, summaries, participants | season | `--seasons` / the `SEASONS` env var |
 | `st_plays_<season>.csv` | season | `build_table.py --seasons` |
-| `st.special_teams_play`, `st.play_athlete`, the three id columns | season | `DELETE` + `INSERT` on that season only; earlier seasons are provably untouched, and both loaders print every season's coverage so you can see they did not move |
+| `pbp.special_teams_play`, `pbp.play_athlete`, the three id columns | season | `DELETE` + `INSERT` on that season only; earlier seasons are provably untouched, and both loaders print every season's coverage so you can see they did not move |
 | `dim_team_season`, `dim_venue`, `dim_team`, `fact_game` | **global** | small enough that a wholesale swap cannot leave a stale row behind — 200 venues, 3.4k team-seasons, 10.4k games |
-| `st.dim_athlete` | **global** | a *career* aggregate. A 2026-only rebuild would give every returning kicker `first_season = 2026`. Eight games of 2026 updated 100 existing athletes |
+| `pbp.dim_athlete` | **global** | a *career* aggregate. A 2026-only rebuild would give every returning kicker `first_season = 2026`. Eight games of 2026 updated 100 existing athletes |
 
 That last row is why `build_dims.py athlete` takes `--plays` with several extracts: it
 derives the dimension from the frozen full `st_plays.csv` **plus** the new season's, so the
@@ -949,7 +949,7 @@ career fields stay right without re-running `build_table.py` over thirteen seaso
 summaries. `--only-season` then narrows the bridge and wide outputs — the parts
 `load_athletes_3_season.sql` deletes and re-inserts — and writes them as
 `play_athlete_<season>.csv` and `play_athlete_wide_<season>.csv`, deliberately **not** over
-the global pair. `load_athletes_2_apply.sql` truncates `st.play_athlete` and reloads it from
+the global pair. `load_athletes_2_apply.sql` truncates `pbp.play_athlete` and reloads it from
 whatever `play_athlete.csv` holds, so one season's rows sitting under the global name would
 arm that script to destroy the other twelve.
 
@@ -971,7 +971,7 @@ Two guards fire before anything is written, and both have caught a real mistake:
 .venv/bin/python scripts/build_table.py --out /tmp/new.csv    # diff before going near Postgres
 .venv/bin/python scripts/build_table.py                       # -> data/out/st_plays.csv
 psql -d cfb -f sql/load_1_stage.sql
-psql -d cfb -c "\copy st.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
+psql -d cfb -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
 psql -d cfb -f sql/reparse.sql                                # UPDATE, not TRUNCATE
 .venv/bin/python scripts/build_snapshot.py
 psql -d cfb -f sql/verify.sql                                 # then read the console's checks
@@ -982,7 +982,7 @@ psql -d cfb -f sql/verify.sql                                 # then read the co
 parser output but they *are* derived (`emit_pat` picks the conversion's team off the
 scoreboard), so leaving them out would load a corrected CSV and change nothing. Everything
 else — the athlete ids, the situation, `play_text` — is left alone. Pre-update values go to
-`st.special_teams_play_prereparse`; drop that table once you are satisfied.
+`pbp.special_teams_play_prereparse`; drop that table once you are satisfied.
 
 Judge the result on the console's Validation tab, not on the pooled rate. It scores every
 assertion on the **worst single season**, which is the whole reason the 2025 punt gap was
@@ -1003,7 +1003,7 @@ SEASONS=2013 .venv/bin/python scripts/fetch_espn.py summaries
 .venv/bin/python scripts/build_table.py
 psql -d cfb -f sql/load_dims.sql
 psql -d cfb -f sql/load_1_stage.sql
-psql -d cfb -c "\copy st.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
+psql -d cfb -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
 psql -d cfb -f sql/load_2_insert.sql                     # TRUNCATE + reload
 psql -d cfb -f sql/enrich_game_context.sql               # REQUIRED — restores venue/neutral/conf
 # then runbook D (the athlete link), then build_snapshot.py, then reclaim space
@@ -1026,16 +1026,16 @@ Only needed when the participants feed or `build_dims.stage_athlete` changes, or
 ```bash
 .venv/bin/python scripts/build_dims.py athlete           # participants + names -> 3 CSVs
 psql -d cfb -f sql/load_athletes_1_stage.sql
-psql -d cfb -c "\copy st.stg_dim_athlete FROM 'data/out/dim_athlete.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -c "\copy st.stg_play_athlete FROM 'data/out/play_athlete.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -c "\copy st.stg_play_athlete_wide FROM 'data/out/play_athlete_wide.csv' WITH (FORMAT csv, HEADER true)"
+psql -d cfb -c "\copy pbp.stg_dim_athlete FROM 'data/out/dim_athlete.csv' WITH (FORMAT csv, HEADER true)"
+psql -d cfb -c "\copy pbp.stg_play_athlete FROM 'data/out/play_athlete.csv' WITH (FORMAT csv, HEADER true)"
+psql -d cfb -c "\copy pbp.stg_play_athlete_wide FROM 'data/out/play_athlete_wide.csv' WITH (FORMAT csv, HEADER true)"
 psql -d cfb -f sql/load_athletes_2_apply.sql
 .venv/bin/python scripts/build_snapshot.py
 ```
 
 `load_athletes_2_apply.sql` clears the three id columns before applying, so the result does
 not depend on what ran before it, and keeps the previous values in
-`st.special_teams_play_preathletefix`. It prints coverage by kind and by season on the way
+`pbp.special_teams_play_preathletefix`. It prints coverage by kind and by season on the way
 out.
 
 To repair games whose stored participants file uses the old id-based key:
@@ -1051,7 +1051,7 @@ re-fetch is forced.
 ### E. Rebuild the snapshot
 
 ```bash
-.venv/bin/python scripts/build_snapshot.py            # -> data/out/st.duckdb
+.venv/bin/python scripts/build_snapshot.py            # -> data/out/pbp.duckdb
 .venv/bin/python scripts/build_snapshot.py --db cfb --out /tmp/other.duckdb
 ```
 
@@ -1065,8 +1065,8 @@ snapshot on restart. Run it after any load.
 so the heap ends up roughly 3× the size of the live data.
 
 ```bash
-psql -d cfb -c "VACUUM (FULL, ANALYZE) st.special_teams_play"
-psql -d cfb -c "VACUUM (FULL, ANALYZE) st.play_athlete"
+psql -d cfb -c "VACUUM (FULL, ANALYZE) pbp.special_teams_play"
+psql -d cfb -c "VACUUM (FULL, ANALYZE) pbp.play_athlete"
 ```
 
 Autovacuum frees the space for reuse but cannot shrink the file. `VACUUM FULL` takes an
@@ -1223,7 +1223,7 @@ travel to a y.
 
 ## Query recipes
 
-All of these run against the DuckDB snapshot (`data/out/st.duckdb`), where the dimensions
+All of these run against the DuckDB snapshot (`data/out/pbp.duckdb`), where the dimensions
 are already flattened onto `play`. The console's SQL tab ships the first one as its default.
 
 **The conference trap — the same 2018 punt count, two ways**
@@ -1390,11 +1390,11 @@ scrimmage outcomes are **structured fields**.
 | **Buildable with no new fetching** | `summaries/` and `participants/` already hold everything |
 | **Grain** | one row per scrimmage play. **1,497,044 rows**, after excluding 111,510 administrative rows (`Timeout`, `End Period`, `Coin Toss`) and 2,294 plays the special-teams classifier already claims |
 | **`st_parser.py` is not needed** | `statYardage`, down/distance/yards-to-endzone, `isTurnover`, `scoringPlay` and `sequenceNumber` are all **100%** populated, flat across all twelve seasons. Text parsing becomes optional enrichment (air yards, pass direction, penalty reason), not the spine |
-| **Plus a bridge** | `st.scrimmage_athlete`, ~3.27M rows, same shape as `play_athlete`. The four id columns on the fact would be convenience; the bridge is the truth — `assistedBy` alone is 383,400 rows |
+| **Plus a bridge** | `pbp.scrimmage_athlete`, ~3.27M rows, same shape as `play_athlete`. The four id columns on the fact would be convenience; the bridge is the truth — `assistedBy` alone is 383,400 rows |
 | **Optional third table** | drives. ~246,500 rows, and the natural home for "what did this drive end in". Build it *with* the fact, since `drive_id` is on every play and backfilling a key later is more work |
 | **Size** | `cfb` goes from 235 MB to roughly **1.3 GB**. That moves `VACUUM FULL` from housekeeping to necessary — three-rewrites-per-load costs ~1 GB of bloat at that scale, not ~170 MB |
 
-**The one part that is not purely additive:** `st.dim_athlete` would be rebuilt as the union
+**The one part that is not purely additive:** `pbp.dim_athlete` would be rebuilt as the union
 of both facts. 23,327 distinct athletes appear on scrimmage plays and 13,790 of them are
 already in the dimension; it grows by roughly 29%. That is the entire reason for using ESPN
 athlete ids over name strings — a receiver who also returns kicks must be *one* row, or every
@@ -1496,7 +1496,7 @@ answer that did not look wrong.
     anything new.
 
 **Regenerating the figures in this document.** Every number above came from the snapshot at
-`data/out/st.duckdb`, and the queries are the ones in [Query recipes](#query-recipes) plus
+`data/out/pbp.duckdb`, and the queries are the ones in [Query recipes](#query-recipes) plus
 `sql/verify.sql` and `sql/verify_phase4.sql`. `snapshot_meta` records when the snapshot was
 built and how many rows it holds; `season_status` records what was finished at that moment.
 If a figure here disagrees with the database, the database is right and this file is stale —

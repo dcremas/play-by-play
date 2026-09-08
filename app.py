@@ -1,6 +1,6 @@
 """D-I FBS Special Teams -- data validation and pre-analysis console.
 
-One page, five tabs, one local DuckDB snapshot (`data/out/st.duckdb`, built by
+One page, five tabs, one local DuckDB snapshot (`data/out/pbp.duckdb`, built by
 `scripts/build_snapshot.py`). Nothing here talks to Postgres at runtime, so the app starts
 cold in under a second and keeps working when the database does not.
 
@@ -36,7 +36,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import SplineTransformer
 
 HOME = os.path.dirname(os.path.abspath(__file__))
-DB = os.path.join(HOME, "data", "out", "st.duckdb")
+DB = os.path.join(HOME, "data", "out", "pbp.duckdb")
 
 st.set_page_config(page_title="CFB Special Teams Console", page_icon="🏈", layout="wide")
 

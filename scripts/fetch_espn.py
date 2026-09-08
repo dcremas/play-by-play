@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports/football/college-football"
-OUT = os.path.expanduser("~/projects/cfb-special-teams/data/espn")
+OUT = os.path.expanduser("~/projects/cfb-pbp/data/espn")
 SUMS = f"{OUT}/summaries"
 SEASONS = [int(x) for x in os.environ.get("SEASONS", "2022,2023,2024,2025").split(",")]
 WEEKS = [(2, w) for w in range(1, 18)] + [(3, w) for w in range(1, 6)]

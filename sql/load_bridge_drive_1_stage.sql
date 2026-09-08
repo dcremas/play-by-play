@@ -6,17 +6,17 @@
 --
 --   .venv/bin/python scripts/build_scrimmage.py
 --   psql -d cfb -f sql/load_bridge_drive_1_stage.sql
---   psql -d cfb -c "\copy st.stg_scrimmage_athlete FROM 'data/out/scrimmage_athlete.csv' WITH (FORMAT csv, HEADER true)"
---   psql -d cfb -c "\copy st.stg_drive FROM 'data/out/drives.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d cfb -c "\copy pbp.stg_scrimmage_athlete FROM 'data/out/scrimmage_athlete.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d cfb -c "\copy pbp.stg_drive FROM 'data/out/drives.csv' WITH (FORMAT csv, HEADER true)"
 --   psql -d cfb -f sql/load_bridge_drive_2_insert.sql
 
-DROP TABLE IF EXISTS st.stg_scrimmage_athlete;
-CREATE TABLE st.stg_scrimmage_athlete (
+DROP TABLE IF EXISTS pbp.stg_scrimmage_athlete;
+CREATE TABLE pbp.stg_scrimmage_athlete (
   play_uid text, role text, athlete_id text, ordinal text
 );
 
-DROP TABLE IF EXISTS st.stg_drive;
-CREATE TABLE st.stg_drive (
+DROP TABLE IF EXISTS pbp.stg_drive;
+CREATE TABLE pbp.stg_drive (
   drive_uid text, drive_id text, game_id text, season text, week text, season_type text,
   drive_number text, offense_team_id text, defense_team_id text, result text,
   display_result text, description text, is_score text, offensive_plays text,

@@ -10,7 +10,7 @@ directions -- 492 Pac-12 punts against 730, and 1,128 Big Ten against 881. Note 
 the error drifts with the present day: the same wrong query returned 108 Pac-12 punts while
 the corpus ended in 2025 and the conference was down to two members.
 
-    python scripts/build_snapshot.py            -> data/out/st.duckdb
+    python scripts/build_snapshot.py            -> data/out/pbp.duckdb
     python scripts/build_snapshot.py --db cfb   -> different source database
 
 Two facts since 2026-09-08: `play` is special teams, `scrimmage` is everything else, and the
@@ -21,7 +21,7 @@ import argparse, os, sys, time
 import duckdb
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(HOME, "data", "out", "st.duckdb")
+OUT = os.path.join(HOME, "data", "out", "pbp.duckdb")
 
 # One row per special teams play, dimensions flattened on.
 PLAY_SQL = """
@@ -76,14 +76,14 @@ SELECT
     month(g.kickoff_utc) AS game_month,
     -- both teams FBS, i.e. exclude the FBS-vs-FCS games PLAN.md §8 chose to ingest anyway
     (kts.division = 'FBS' AND rts.division = 'FBS') AS fbs_vs_fbs
-FROM pg.st.special_teams_play p
-LEFT JOIN pg.st.fact_game       g   ON g.game_id = p.game_id
-LEFT JOIN pg.st.dim_venue       v   ON v.venue_id = p.venue_id
-LEFT JOIN pg.st.dim_team        kt  ON kt.team_id = p.kicking_team_id
-LEFT JOIN pg.st.dim_team        rt  ON rt.team_id = p.receiving_team_id
-LEFT JOIN pg.st.dim_team_season kts ON kts.team_id = p.kicking_team_id   AND kts.season = p.season
-LEFT JOIN pg.st.dim_team_season rts ON rts.team_id = p.receiving_team_id AND rts.season = p.season
-LEFT JOIN pg.st.dim_athlete     ka  ON ka.athlete_id = p.kicker_athlete_id
+FROM pg.pbp.special_teams_play p
+LEFT JOIN pg.pbp.fact_game       g   ON g.game_id = p.game_id
+LEFT JOIN pg.pbp.dim_venue       v   ON v.venue_id = p.venue_id
+LEFT JOIN pg.pbp.dim_team        kt  ON kt.team_id = p.kicking_team_id
+LEFT JOIN pg.pbp.dim_team        rt  ON rt.team_id = p.receiving_team_id
+LEFT JOIN pg.pbp.dim_team_season kts ON kts.team_id = p.kicking_team_id   AND kts.season = p.season
+LEFT JOIN pg.pbp.dim_team_season rts ON rts.team_id = p.receiving_team_id AND rts.season = p.season
+LEFT JOIN pg.pbp.dim_athlete     ka  ON ka.athlete_id = p.kicker_athlete_id
 """
 
 # One row per scrimmage play, dimensions flattened on -- the mirror of PLAY_SQL above.
@@ -146,17 +146,17 @@ SELECT
          ELSE 'own half' END AS field_zone,
     month(g.kickoff_utc) AS game_month,
     (ots.division = 'FBS' AND dts.division = 'FBS') AS fbs_vs_fbs
-FROM pg.st.scrimmage_play p
-LEFT JOIN pg.st.fact_game       g   ON g.game_id = p.game_id
-LEFT JOIN pg.st.dim_venue       v   ON v.venue_id = p.venue_id
-LEFT JOIN pg.st.dim_team        ot  ON ot.team_id = p.offense_team_id
-LEFT JOIN pg.st.dim_team        dt  ON dt.team_id = p.defense_team_id
-LEFT JOIN pg.st.dim_team_season ots ON ots.team_id = p.offense_team_id AND ots.season = p.season
-LEFT JOIN pg.st.dim_team_season dts ON dts.team_id = p.defense_team_id AND dts.season = p.season
-LEFT JOIN pg.st.dim_athlete     pa  ON pa.athlete_id = p.passer_athlete_id
-LEFT JOIN pg.st.dim_athlete     ra  ON ra.athlete_id = p.rusher_athlete_id
-LEFT JOIN pg.st.dim_athlete     wa  ON wa.athlete_id = p.receiver_athlete_id
-LEFT JOIN pg.st.dim_athlete     ta  ON ta.athlete_id = p.tackler_athlete_id
+FROM pg.pbp.scrimmage_play p
+LEFT JOIN pg.pbp.fact_game       g   ON g.game_id = p.game_id
+LEFT JOIN pg.pbp.dim_venue       v   ON v.venue_id = p.venue_id
+LEFT JOIN pg.pbp.dim_team        ot  ON ot.team_id = p.offense_team_id
+LEFT JOIN pg.pbp.dim_team        dt  ON dt.team_id = p.defense_team_id
+LEFT JOIN pg.pbp.dim_team_season ots ON ots.team_id = p.offense_team_id AND ots.season = p.season
+LEFT JOIN pg.pbp.dim_team_season dts ON dts.team_id = p.defense_team_id AND dts.season = p.season
+LEFT JOIN pg.pbp.dim_athlete     pa  ON pa.athlete_id = p.passer_athlete_id
+LEFT JOIN pg.pbp.dim_athlete     ra  ON ra.athlete_id = p.rusher_athlete_id
+LEFT JOIN pg.pbp.dim_athlete     wa  ON wa.athlete_id = p.receiver_athlete_id
+LEFT JOIN pg.pbp.dim_athlete     ta  ON ta.athlete_id = p.tackler_athlete_id
 """
 
 # One row per season, so both apps can tell a season that is still being played from one
@@ -180,14 +180,14 @@ ORDER BY season
 """
 
 COPIES = {
-    "dim_athlete":       "SELECT * FROM pg.st.dim_athlete",
-    "dim_team":          "SELECT * FROM pg.st.dim_team",
-    "dim_team_season":   "SELECT * FROM pg.st.dim_team_season",
-    "dim_venue":         "SELECT * FROM pg.st.dim_venue",
-    "fact_game":         "SELECT * FROM pg.st.fact_game",
-    "play_athlete":      "SELECT * FROM pg.st.play_athlete",
-    "scrimmage_athlete": "SELECT * FROM pg.st.scrimmage_athlete",
-    "drive":             "SELECT * FROM pg.st.drive",
+    "dim_athlete":       "SELECT * FROM pg.pbp.dim_athlete",
+    "dim_team":          "SELECT * FROM pg.pbp.dim_team",
+    "dim_team_season":   "SELECT * FROM pg.pbp.dim_team_season",
+    "dim_venue":         "SELECT * FROM pg.pbp.dim_venue",
+    "fact_game":         "SELECT * FROM pg.pbp.fact_game",
+    "play_athlete":      "SELECT * FROM pg.pbp.play_athlete",
+    "scrimmage_athlete": "SELECT * FROM pg.pbp.scrimmage_athlete",
+    "drive":             "SELECT * FROM pg.pbp.drive",
 }
 
 

@@ -36,7 +36,7 @@ from xlsxwriter.utility import xl_rowcol_to_cell
 from .workbook import F, MEASURES, Style, abs_range, heading, stamp, write_grid, write_notes
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB = os.path.join(HOME, "data", "out", "st.duckdb")
+DB = os.path.join(HOME, "data", "out", "pbp.duckdb")
 OUT = os.path.join(HOME, "data", "out", "fg_by_distance.xlsx")
 
 # Keyed by lower bound so the rows sort numerically; 999 is the unparseable bucket.

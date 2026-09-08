@@ -1,4 +1,4 @@
--- In-season loader: replace ONE season in st.special_teams_play, leave the rest alone.
+-- In-season loader: replace ONE season in pbp.special_teams_play, leave the rest alone.
 --
 -- sql/load_2_insert.sql is the loader for a backfill: it TRUNCATEs the whole fact table,
 -- which is right when every row is being rebuilt and catastrophic when 30 new games are.
@@ -18,16 +18,16 @@
 -- psql does not substitute :season inside a dollar-quoted body, so the guards below read
 -- it back out of a session setting instead. Everything outside a DO block uses :season
 -- directly, which does substitute.
-SELECT set_config('st.season', :'season', false);
+SELECT set_config('pbp.season', :'season', false);
 
 BEGIN;
 
 -- Refuse to run against a staging set that has nothing for the target season, which is
 -- what a mis-built CSV or a wrong -v season looks like.
 DO $$
-DECLARE n bigint; s smallint := current_setting('st.season')::smallint;
+DECLARE n bigint; s smallint := current_setting('pbp.season')::smallint;
 BEGIN
-  SELECT count(*) INTO n FROM st.stg_plays
+  SELECT count(*) INTO n FROM pbp.stg_plays
    WHERE NULLIF(season,'')::numeric::smallint = s;
   IF n = 0 THEN
     RAISE EXCEPTION 'staging holds no rows for season % -- refusing to delete it', s;
@@ -35,9 +35,9 @@ BEGIN
   RAISE NOTICE 'staging: % rows for season %', n, s;
 END $$;
 
-DELETE FROM st.special_teams_play WHERE season = :season;
+DELETE FROM pbp.special_teams_play WHERE season = :season;
 
-INSERT INTO st.special_teams_play (
+INSERT INTO pbp.special_teams_play (
   play_uid, source, game_id, season, week, season_type, play_kind, period,
   clock_secs_period, wallclock_utc, down, distance, yards_to_goal, kicking_team_id,
   receiving_team_id, is_home_kicking, score_diff_kicking, fg_distance_yds, fg_made,
@@ -80,26 +80,26 @@ SELECT
   NULLIF(negated_by_penalty,'')::boolean,
   NULLIF(kicker_name,''), NULLIF(returner_name,''), NULLIF(blocker_name,''),
   NULLIF(play_text,''), NULLIF(parse_confidence,'')
-FROM st.stg_plays
+FROM pbp.stg_plays
 WHERE NULLIF(season,'')::numeric::smallint = :season;
 
 -- The three columns load_2_insert.sql leaves NULL, restored for this season only. Doing it
 -- here rather than in a separate script is the whole point: every venue join downstream
 -- depends on it and nothing errors when it is missing.
-UPDATE st.special_teams_play p
+UPDATE pbp.special_teams_play p
    SET venue_id        = g.venue_id,
        neutral_site    = g.neutral_site,
        conference_game = g.conference_game
-  FROM st.fact_game g
+  FROM pbp.fact_game g
  WHERE g.game_id = p.game_id AND p.season = :season;
 
-DROP TABLE st.stg_plays;
+DROP TABLE pbp.stg_plays;
 COMMIT;
 
-ANALYZE st.special_teams_play;
+ANALYZE pbp.special_teams_play;
 
 \echo '=== loaded season, by play kind'
 SELECT play_kind, count(*) AS plays, count(DISTINCT game_id) AS games,
        count(venue_id) AS with_venue
-FROM st.special_teams_play WHERE season = :season
+FROM pbp.special_teams_play WHERE season = :season
 GROUP BY play_kind ORDER BY plays DESC;

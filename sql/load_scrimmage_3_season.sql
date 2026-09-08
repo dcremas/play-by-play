@@ -1,5 +1,5 @@
--- In-season loader: replace ONE season in st.scrimmage_play, st.scrimmage_athlete and
--- st.drive, leaving every other season alone.
+-- In-season loader: replace ONE season in pbp.scrimmage_play, pbp.scrimmage_athlete and
+-- pbp.drive, leaving every other season alone.
 --
 -- The incremental counterpart to load_scrimmage_2_insert.sql + load_bridge_drive_2_insert.sql,
 -- exactly as sql/load_3_season.sql is to sql/load_2_insert.sql. Those TRUNCATE, which is
@@ -12,14 +12,14 @@
 
 \set ON_ERROR_STOP on
 
-SELECT set_config('st.season', :'season', false);
+SELECT set_config('pbp.season', :'season', false);
 
 BEGIN;
 
 DO $$
-DECLARE n bigint; s smallint := current_setting('st.season')::smallint;
+DECLARE n bigint; s smallint := current_setting('pbp.season')::smallint;
 BEGIN
-  SELECT count(*) INTO n FROM st.stg_scrimmage
+  SELECT count(*) INTO n FROM pbp.stg_scrimmage
    WHERE NULLIF(season,'')::numeric::smallint = s;
   IF n = 0 THEN
     RAISE EXCEPTION 'staging holds no scrimmage rows for season % -- refusing to delete it', s;
@@ -29,14 +29,14 @@ END $$;
 
 -- The bridge has no season of its own; it is scoped through the fact it points at. Delete it
 -- BEFORE the fact, while the join still resolves.
-DELETE FROM st.scrimmage_athlete b
- USING st.scrimmage_play p
+DELETE FROM pbp.scrimmage_athlete b
+ USING pbp.scrimmage_play p
  WHERE p.play_uid = b.play_uid AND p.season = :season;
 
-DELETE FROM st.scrimmage_play WHERE season = :season;
-DELETE FROM st.drive          WHERE season = :season;
+DELETE FROM pbp.scrimmage_play WHERE season = :season;
+DELETE FROM pbp.drive          WHERE season = :season;
 
-INSERT INTO st.scrimmage_play (
+INSERT INTO pbp.scrimmage_play (
   play_uid, source, game_id, season, week, season_type, play_kind, play_type_espn,
   drive_id, drive_number, period, clock_secs_period, wallclock_utc, down, distance,
   yards_to_goal, offense_team_id, defense_team_id, is_home_offense, score_diff_offense,
@@ -78,19 +78,19 @@ SELECT
   NULLIF(receiver_athlete_id,'')::numeric::bigint,
   NULLIF(tackler_athlete_id,'')::numeric::bigint,
   NULLIF(play_text,'')
-FROM st.stg_scrimmage
+FROM pbp.stg_scrimmage
 WHERE NULLIF(season,'')::numeric::smallint = :season;
 
-INSERT INTO st.scrimmage_athlete (play_uid, role, athlete_id, ordinal)
+INSERT INTO pbp.scrimmage_athlete (play_uid, role, athlete_id, ordinal)
 SELECT DISTINCT ON (b.play_uid, b.role, b.athlete_id::bigint)
        b.play_uid, b.role, b.athlete_id::bigint,
        NULLIF(b.ordinal,'')::numeric::smallint
-FROM st.stg_scrimmage_athlete b
-JOIN st.scrimmage_play p ON p.play_uid = b.play_uid
+FROM pbp.stg_scrimmage_athlete b
+JOIN pbp.scrimmage_play p ON p.play_uid = b.play_uid
 WHERE p.season = :season
 ORDER BY b.play_uid, b.role, b.athlete_id::bigint, NULLIF(b.ordinal,'')::numeric::smallint;
 
-INSERT INTO st.drive (
+INSERT INTO pbp.drive (
   drive_uid, drive_id, game_id, season, week, season_type, drive_number,
   offense_team_id, defense_team_id, result, display_result, description, is_score,
   offensive_plays, plays_total, plays_scrimmage, yards, time_elapsed_secs,
@@ -120,31 +120,31 @@ SELECT
   NULLIF(end_clock_secs,'')::numeric::integer,
   NULLIF(end_yards_to_goal,'')::numeric::smallint,
   NULLIF(end_text,'')
-FROM st.stg_drive
+FROM pbp.stg_drive
 WHERE NULLIF(season,'')::numeric::smallint = :season;
 
-UPDATE st.scrimmage_play p
+UPDATE pbp.scrimmage_play p
    SET venue_id        = g.venue_id,
        neutral_site    = g.neutral_site,
        conference_game = g.conference_game
-  FROM st.fact_game g
+  FROM pbp.fact_game g
  WHERE g.game_id = p.game_id AND p.season = :season;
 
-DROP TABLE st.stg_scrimmage;
-DROP TABLE st.stg_scrimmage_athlete;
-DROP TABLE st.stg_drive;
+DROP TABLE pbp.stg_scrimmage;
+DROP TABLE pbp.stg_scrimmage_athlete;
+DROP TABLE pbp.stg_drive;
 COMMIT;
 
-ANALYZE st.scrimmage_play;
-ANALYZE st.scrimmage_athlete;
-ANALYZE st.drive;
+ANALYZE pbp.scrimmage_play;
+ANALYZE pbp.scrimmage_athlete;
+ANALYZE pbp.drive;
 
 \echo '=== loaded season, scrimmage by play kind'
 SELECT play_kind, count(*) AS plays, count(DISTINCT game_id) AS games,
        count(venue_id) AS with_venue
-FROM st.scrimmage_play WHERE season = :season
+FROM pbp.scrimmage_play WHERE season = :season
 GROUP BY play_kind ORDER BY plays DESC;
 \echo '=== drives and bridge rows for the season'
-SELECT (SELECT count(*) FROM st.drive WHERE season = :season) AS drives,
-       (SELECT count(*) FROM st.scrimmage_athlete b JOIN st.scrimmage_play p
+SELECT (SELECT count(*) FROM pbp.drive WHERE season = :season) AS drives,
+       (SELECT count(*) FROM pbp.scrimmage_athlete b JOIN pbp.scrimmage_play p
           ON p.play_uid = b.play_uid WHERE p.season = :season) AS bridge_rows;
