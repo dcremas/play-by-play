@@ -4,8 +4,17 @@
 seasons (2016–2025), one row per instance, with enough context attached to answer
 questions nobody has bothered to ask yet.
 
-**Status:** v2 — 2026-08-30. Source recon verified. Scope decisions made (§8). Phase 1
-profiling in progress.
+**Status:** v4 — 2026-09-08. **Built.** Every phase in §5 shipped, and the scrimmage design
+in §10 is built as well: `pbp.scrimmage_play` (1,510,679), `pbp.scrimmage_athlete`
+(3,135,126) and `pbp.drive` (258,795) are loaded, the athlete dimension is one shared table
+over both facts, and the schema is renamed from `st` to `pbp`.
+
+**This file is the design record, not the current description of the system.** It is kept
+for the source recon, the parser answer-key agreement tables, and the reasoning behind
+decisions that are now settled. Where it disagrees with `README.md`, the README is right.
+§10j records the decisions taken on 2026-09-08 and §10k the build sequence that was actually
+followed; §10a–§10i are the pre-build design and some of their estimates were off — the
+measured numbers are in §10j.
 
 **Decisions (2026-08-30):**
 1. **Window:** 2016–2025, built *phased* — land 2016–2021 from bulk first, evaluate, then
@@ -504,10 +513,24 @@ they are excluded rather than assigned meaningless outdoor conditions.
 
 ## 10. Scrimmage plays (offense/defense) — design
 
-**Not built. Design only, agreed 2026-08-31.** Numbers below are measured against the local
-files, not estimated.
+**BUILT 2026-09-08.** §10a–§10i below are the pre-build design, agreed 2026-08-31 and left
+as written. §10j records what was decided when the build actually started, §10k the sequence
+that was followed, and §10l the rename. Three of the design's estimates turned out wrong and
+are corrected in §10j; the largest was `dim_athlete`, predicted at 42,676 athletes and
+actually 62,879.
+
+Numbers in §10a–§10i were measured against the local files, not estimated.
 
 ### 10a. Verdict
+
+> **Held up, with one exception.** No new fetching was needed for the fact, the bridge or the
+> drives. But athlete NAMES did need a new feed: voting them out of play text only ever named
+> 25.9% of special-teams athletes, and `scripts/fetch_athletes.py` was added to fix it. See
+> §10j.
+>
+> The claim that "the play type does the classification" is also wrong — ESPN types a play by
+> its most notable event, so ~33,000 rushes and passes would have been filed under their
+> outcome. See §10j.
 
 Buildable from `data/espn/summaries/` and `data/espn/participants/` with **no new fetching**,
 and it is a *cheaper* build than special teams was. The reason is a reversal of the problem

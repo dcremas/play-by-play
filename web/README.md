@@ -1,5 +1,15 @@
 # Special Teams · Instance Explorer
 
+> **Scope note, 2026-09-08.** The warehouse now holds every play, not just kicks — the
+> schema is `pbp` and the snapshot carries a `scrimmage` table of 1.5M rows beside `play`.
+> **This app is deliberately unchanged and remains special-teams-only** (PLAN.md §10j.4).
+> The interface decision was deferred until the new fact had been queried directly, not
+> because it is hard. Two open questions are recorded in the README's "Not built".
+>
+> The DuckDB view this app creates is named `st`. That is unrelated to the old Postgres
+> schema name and was left alone on purpose: it still means special teams, which is exactly
+> what this app shows.
+
 A Dash application for reading the snapshot one **kick at a time**. Where `app.py`
 (the Streamlit console) answers "is this table trustworthy and what is worth
 modelling", this answers "show me the actual instances, by player and by team, and
