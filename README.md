@@ -35,7 +35,7 @@ implementation notes) are kept, but nothing here depends on them.
 | **Read path** | `data/out/pbp.duckdb` — wide `play` and `scrimmage` tables plus `drive`, 251 MB, rebuilt from Postgres in one command |
 | **Parse quality** | kicks: 98.51% of rows `exact`. Scrimmage needs no parser — `statYardage` and `down` are structured fields at 100% coverage |
 | **People** | one shared `dim_athlete` of 62,879 athletes, 100% named and positioned from ESPN; 29,819 appear in both facts. 98.7% of kicks carry a kicker id |
-| **Apps** | Dash instance explorer · Excel reports · one-page ERD. Both apps are special-teams-only by choice — see [Not built](#not-built) |
+| **Apps** | Dash instance explorer (all 1.83M plays, through an Offense / Defense / Special teams lens) · Excel reports (kicks) · one-page ERD (both facts) |
 
 Does it behave like football? These come out of the data, not out of a reference book:
 
@@ -118,7 +118,7 @@ cfb-pbp/
 │   ├── enrich_game_context.sql                   the three columns the loaders leave NULL
 │   └── verify.sql  verify_phase4.sql             assertion suites
 │
-├── web/               Dash instance explorer, over the snapshot
+├── web/               Dash instance explorer — every play, three lenses
 ├── reports/           formatted Excel workbooks + the ERD output
 │
 └── data/              ~1 GB, all of it re-derivable from ESPN
@@ -162,8 +162,8 @@ explorer's header shows how old the snapshot is.
 | **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts; both applications; the weekly in-season update; the ERD |
 | **In progress right now** | the 2026 season, 99 games deep. `scripts/update_season.py 2026` pulls both facts forward |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
-| **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); the apps reading the scrimmage fact |
-| **Open follow-ups** | Reconsider PATs for the explorer now that they link at 98.8%; decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9). All in [Not built](#not-built) |
+| **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
+| **Open follow-ups** | A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9) |
 
 ---
 
@@ -285,8 +285,9 @@ unset in January.
   snapshot carries `fbs_vs_fbs` precomputed, so either cut is one `WHERE` — and
   kicker-quality work almost always wants the FBS-only one.
 - **Extra points and two-point tries are in the table.** They are placekicks, they are
-  71,385 rows, and they are cheap to carry. The Dash explorer excludes them from its own
-  scope; the table does not.
+  71,385 rows, and they are cheap to carry. The Dash explorer carries them too, on a chip
+  that is off by default — 67,678 attempts from one spot would put a spike at one distance
+  in every distance-based view, which is a presentation problem rather than a scope one.
 - **169 of 10,470 games have no play-by-play at all** (1.6%), because ESPN carries none for
   them. Mostly FBS-vs-FCS. They are in `fact_game` and absent from both fact tables, which
   is why `count(DISTINCT game_id)` on plays is 10,301, not 10,470. The two facts agree
@@ -1445,22 +1446,57 @@ Two front ends over the same snapshot, with deliberately different jobs, plus th
 .venv/bin/python -m web.app          # http://127.0.0.1:8060
 ```
 
-It answers "show me the actual instances and let me take them apart". Field goals, punts
-and kickoffs only — 244,937 of the 316,397 rows — and profiles for the **kicking side
-only**.
+It answers "show me the actual instances and let me take them apart", over every play in
+the corpus. **The first choice is the side**, and it is the most prominent control on the
+page:
+
+| lens | reads | rows | subject of a row |
+|---|---|---|---|
+| **Offense** | `off_play` over the snapshot's `scrimmage` | 1,510,679 | the team with the ball |
+| **Defense** | `def_play` over the same table | 1,510,679 | the team facing it |
+| **Special teams** | `st_play` over `play` | 316,397 | the kicking team |
+
+**Offense and defense are one set of rows read from opposite ends, not two copies.** One
+scrimmage row is one row in each view: `team_id` is whoever the lens is about, `opp_id` is
+the other side, and everything signed flips with the subject — `score_diff` is the
+subject's margin, and a pick-six is +7 to the defense and −7 to the offense. The same
+event, relabelled: `yards_gained` is "Yards" to one side and "Yards allowed" to the other.
+That is the same shape as `kicking_team_id` / `receiving_team_id` on the kicks, which is
+why there is no third fact table for defense — see [Not built](#not-built).
+
+**Exactly one lens is on screen at a time, deliberately.** A rush row and a punt row share
+almost no measured fields, so a grid holding both would be mostly empty in both directions.
+An exclusive choice gives every column set, metric and chart one vocabulary to serve, which
+is what lets the filter and sort translation stay lens-blind — it interpolates a view name
+and never learns what is in it. `web/lens.py` is the only module that knows the difference.
 
 | surface | route | what it is |
 |---|---|---|
-| **Explorer** | `/` | one filter set, three grains. **Plays** is the point: 242k rows on AG Grid's infinite row model. **Kickers & punters** and **Teams** are the same selection rolled up; clicking a row opens that entity |
+| **Explorer** | `/` | one filter set, one lens, two or three grains. **Plays** is the point: up to 1.5M rows on AG Grid's infinite row model. **Teams** is the same selection rolled up. **Kickers & punters** is on the kicks lens only — the one side with an honest player grain today |
 | **Player** | `/player/<athlete_id>` | one page per athlete, with a section for each phase he actually kicks in. 1,533 of the 2,729 players with five or more kicks work more than one phase and 302 do all three, which is why it is one page per person rather than per role |
 | **Team** | `/team/<team_id>` | decade roll-up on top, one row per season under it, then who kicked, then every kick |
 
-Sidebar filters are **global**: a player page and a team page both honour them, each
-ignoring only the facet it *is*. Clicking any play row opens a detail drawer that leads with
-**who was involved** — kicker, returner, tackler, plus assisting tacklers from
-`play_athlete` — each with the parser's name-match confidence and a link to their profile,
-and the kicker carrying the line he had built that season *before* this kick. Situation,
-environment and the verbatim `play_text` sit in collapsed sections underneath.
+The two profile pages are **pinned to the kicks lens** whatever the header shows: they
+profile placekickers, punters and kickoff specialists, so reading them through the offense
+lens would apply scrimmage-only facets to a view with no such columns. Team rows on the
+scrimmage lenses therefore do not navigate, and the hint above the grid says so rather than
+silently changing the subject.
+
+Sidebar filters are **global** and the sidebar is **one static set of controls that
+relabels itself** rather than three. "Team" reads *Offense*, *Defense* or *Kicking team*;
+down and field zone appear only on the scrimmage lenses and kick distance only on the
+kicks; every filter that still means something keeps its value when the side changes. Two
+do not and are cleared — the player picker (a quarterback is not a tackler) and any outcome
+the new vocabulary cannot produce (`Touchback` on offense).
+
+Clicking any play row opens a detail drawer that leads with **who was involved**. On a kick
+that is the kicker, returner, tackler and whoever got a hand on it, plus assisting tacklers
+from `play_athlete`, each with the parser's name-match confidence and a link to their
+profile, and the kicker carrying the line he had built that season *before* this kick. On a
+scrimmage play it is the passer, rusher and receiver off the row plus every role
+`scrimmage_athlete` carries — which is why a sack with no tackler id still names who got
+there. Situation, environment and the verbatim `play_text` sit in collapsed sections
+underneath.
 
 The play grid is server-side (`rowModelType="infinite"`). Sorting and every per-column
 header filter are translated to SQL and pushed into DuckDB, so the browser never holds more
@@ -1468,13 +1504,30 @@ than a dozen 120-row blocks, header filters compose with the sidebar rather than
 it, and every `ORDER BY` is tie-broken on `play_uid` so paging is stable.
 
 Design decisions in `web/` that are settled unless deliberately reopened: descriptive only,
-**no models**; three phases only (extra points and two-point tries were removed from scope
-mid-design); kicking side only; `Unknown` is a first-class outcome; `Onside` is tested before
-the real outcomes, because an onside kick is a different play rather than a kickoff with an
-unusual result — folding it in both muddied touchback rates and would dump 1,382 of the 1,486
+**no models**; the side is exclusive, never a union; profiles are kicking side only;
+conversions are in the kicks lens but off by default, because 67,678 extra points from one
+spot would put a spike at one distance in every distance view; `Unknown` is a first-class
+outcome and so are `Negated` and `Unclassified`; `Onside` is tested before the real
+outcomes, because an onside kick is a different play rather than a kickoff with an unusual
+result — folding it in both muddied touchback rates and would dump 1,382 of the 1,486
 onside kicks into `Unknown`. `web/README.md` carries the palette-validation record and two
 implementation notes that each cost real debugging time (dash-ag-grid ships only the light
 `quartz` stylesheet; never pass `None` to a Mantine colour prop).
+
+Two feed properties are handled in `web/data.py` rather than left to each caller, because
+both would otherwise publish a confidently wrong number:
+
+- **`statYardage` on a turnover is the defense's return, not the offense's gain.** ESPN
+  credits 35 yards to the offense's row of a 35-yard pick-six. Turnovers are held out of
+  every mean-yards measure — including them lifts the passing mean from 7.5 to 13.2 yards —
+  and both the KPI note and the chart title say so.
+- **Four rows carry an impossible `statYardage`** (11,131 and 561 yards gained, −5,114 and
+  1,105 on penalties). They are NULLed rather than clamped, and `yards_impossible` flags
+  them so they light up in a grid instead of quietly setting a longest-play record. The
+  plausibility window is ±110 rather than ±99 because 100-yard interception returns are
+  real — there are 45 of them. **The upstream fix belongs in `build_scrimmage.py`**, next
+  to the positional-sentinel guard that already does this for six other columns; the view
+  is holding the line until then.
 
 ### `reports/` — formatted Excel
 
@@ -1670,10 +1723,11 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-08 | **Names taken from ESPN instead of play text** | voting names out of the text named only **25.9%** of athletes, and would have done worse on scrimmage — 107 of 698 passers in 2024 | `fetch_athletes.py`; **100% named, 100% with a position**. The voted name is kept in `text_name` as an independent cross-check: 8,018 of 8,794 agree exactly, and all 776 disagreements are spelling variants, gamebook initials or real name changes |
 | 2026-09-08 | **Standalone conversions recovered** | `emit_pat` fires on `scoringPlay or "kick attempt" in text`, read off the *touchdown* play, so it never saw the conversions ESPN emits as their own row | 48 two-point attempts (mostly overtime) and 75 `defensive_conversion` rows — the defence returning a blocked PAT, a different event from the offence's failed try. `emit_pat` also assigned the scoring team by *swapping* two ids, which fails when `start.team.id` is NULL: all three conversions in the 9OT Illinois–Penn State game were on Penn State |
 | 2026-09-08 | **Empty-staging guard on both athlete loaders** | every other guard passes vacuously on an empty set, so `TRUNCATE pbp.dim_athlete` emptied the dimension, the bridge `DELETE` removed a season, the apply put nothing back — and psql exited **0**. One mistyped `\copy` path is enough | both loaders now refuse. Found by making that exact mistake |
-| 2026-09-08 | **Renamed `st` → `pbp`, repo → `cfb-pbp`** | the schema was named for special teams and now holds every play | 374 references across 29 files, matched on table names rather than the bare `st.` prefix — `app.py`, then still in the tree, did `import streamlit as st`. The DuckDB view named `st` in `web/data.py` was deliberately left alone: it still means special teams |
+| 2026-09-08 | **Renamed `st` → `pbp`, repo → `cfb-pbp`** | the schema was named for special teams and now holds every play | 374 references across 29 files, matched on table names rather than the bare `st.` prefix — `app.py`, then still in the tree, did `import streamlit as st`. The DuckDB view named `st` in `web/data.py` was deliberately left alone: it still meant special teams. It became `st_play` on 2026-09-09, when the offense and defense views joined it and a bare `st` stopped being unambiguous |
 | 2026-09-08 | **Score-lag repaired** | ESPN's score column reports a stale, pre-scoring snapshot on 6,470 rows and is out of order on 765 more, so the running score stepped backward in 33.9% of games. Read literally that produced 7,237 negative point deltas and credited 14,002 plays with points they did not score | one invariant — a score never goes down — clamps each team's running total to its own maximum, in a helper both builders call. Negative deltas 7,237 → **0**, phantom point rows 14,002 → **584**, reconstructed finals matching the official score 10,021 → **10,053** of 10,301, conversions on the correct team 99.814% → **99.846%** against game-local ground truth. Sorting into clock order first, and using raw deltas as a tiebreak, were both tried and both measured worse |
 | 2026-09-08 | **`score_diff_kicking` means what it says** | it documented "the kicking team's margin before the play" but was computed from ESPN's after-play scoreboard, so a made field goal carried a margin that already included the three points it had just scored | now taken from the repaired running score entering the play, like `score_diff_offense`. **22,562 of 23,220 made field goals moved by exactly −3**; **7,813 of 8,044 missed field goals did not move at all**, which is the control. Conversion rows get the margin the KICKER faced — after the touchdown, before his own kick — since a `pat` row is derived from the touchdown play. `is_clutch` flips on 662 of 316,397 rows; no measured column moved, FG% is 74.27% before and after |
 | 2026-09-08 | **Rollback tables dropped** | four tables from the expansion, kept until the new coverage was trusted | `cfb` 1,369 MB → 1,327 MB; the schema holds exactly the eleven tables the pipeline needs |
+| 2026-09-09 | **Explorer reads every play, through three lenses** | the app covered 244,937 of 1,827,076 plays; the scrimmage fact had been queryable offline since 2026-09-08 and no surface read it | `web/lens.py` and three views — `off_play` and `def_play` over `snap.scrimmage`, `st_play` over `snap.play`, all normalised to one column vocabulary so the filter and sort translation stayed lens-blind. **Offense and defense are one row read from opposite ends, not two copies**: verified over all 1,510,679 rows that `score_diff` and `points_scored` are exact negations and the team ids exactly swap. Conversions joined the kicks lens as a default-off chip. Two feed defects surfaced and are handled rather than published: `statYardage` on a turnover is the *defense's return* (it lifts the passing mean 7.5 → 13.2, so turnovers are out of every mean-yards measure) and four rows carry an impossible value (11,131 yards on a 2017 pass), NULLed not clamped, flagged by `yards_impossible`. Found `is_home_offense` NULL on 15 rows reading as "Away" on **both** lenses at once; `site` is now NULL there, and the same latent defect was fixed on the kicks' 4 rows |
 | 2026-09-09 | **The Streamlit console was removed** | it was no longer wanted; the Dash explorer and the Excel reports cover what is still read | `app.py` deleted (1,189 lines) and five pins dropped — `streamlit`, `scikit-learn`, and the `scipy` / `matplotlib` / `pytz` sitting beside them that nothing in the repository imports. Every reference was rewritten, `PLAN.md`'s design record included. **Two capabilities went with it and are replaced nowhere.** The **20 scored rule assertions**: `verify.sql` and `verify_phase4.sql` still print the same underlying counts, but nothing grades them or judges a check on its worst single season. The **two fitted baselines** `fg_exp` / `punt_exp`: what they measured is kept in [Not built](#not-built) so a rebuild starts from a known bar rather than from scratch. |
 
 ---
@@ -1732,20 +1786,31 @@ Before building any of it, read [Known limits §9](#9-espns-score-column-lags-a-
 `points_scored` was repaired on 2026-09-08 and is now sound on 99.9% of plays, but the
 residue is enumerated there and matters for a scoring model.
 
-### The apps do not read the scrimmage fact
+### Player-grain surfaces on the scrimmage side
 
-`web/` is special-teams-only, by choice rather than by obstacle (PLAN.md §10j.4). The snapshot carries `scrimmage`, `drive` and `scrimmage_athlete`, so the
-data is queryable offline today; what is deferred is the *interface* decision, on the
-grounds that the shape of an offensive play page is not knowable before spending time with
-the data.
+**Resolved on 2026-09-09 for the explorer**: it reads every play through an Offense /
+Defense / Special teams lens, and both open questions this section used to hold were
+answered. "One explorer or two" became *one*, because making the side exclusive gives each
+lens its own column vocabulary without a `UNION`. Conversions came into the kicks lens as a
+default-off chip. What is left is the player grain.
 
-Two concrete decisions are waiting whenever that is picked up:
-
-- **One explorer or two.** Widening the existing phase chips from three kicking phases to
-  include rush and pass means one grid over a `UNION` view, and `web/columns.py` would have
-  to cope with a rush row and a punt row sharing almost no measured fields. A parallel
-  offence explorer duplicates chrome but keeps what works untouched.
-- **Player pages.** They are kicking-side only today. A role-aware unified page — sections
+- **A defensive leaderboard has to be built on `pbp.scrimmage_athlete`, not on the play
+  row.** ESPN's structured `tackler_athlete_id` is credited on **41% of rushes and 28% of
+  passes** — it is the first tackler and nothing else — so any count built on it understates
+  by two-thirds. The bridge has the real vocabulary: 482,325 `tackler`, 388,978
+  `assistedBy`, 44,986 `sackedBy`, 41,503 `passDefender`, 32,316 distinct defenders. That is
+  a **(play, role, athlete) grain**, so it is a separate query and not a column swap —
+  joining it onto the play grid would multiply a play by its defenders. The detail drawer
+  already reads it, which is the proof it works and the reason a sack with no tackler id
+  still names who got there.
+- **An offensive leaderboard has to choose a role per play.** Passer, rusher and receiver
+  are all on the row at effectively 100% on their own play kinds, so the query is cheap;
+  what needs deciding first is the definitional set NCAA imposes — sack yardage charged
+  against rushing, an interception counting as an attempt but not a completion — the same
+  list [Derived stat lines](#derived-stat-lines-and-team-box-scores--a-group-by-not-a-build)
+  spells out. A leaderboard is not worth shipping before those are written down.
+- **Profile pages are kicking-side only** and pinned to the kicks lens, so a team row on
+  the scrimmage lenses deliberately does not navigate. A role-aware unified page — sections
   shown by what the athlete actually did — is what the shared `dim_athlete` was built for,
   and `position` now makes "every QB season since 2014" a query rather than a guess.
 
@@ -1753,11 +1818,13 @@ Two concrete decisions are waiting whenever that is picked up:
 
 Both are the user's words and both are currently unstarted:
 
-1. **Reconsider PATs for the explorer.** Part of why conversions were excluded was that they
-   had no usable kicker identity — `kicker_athlete_id` was NULL on all 58,535 of them. That
-   was fixed on 2026-08-31 and they now link at 98.8%, so the original reason no longer
-   holds. The other reason — that PATs are ~67k attempts at one distance and would drown any
-   distance-based view — still does.
+1. **~~Reconsider PATs for the explorer.~~ Done, 2026-09-09.** Part of why conversions were
+   excluded was that they had no usable kicker identity — `kicker_athlete_id` was NULL on all
+   58,535 of them — and that was fixed on 2026-08-31. The other reason still held: ~67k
+   attempts at one distance would drown any distance-based view. So they went in as a fourth
+   phase chip that is **off by default**, which makes the corpus complete without putting a
+   spike at one distance in every chart. Selecting it takes the kicks lens from 244,937 rows
+   to all 316,397.
 2. **The baselines — a rebuild now, not a port.** The explorer deliberately carries no
    models, and that was framed as provisional ("for now"), making it the likeliest of these
    decisions to revisit. The two baselines it would have inherited went with the Streamlit

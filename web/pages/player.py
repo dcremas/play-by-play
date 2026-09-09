@@ -14,7 +14,7 @@ import dash_mantine_components as dmc
 from dash import Input, Output, State, callback, dcc, html
 from dash.exceptions import PreventUpdate
 
-from .. import charts, data, ui
+from .. import charts, data, lens, ui
 from . import common
 
 _ROLE_LABEL = {"field_goal": "Placekicker", "punt": "Punter", "kickoff": "Kickoff"}
@@ -31,13 +31,13 @@ def _profile(athlete_id: int) -> dict:
                arg_max(team_id, season) AS last_team_id,
                arg_max(team, season) AS last_team,
                avg(player_conf) AS conf
-        FROM st WHERE player_id = {athlete_id}
+        FROM st_play WHERE player_id = {athlete_id}
     """)
     if df.empty or not int(df.iloc[0]["kicks"] or 0):
         raise LookupError(athlete_id)
     row = df.iloc[0]
     phases = data.q(f"""
-        SELECT play_kind, count(*) n FROM st
+        SELECT play_kind, count(*) n FROM st_play
         WHERE player_id = {athlete_id} GROUP BY 1
     """)
     counts = dict(zip(phases["play_kind"], phases["n"].astype(int)))
@@ -58,7 +58,7 @@ def crumb(athlete_id: int):
 
 def layout(athlete_id: int, mode: str = "dark"):
     p = _profile(athlete_id)
-    present = [k for k in data.PHASE_ORDER if p["counts"].get(k)]
+    present = [k for k in common.SEASON_KINDS if p["counts"].get(k)]
 
     role_badges = [
         dmc.Badge(f"{_ROLE_LABEL[k]} · {p['counts'][k]:,}", variant="light",
@@ -94,7 +94,7 @@ def layout(athlete_id: int, mode: str = "dark"):
         dmc.Divider(),
         dmc.Tabs(id="pl-tabs", value=present[0] if present else None, children=[
             dmc.TabsList([
-                dmc.TabsTab(data.PHASES[k], value=k) for k in present
+                dmc.TabsTab(lens.PHASES["st"][k], value=k) for k in present
             ]),
             *[dmc.TabsPanel(html.Div(id=f"pl-panel-{k}"), value=k) for k in present],
         ]),
@@ -112,7 +112,7 @@ def _kpis(ent, flt, mode):
     if not ent or ent.get("kind") != "player":
         raise PreventUpdate
     where = common.entity_where(ent, flt)
-    rows = common.agg_frame("player", where)
+    rows = common.agg_frame("st", "player", where)
     if not rows:
         return dmc.Alert("This player has no kicks under the current filters.",
                          color="gray", variant="light")
@@ -150,7 +150,7 @@ def _panel(kind: str, ent, flt, mode):
     where = common.entity_where(ent, flt)
     rows = common.season_rows(kind, where)
     if not rows:
-        return dmc.Alert(f"No {data.PHASES[kind].lower()} plays under these filters.",
+        return dmc.Alert(f"No {lens.PHASES['st'][kind].lower()} plays under these filters.",
                          color="gray", variant="light")
     caveat = None
     if kind in ("punt", "kickoff"):
@@ -199,5 +199,5 @@ def _register_panel(kind: str):
                 charts.outcome_by_distance(scoped, [_kind], mode, 320))
 
 
-for _k in data.PHASE_ORDER:
+for _k in common.SEASON_KINDS:
     _register_panel(_k)

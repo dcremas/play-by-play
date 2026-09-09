@@ -1,8 +1,15 @@
-"""Special Teams Instance Explorer.
+"""CFB Play-by-Play Instance Explorer.
 
 A Dash application over the DuckDB snapshot, aimed at the individual instance: one
-row per kick, filterable down to a single player in a single situation, with every
+row per play, filterable down to a single player in a single situation, with every
 row opening into who was actually on the field for it.
+
+The first choice is the side. Offense, defense and special teams are three lenses on
+one corpus -- see web/lens.py -- and picking one sets the vocabulary for everything
+below it: which phases exist, what a team column means, what a row is called, which
+measures are on the tiles. The sidebar is one static set of controls that relabels
+and reveals itself per lens rather than three sidebars, so every filter keeps its
+value when the side changes and nothing has to be re-picked.
 
 Run:  .venv/bin/python -m web.app
 """
@@ -10,14 +17,14 @@ from __future__ import annotations
 
 import dash
 import dash_mantine_components as dmc
-from dash import Input, Output, State, dcc, html, no_update
+from dash import Input, Output, State, ctx, dcc, html, no_update
 
-from . import data, detail, theme, ui
+from . import data, detail, lens, theme, ui
 from .pages import explorer, player, team
 
 app = dash.Dash(
     __name__,
-    title="Special Teams Explorer",
+    title="CFB Play-by-Play Explorer",
     external_stylesheets=dmc.styles.ALL,
     suppress_callback_exceptions=True,
     update_title=None,
@@ -31,37 +38,41 @@ LIVE = data.in_progress_seasons()
 
 
 # --------------------------------------------------------------------------- sidebar
-def _label(text: str):
-    return dmc.Text(text, className="filter-label", mt=6)
+def _label(text: str, cid: str | None = None):
+    kw = {"id": cid} if cid else {}
+    return dmc.Text(text, className="filter-label", mt=6, **kw)
 
 
 def sidebar() -> list:
+    key = lens.DEFAULT
     return [
         _label("Phase"),
         dmc.ChipGroup(
-            id="f-phases", multiple=True, value=list(data.PHASE_ORDER),
-            children=dmc.Group(gap=4, children=[
-                dmc.Chip(data.PHASES[k], value=k, size="xs", variant="light")
-                for k in data.PHASE_ORDER
+            id="f-phases", multiple=True, value=lens.default_chips(key),
+            children=dmc.Group(gap=4, id="f-phase-chips", children=[
+                dmc.Chip(lens.PHASES[key][k], value=k, size="xs", variant="light")
+                for k in lens.chips(key)
             ]),
         ),
+        html.Div(id="f-phase-note"),
         _label(f"Seasons  {S0}–{S1}"),
         dmc.RangeSlider(
             id="f-seasons", min=S0, max=S1, step=1, value=[S0, S1], minRange=0,
             size="sm", mb="lg", mt=4,
             marks=[{"value": s, "label": str(s)[2:]} for s in range(S0, S1 + 1)],
         ),
-        _label("Kicking team"),
-        dmc.MultiSelect(id="f-teams", data=data.team_options(), value=[], size="xs",
+        _label(lens.SUBJECT[key], "lbl-teams"),
+        dmc.MultiSelect(id="f-teams", data=data.team_options(key), value=[], size="xs",
                         searchable=True, clearable=True, limit=60, hidePickedOptions=True,
                         placeholder="All teams", nothingFoundMessage="No team"),
-        _label("Kicker / punter"),
+        _label(lens.PLAYER[key], "lbl-players"),
         dmc.MultiSelect(id="f-players", data=[], value=[], size="xs", searchable=True,
                         clearable=True, limit=60, hidePickedOptions=True,
                         placeholder="All players",
-                        nothingFoundMessage="No player with 3+ kicks"),
+                        nothingFoundMessage="Nobody over the volume floor"),
+        html.Div(id="f-player-note"),
         _label("Outcome"),
-        dmc.MultiSelect(id="f-outcomes", data=data.outcome_options(), value=[],
+        dmc.MultiSelect(id="f-outcomes", data=data.outcome_options(key), value=[],
                         size="xs", clearable=True, placeholder="All outcomes"),
         dmc.Space(h=6),
         dmc.Accordion(
@@ -70,12 +81,14 @@ def sidebar() -> list:
                 dmc.AccordionItem(value="opp", children=[
                     dmc.AccordionControl(dmc.Text("Opponent & competition", size="xs", fw=600)),
                     dmc.AccordionPanel([
-                        _label("Opponent"),
-                        dmc.MultiSelect(id="f-opponents", data=data.team_options(), value=[],
-                                        size="xs", searchable=True, clearable=True, limit=60,
+                        _label(lens.OPPONENT[key], "lbl-opponents"),
+                        dmc.MultiSelect(id="f-opponents", data=data.team_options(key),
+                                        value=[], size="xs", searchable=True,
+                                        clearable=True, limit=60,
                                         placeholder="All opponents"),
-                        _label("Kicking team conference"),
-                        dmc.MultiSelect(id="f-conferences", data=data.conference_options(),
+                        _label("Conference", "lbl-conferences"),
+                        dmc.MultiSelect(id="f-conferences",
+                                        data=data.conference_options(key),
                                         value=[], size="xs", searchable=True, clearable=True,
                                         placeholder="All conferences"),
                         _label("Season type"),
@@ -102,17 +115,36 @@ def sidebar() -> list:
                                           dmc.Chip(str(i), value=str(i), size="xs",
                                                    variant="light") for i in (1, 2, 3, 4, 5)
                                       ])),
-                        _label("Score state (kicking team)"),
+                        _label("Score state", "lbl-score-state"),
                         dmc.ChipGroup(id="f-score-states", multiple=True, value=[],
                                       children=dmc.Group(gap=4, children=[
                                           dmc.Chip(s, value=s, size="xs", variant="light")
                                           for s in ("Leading", "Tied", "Trailing")
                                       ])),
-                        _label("Kick distance (yd)"),
-                        dmc.RangeSlider(id="f-dist", min=D0, max=D1, step=1,
-                                        value=[D0, D1], size="sm", mb="md", mt=4,
-                                        marks=[{"value": v, "label": str(v)}
-                                               for v in (D0, 30, 60, 90, D1)]),
+                        # Down and field position are the first questions anyone asks
+                        # of a scrimmage play and mean nothing on a kickoff; kick
+                        # distance is the reverse. Both live here and one is hidden.
+                        html.Div(id="f-scrim-wrap", children=[
+                            _label("Down"),
+                            dmc.ChipGroup(id="f-downs", multiple=True, value=[],
+                                          children=dmc.Group(gap=4, children=[
+                                              dmc.Chip(str(i), value=str(i), size="xs",
+                                                       variant="light")
+                                              for i in (1, 2, 3, 4)
+                                          ])),
+                            _label("Field zone"),
+                            dmc.MultiSelect(id="f-zones",
+                                            data=data.zone_options(lens.DEFAULT),
+                                            value=[], size="xs", clearable=True,
+                                            placeholder="Anywhere on the field"),
+                        ]),
+                        html.Div(id="f-kick-wrap", children=[
+                            _label("Kick distance (yd)"),
+                            dmc.RangeSlider(id="f-dist", min=D0, max=D1, step=1,
+                                            value=[D0, D1], size="sm", mb="md", mt=4,
+                                            marks=[{"value": v, "label": str(v)}
+                                                   for v in (D0, 30, 60, 90, D1)]),
+                        ]),
                         dmc.Switch(id="f-clutch", size="xs", checked=False,
                                    label="Clutch only (4th qtr / OT, within 8)"),
                     ]),
@@ -122,7 +154,8 @@ def sidebar() -> list:
                                                   fw=600)),
                     dmc.AccordionPanel([
                         _label("Surface"),
-                        dmc.MultiSelect(id="f-surfaces", data=data.surface_options(),
+                        dmc.MultiSelect(id="f-surfaces",
+                                        data=data.surface_options(key),
                                         value=[], size="xs", clearable=True,
                                         placeholder="Both"),
                         _label("Division"),
@@ -139,10 +172,9 @@ def sidebar() -> list:
                                          {"value": "exclude", "label": "Exclude neutral"}]),
                         dmc.Space(h=8),
                         dmc.Switch(id="f-linked", size="xs", checked=False,
-                                   label="Only kicks linked to an athlete id"),
+                                   label="Only rows linked to an athlete id"),
                         dmc.Space(h=6),
-                        ui.note("Athlete linking is thinnest in 2025 — switching this "
-                                "on drops unlinked kicks from every count.", "info"),
+                        html.Div(id="f-linked-note"),
                     ]),
                 ]),
             ],
@@ -159,16 +191,19 @@ def header():
     stamp = built.strftime("%d %b %Y %H:%M") if built else "unknown"
     return dmc.Group(justify="space-between", w="100%", children=[
         dmc.Group(gap="sm", children=[
-            dmc.Anchor(dmc.Text("Special Teams · Instance Explorer",
-                                className="st-brand", size="sm"),
+            dmc.Anchor(dmc.Text("CFB Play-by-Play", className="st-brand", size="sm"),
                        href="/", underline="never", c="inherit"),
+            # The first choice, and the most prominent control in the app.
+            dmc.SegmentedControl(id="lens-pick", value=lens.DEFAULT,
+                                 data=lens.segmented(), size="xs",
+                                 persistence=True, persistence_type="local"),
             dmc.Divider(orientation="vertical"),
-            dmc.Text(f"{META['rows']:,} kicks · {S0}–{S1}", size="xs", c="dimmed"),
+            dmc.Text(f"{META['total']:,} plays · {S0}–{S1}", size="xs", c="dimmed"),
             # A season still being played is in the corpus like any other, and its rows
             # look like any other. This is the only thing that says it is three weeks deep.
             *[dmc.Tooltip(
                 label=(f"{r['season']} is still being played — {r['games']:,} games, "
-                       f"{r['plays']:,} kicks, through week {r['week']}. Counts and rates "
+                       f"{r['plays']:,} plays, through week {r['week']}. Counts and rates "
                        f"for it are partial. Refresh with scripts/update_season.py "
                        f"{r['season']}."),
                 multiline=True, w=320,
@@ -195,6 +230,7 @@ app.layout = dmc.MantineProvider(
     children=[
         dcc.Location(id="url", refresh=False),
         dcc.Store(id="flt"),
+        dcc.Store(id="lens", data=lens.DEFAULT, storage_type="local"),
         dcc.Store(id="mode", data="dark", storage_type="local"),
         dcc.Store(id="detail-uid"),
         dmc.AppShell(
@@ -228,6 +264,119 @@ def _apply_mode(mode):
     return mode or "dark"
 
 
+# --------------------------------------------------------------------------- lens
+@app.callback(Output("lens", "data"), Input("lens-pick", "value"))
+def _set_lens(value):
+    return lens.resolve(value)
+
+
+@app.callback(
+    Output("f-phase-chips", "children"),
+    Output("f-phases", "value"),
+    Output("f-phase-note", "children"),
+    Input("lens", "data"),
+    Input("f-reset", "n_clicks"),
+)
+def _phase_chips(key, _n_reset):
+    """The phase vocabulary is per lens, so the chips are rebuilt rather than reused.
+
+    Anything left selected from the previous lens is dropped here; lens.kinds_for
+    also refuses to honour a foreign chip, so the transient state between this
+    callback and the filter store can never produce a wrong WHERE clause.
+    """
+    key = lens.resolve(key)
+    chips = [dmc.Chip(lens.PHASES[key][k], value=k, size="xs", variant="light")
+             for k in lens.chips(key)]
+    note = None
+    if key == "st":
+        note = ui.note(
+            "Conversions — extra points, two-point tries and the 75 defensive "
+            "conversions — are in the corpus and off by default: 67,678 of them are "
+            "extra points from one spot, and leaving them on puts a spike at one "
+            "distance in every distance view.", "neutral")
+    return chips, lens.default_chips(key), note
+
+
+@app.callback(
+    Output("lbl-teams", "children"), Output("lbl-players", "children"),
+    Output("lbl-opponents", "children"), Output("lbl-conferences", "children"),
+    Output("lbl-score-state", "children"),
+    Input("lens", "data"),
+)
+def _relabel(key):
+    key = lens.resolve(key)
+    return (lens.SUBJECT[key], lens.PLAYER[key], lens.OPPONENT[key],
+            f"{lens.SUBJECT[key]} conference",
+            f"Score state ({lens.SUBJECT[key].lower()})")
+
+
+@app.callback(
+    Output("f-teams", "data"), Output("f-opponents", "data"),
+    Output("f-conferences", "data"), Output("f-surfaces", "data"),
+    Output("f-outcomes", "data"), Output("f-zones", "data"),
+    Input("lens", "data"),
+)
+def _option_lists(key):
+    key = lens.resolve(key)
+    teams = data.team_options(key)
+    return (teams, teams, data.conference_options(key), data.surface_options(key),
+            data.outcome_options(key), data.zone_options(key))
+
+
+@app.callback(
+    Output("f-players", "value"),
+    Output("f-outcomes", "value"),
+    Input("lens", "data"),
+    Input("f-reset", "n_clicks"),
+    State("f-outcomes", "value"),
+)
+def _lens_scoped_values(key, _n_reset, outcomes):
+    """The two facets whose *values* only mean something within one lens.
+
+    An athlete id picked on one side rarely means anything on another -- a
+    quarterback is not a tackler -- so the player picker empties with the side.
+    Outcomes survive where the new vocabulary still contains them: `Sack` and
+    `Penalty` are in all three, `Touchback` is in none of the scrimmage ones, and a
+    value the new lens cannot produce is dropped rather than left there silently
+    matching no rows.
+
+    Reset routes through here too. It is the same intent -- clear what is scoped --
+    and one owner per output is what keeps Dash from rejecting the layout.
+    """
+    if ctx.triggered_id == "f-reset":
+        return [], []
+    valid = set(data.outcome_options(lens.resolve(key)))
+    return [], [o for o in (outcomes or []) if o in valid]
+
+
+@app.callback(
+    Output("f-scrim-wrap", "style"), Output("f-kick-wrap", "style"),
+    Input("lens", "data"),
+)
+def _toggle_facets(key):
+    scrim = lens.is_scrimmage(lens.resolve(key))
+    return ({} if scrim else {"display": "none"},
+            {"display": "none"} if scrim else {})
+
+
+@app.callback(
+    Output("f-player-note", "children"), Output("f-linked-note", "children"),
+    Input("lens", "data"),
+)
+def _player_notes(key):
+    key = lens.resolve(key)
+    linked = {
+        "off": "Switching this on keeps only plays where ESPN named a passer or a "
+               "rusher — 99.9% of runs and passes, and none of the penalties.",
+        "def": "This keeps only plays with a first tackler in the structured field, "
+               "which drops 59% of rushes and 72% of passes. It is a coverage filter, "
+               "not a quality one.",
+        "st": "Athlete linking is thinnest in 2025 — switching this on drops unlinked "
+              "kicks from every count.",
+    }[key]
+    return ui.note(lens.PLAYER_HINT[key], "neutral"), ui.note(linked, "info")
+
+
 # --------------------------------------------------------------------------- filters
 _FILTER_INPUTS = [
     ("phases", "f-phases", "value"),
@@ -242,6 +391,8 @@ _FILTER_INPUTS = [
     ("conf_game", "f-conf-game", "value"),
     ("qtrs", "f-qtrs", "value"),
     ("score_states", "f-score-states", "value"),
+    ("downs", "f-downs", "value"),
+    ("zones", "f-zones", "value"),
     ("dist", "f-dist", "value"),
     ("clutch_only", "f-clutch", "checked"),
     ("surfaces", "f-surfaces", "value"),
@@ -250,38 +401,59 @@ _FILTER_INPUTS = [
     ("linked_only", "f-linked", "checked"),
 ]
 
+# Reset values, by filter name. Built as a table rather than a positional list so
+# adding a facet cannot silently shift what Reset puts in the one beside it.
+_RESET = {
+    "seasons": [S0, S1], "teams": [], "players": [], "outcomes": [], "opponents": [],
+    "conferences": [], "season_types": [], "fbs_only": False, "conf_game": "any",
+    "qtrs": [], "score_states": [], "downs": [], "zones": [], "dist": [D0, D1],
+    "clutch_only": False, "surfaces": [], "divisions": [], "neutral": "any",
+    "linked_only": False,
+}
+
+# phases, players and outcomes are reset by the two lens-scoped callbacks above,
+# which already own those outputs. Dash allows one writer per output, so they are
+# not in the list the Reset button writes.
+_RESET_TARGETS = [t for t in _FILTER_INPUTS
+                  if t[0] not in ("phases", "players", "outcomes")]
+
 
 @app.callback(
     Output("flt", "data"),
     [Input(cid, prop) for _, cid, prop in _FILTER_INPUTS],
+    Input("lens", "data"),
 )
 def _collect(*vals):
-    f = {key: v for (key, _, _), v in zip(_FILTER_INPUTS, vals)}
+    *facets, key = vals
+    f = {name: v for (name, _, _), v in zip(_FILTER_INPUTS, facets)}
+    f["lens"] = lens.resolve(key)
     # A phase chip group emptied to nothing means "all", not "none" -- an empty
     # explorer is never what the click meant.
     if not f.get("phases"):
-        f["phases"] = list(data.PHASE_ORDER)
+        f["phases"] = lens.default_chips(f["lens"])
     return f
 
 
 @app.callback(
     Output("f-players", "data"),
     Input("f-phases", "value"),
+    Input("lens", "data"),
 )
-def _player_options(phases):
-    """Scope the player picker to the selected phases -- a punter is not a candidate
-    when only field goals are on screen."""
-    return data.player_options(tuple(sorted(phases or data.PHASE_ORDER)))
+def _player_options(phases, key):
+    """Scope the player picker to the lens and the selected phases -- a punter is not
+    a candidate when only field goals are on screen, and neither is a quarterback."""
+    key = lens.resolve(key)
+    chips = [c for c in (phases or []) if c in lens.PHASES[key]]
+    return data.player_options(key, tuple(sorted(chips or lens.default_chips(key))))
 
 
 @app.callback(
-    [Output(cid, prop) for _, cid, prop in _FILTER_INPUTS],
+    [Output(cid, prop) for _, cid, prop in _RESET_TARGETS],
     Input("f-reset", "n_clicks"),
     prevent_initial_call=True,
 )
 def _reset(_n):
-    return [list(data.PHASE_ORDER), [S0, S1], [], [], [], [], [], [], False, "any",
-            [], [], [D0, D1], False, [], [], "any", False]
+    return [_RESET[name] for name, _, _ in _RESET_TARGETS]
 
 
 # --------------------------------------------------------------------------- routing
@@ -325,13 +497,14 @@ def _not_found(path):
     Output("detail-body", "children"),
     Output("detail-drawer", "title"),
     Input("detail-uid", "data"),
+    State("lens", "data"),
     State("mode", "data"),
     prevent_initial_call=True,
 )
-def _open_detail(uid, mode):
+def _open_detail(uid, key, mode):
     if not uid:
         return False, no_update, no_update
-    body, title = detail.render(uid, mode or "dark")
+    body, title = detail.render(uid, lens.resolve(key), mode or "dark")
     return True, body, title
 
 

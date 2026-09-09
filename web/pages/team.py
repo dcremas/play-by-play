@@ -10,7 +10,7 @@ import dash_mantine_components as dmc
 from dash import Input, Output, callback, dcc, html
 from dash.exceptions import PreventUpdate
 
-from .. import charts, data, ui
+from .. import charts, data, lens, ui
 from . import common
 
 
@@ -23,7 +23,7 @@ def _profile(team_id: int) -> dict:
                count(DISTINCT player_id) AS kickers,
                arg_max(conference, season) AS conference,
                arg_max(division, season) AS division
-        FROM st WHERE team_id = {team_id}
+        FROM st_play WHERE team_id = {team_id}
     """)
     if df.empty or not int(df.iloc[0]["kicks"] or 0):
         raise LookupError(team_id)
@@ -45,7 +45,7 @@ def crumb(team_id: int):
 def layout(team_id: int, mode: str = "dark"):
     p = _profile(team_id)
     conf_hist = data.q(f"""
-        SELECT DISTINCT season, conference FROM st
+        SELECT DISTINCT season, conference FROM st_play
         WHERE team_id = {team_id} ORDER BY season
     """)
     moved = conf_hist["conference"].nunique() > 1
@@ -77,16 +77,16 @@ def layout(team_id: int, mode: str = "dark"):
         ]),
         dmc.Divider(label="By season", labelPosition="left"),
         dmc.Tabs(id="tm-tabs", value="field_goal", children=[
-            dmc.TabsList([dmc.TabsTab(data.PHASES[k], value=k)
-                          for k in data.PHASE_ORDER]),
+            dmc.TabsList([dmc.TabsTab(lens.PHASES["st"][k], value=k)
+                          for k in common.SEASON_KINDS]),
             *[dmc.TabsPanel(html.Div(id=f"tm-panel-{k}"), value=k)
-              for k in data.PHASE_ORDER],
+              for k in common.SEASON_KINDS],
         ]),
         dmc.Divider(label="Who kicked", labelPosition="left"),
         ui.note("Click a row to open that player's profile.", "neutral"),
         html.Div(id="tm-people"),
         dmc.Divider(label="Every kick", labelPosition="left"),
-        common.play_grid(mode, data.PHASE_ORDER, height="440px"),
+        common.play_grid(mode, common.SEASON_KINDS, height="440px"),
     ])
 
 
@@ -98,7 +98,7 @@ def layout(team_id: int, mode: str = "dark"):
 def _kpis(ent, flt, mode):
     if not ent or ent.get("kind") != "team":
         raise PreventUpdate
-    rows = common.agg_frame("team", common.entity_where(ent, flt))
+    rows = common.agg_frame("st", "team", common.entity_where(ent, flt))
     if not rows:
         return dmc.Alert("No kicks for this team under the current filters.",
                          color="gray", variant="light")
@@ -133,8 +133,8 @@ def _charts(ent, flt, mode):
         raise PreventUpdate
     mode = mode or "dark"
     where = common.entity_where(ent, flt)
-    ps = sorted(data.phase_set(flt))
-    return charts.explorer_figs(where, ps, mode, 330)
+    ps = common.st_chips(flt)
+    return charts.explorer_figs("st", where, ps, mode, 330)
 
 
 # --------------------------------------------------------------------------- panels
@@ -150,7 +150,7 @@ def _register_panel(kind: str):
         rows = common.season_rows(_kind, common.entity_where(ent, flt))
         if not rows:
             return dmc.Alert(
-                f"No {data.PHASES[_kind].lower()} plays under these filters.",
+                f"No {lens.PHASES['st'][_kind].lower()} plays under these filters.",
                 color="gray", variant="light")
         caveats = []
         live = {r["season"] for r in data.in_progress_seasons()}
@@ -176,7 +176,7 @@ def _register_panel(kind: str):
         ])
 
 
-for _k in data.PHASE_ORDER:
+for _k in common.SEASON_KINDS:
     _register_panel(_k)
 
 
@@ -189,13 +189,13 @@ def _people(ent, flt, mode):
     if not ent or ent.get("kind") != "team":
         raise PreventUpdate
     mode = mode or "dark"
-    rows = common.agg_frame("player", common.entity_where(ent, flt))
-    ps = sorted(data.phase_set(flt))
+    rows = common.agg_frame("st", "player", common.entity_where(ent, flt))
+    ps = common.st_chips(flt)
     # Its own id, not the explorer's `grid-kickers`: sharing the id would have been
     # free row-click navigation, but it also pulls in the explorer's rowData callback,
     # whose `ex-min` Input does not exist on this page.
     return ui.grid("grid-tm-kickers", mode, rows=rows,
-                   columns=common.agg_cols("player", ps, mode),
+                   columns=common.agg_cols("st", "player", ps, mode),
                    height="340px", row_id="player_id")
 
 

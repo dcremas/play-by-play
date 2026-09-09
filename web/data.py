@@ -1,20 +1,32 @@
-"""DuckDB access layer for the special teams instance explorer.
+"""DuckDB access layer for the play-by-play instance explorer.
 
-Scope is the three kicking phases the app covers -- field goals, punts and kickoffs
-(242,868 of the snapshot's 313,583 rows). PATs and two-point tries are excluded.
+Three views, one column vocabulary. `st_play` reads the kicks fact, `off_play` and
+`def_play` read the scrimmage fact from the two sides of the same 1,510,679 events.
+Every one of them exposes `team_id`, `opp_id`, `player_id`, `outcome`, `score_diff`
+and the situation columns under the same names, which is what lets the filter
+translation, the sort translation and the infinite row model below stay lens-blind:
+they interpolate a view name and never learn what is in it.
 
-That exclusion is worth revisiting. Half its original justification was that PAT rows
-carried no kicker identity at all; that was fixed on 2026-08-31 and conversions now link
-at 98.6%. What still holds is that they are ~71k attempts at one distance.
+**Subject-relative is the rule.** On `off_play` the subject is the offense; on
+`def_play` it is the defense. `team_id` is whoever the lens is about, `opp_id` is the
+other side, and everything signed flips with the subject -- `score_diff` is the
+subject's margin and `points_scored` is points the subject gained, so a pick-six is
++7 on defense and -7 on offense. Nothing is duplicated to achieve that: one row in
+`snap.scrimmage` is one row in each view, read from opposite ends.
 
-The snapshot is opened READ_ONLY and attached to an in-memory database, so the view
-below is created without writing to the file and any other reader of the snapshot can
-keep using it at the same time.
+The snapshot is opened READ_ONLY and attached to an in-memory database, so these views
+are created without writing to the file and any other reader of the snapshot can keep
+using it at the same time.
 
-The view is called `st` and that is still correct after the 2026-09-08 rename of the
-Postgres schema from `st` to `pbp`. The two are unrelated: this one means SPECIAL TEAMS,
-which is all this app shows. Renaming it to `pbp` would make it read as "all plays" while
-it still filters to three kicking phases. The snapshot's `scrimmage` table is not read here.
+Two data properties are handled here rather than left to every caller:
+
+  * `statYardage` on a turnover is the *defense's return*, not the offense's gain --
+    ESPN credits 35 yards to the offense row of a 35-yard pick-six. Turnovers are
+    therefore held out of every mean-yards measure, and the KPI row says so.
+  * `statYardage` carries four impossible values (11,131 and 561 yards gained,
+    -5,114 and 1,105 on penalties). They are NULLed, never clamped -- a clamped value
+    is indistinguishable from a real one -- and `yards_impossible` flags the row so
+    they light up in a grid instead of quietly setting a longest-play record.
 """
 from __future__ import annotations
 
@@ -25,28 +37,36 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from . import lens
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "out" / "pbp.duckdb"
 
-PHASES = {"field_goal": "Field goal", "punt": "Punt", "kickoff": "Kickoff"}
-PHASE_ORDER = ["field_goal", "punt", "kickoff"]
+# A play cannot gain or lose more than the field is long. 100-yard interception
+# returns are real -- 45 of them -- so the window sits above them at 110 and catches
+# only the four rows that are feed corruption.
+YARD_LIMIT = 110
 
-# --------------------------------------------------------------------------- view
+# --------------------------------------------------------------------------- kicks view
 # `outcome` collapses the flag columns into one label.
 #
-# `Unknown` is now read straight off the warehouse rather than inferred here. Until
-# 2026-08-31 the flags had no NULL state -- a kick whose outcome the parser could not read
-# was stored as false on every one of them, indistinguishable from a kick that genuinely
-# had no touchback, fair catch or return -- so this view had to reconstruct the unreadable
-# set by testing for all-false. st_parser.py now writes NULL on the five "how did it end"
-# flags in exactly that case, so `returned IS NULL` is the single-column test and the
-# distinction is a fact of the table rather than a convention of this file.
+# `Unknown` is read straight off the warehouse rather than inferred here. Until
+# 2026-08-31 the flags had no NULL state -- a kick whose outcome the parser could not
+# read was stored as false on every one of them, indistinguishable from a kick that
+# genuinely had no touchback, fair catch or return -- so this view had to reconstruct
+# the unreadable set by testing for all-false. st_parser.py now writes NULL on the five
+# "how did it end" flags in exactly that case, so `returned IS NULL` is the
+# single-column test and the distinction is a fact of the table rather than a
+# convention of this file.
 #
-# `onside` is tested first, ahead of everything else: an onside kick is a different play,
-# not a kickoff with an unusual result, and folding it in would both muddy touchback rates
-# and dump 1,382 of the 1,486 onside kicks into Unknown. Onside kicks keep false (not NULL)
-# flags, so they never collide with the Unknown test.
-_VIEW = """
-CREATE OR REPLACE VIEW st AS
+# `onside` is tested first, ahead of everything else: an onside kick is a different
+# play, not a kickoff with an unusual result, and folding it in would both muddy
+# touchback rates and dump 1,382 of the 1,486 onside kicks into Unknown. Onside kicks
+# keep false (not NULL) flags, so they never collide with the Unknown test.
+#
+# Conversions are in the view -- all 71,460 of them -- and off by default at the chip.
+# See lens.PHASE_DEFAULT for why.
+_ST_VIEW = """
+CREATE OR REPLACE VIEW st_play AS
 SELECT
     p.play_uid,
     p.game_id,
@@ -54,10 +74,17 @@ SELECT
     p.week,
     p.season_type,
     p.play_kind,
-    CASE p.play_kind WHEN 'field_goal' THEN 'Field goal'
-                     WHEN 'punt'       THEN 'Punt'
-                     WHEN 'kickoff'    THEN 'Kickoff' END                    AS phase,
+    CASE p.play_kind WHEN 'field_goal'           THEN 'Field goal'
+                     WHEN 'punt'                 THEN 'Punt'
+                     WHEN 'kickoff'              THEN 'Kickoff'
+                     WHEN 'pat'                  THEN 'Extra point'
+                     WHEN 'two_point'            THEN 'Two-point'
+                     WHEN 'defensive_conversion' THEN 'Defensive conv' END     AS phase,
     CASE
+      WHEN p.play_kind IN ('pat', 'two_point', 'defensive_conversion') THEN
+        CASE WHEN p.converted IS NULL                THEN 'Unknown'
+             WHEN p.converted                        THEN 'Converted'
+             ELSE 'Failed' END
       WHEN p.play_kind = 'field_goal' THEN
         CASE WHEN p.fg_made IS NULL                  THEN 'Negated'
              WHEN p.fg_made                          THEN 'Made'
@@ -107,6 +134,7 @@ SELECT
     p.receiving_conference                                                   AS opp_conference,
     p.receiving_division                                                     AS opp_division,
     CASE WHEN p.neutral_site THEN 'Neutral'
+         WHEN p.is_home_kicking IS NULL THEN NULL
          WHEN p.is_home_kicking THEN 'Home' ELSE 'Away' END                  AS site,
 
     -- the kick itself
@@ -119,6 +147,8 @@ SELECT
     CASE WHEN kick_yds IS NULL THEN NULL ELSE (kick_yds / 5)::INT * 5 END    AS kick_bucket,
     p.returned_for_td,
     p.onside,
+    p.converted,
+    p.two_point_type,
     p.miss_reason,
     p.negated_by_penalty,
 
@@ -153,8 +183,161 @@ SELECT
     p.source
 FROM snap.play p
 LEFT JOIN snap.dim_athlete ta ON ta.athlete_id = p.tackler_athlete_id
-WHERE p.play_kind IN ('field_goal', 'punt', 'kickoff')
 """
+
+# --------------------------------------------------------------------- scrimmage views
+# One template, two subjects. `{subj}` is the team the lens is about and `{other}` the
+# side it faced; `{sign}` flips everything measured from the subject's end.
+#
+# The outcome vocabularies are separate rather than shared because the same event is a
+# different fact to each side: a 12-yard completion is a Gain to the offense and a
+# First down allowed to the defense, and an interception returned for a score is a
+# Turnover TD one way and a Takeaway TD the other. The order of the WHEN branches is
+# the specification -- a pick-six sets both is_turnover and is_touchdown, and testing
+# the turnover first is what stops it reading as an ordinary offensive touchdown.
+_SCRIM_OUTCOME = {
+    "off": """
+        CASE WHEN s.is_penalty                                       THEN 'Penalty'
+             WHEN s.is_turnover AND COALESCE(s.points_scored, 0) < 0 THEN 'Turnover TD'
+             WHEN s.is_turnover                                      THEN 'Turnover'
+             WHEN COALESCE(s.is_touchdown, FALSE)                    THEN 'Touchdown'
+             WHEN s.play_kind = 'sack'                               THEN 'Sack'
+             WHEN s.play_kind = 'pass' AND s.is_complete IS FALSE    THEN 'Incomplete'
+             WHEN COALESCE(s.first_down_gained, FALSE)               THEN 'First down'
+             WHEN yards_gained > 0                                   THEN 'Gain'
+             WHEN yards_gained = 0                                   THEN 'No gain'
+             WHEN yards_gained < 0                                   THEN 'Loss'
+             ELSE 'Unclassified' END
+    """,
+    "def": """
+        CASE WHEN s.is_penalty                                       THEN 'Penalty'
+             WHEN s.is_turnover AND COALESCE(s.points_scored, 0) < 0 THEN 'Takeaway TD'
+             WHEN s.is_turnover                                      THEN 'Takeaway'
+             WHEN COALESCE(s.is_touchdown, FALSE)                    THEN 'TD allowed'
+             WHEN s.play_kind = 'sack'                               THEN 'Sack'
+             WHEN s.play_kind = 'pass' AND s.is_complete IS FALSE    THEN 'Incomplete'
+             WHEN COALESCE(s.first_down_gained, FALSE)               THEN 'First down allowed'
+             WHEN yards_gained IS NULL                               THEN 'Unclassified'
+             WHEN yards_gained <= 0                                  THEN 'Stop'
+             ELSE 'Gain allowed' END
+    """,
+}
+
+_SCRIM_VIEW = """
+CREATE OR REPLACE VIEW {view} AS
+SELECT
+    s.play_uid,
+    s.game_id,
+    s.season,
+    s.week,
+    s.season_type,
+    s.play_kind,
+    CASE s.play_kind WHEN 'rush'    THEN 'Rush'
+                     WHEN 'pass'    THEN 'Pass'
+                     WHEN 'sack'    THEN 'Sack'
+                     WHEN 'penalty' THEN 'Penalty'
+                     ELSE 'Other' END                                        AS phase,
+    s.play_type_espn,
+    s.drive_id,
+    s.drive_number,
+
+    -- the play itself. yards_gained is guarded before anything reads it, so the
+    -- outcome label, the charts and every mean agree on one set of values.
+    CASE WHEN abs(s.yards_gained) > {limit} THEN NULL
+         ELSE s.yards_gained END                                             AS yards_gained,
+    COALESCE(abs(s.yards_gained) > {limit}, FALSE)                           AS yards_impossible,
+    CASE WHEN yards_gained IS NULL THEN NULL
+         ELSE (floor(yards_gained / 5.0) * 5)::INT END                       AS yards_bucket,
+    s.first_down_gained,
+    s.is_complete,
+    s.is_touchdown,
+    s.is_turnover,
+    s.is_penalty,
+    s.is_scoring_play,
+    {sign}s.points_scored                                                    AS points_scored,
+    s.end_down,
+    s.end_distance,
+    s.end_yards_to_goal,
+    s.end_team_id,
+    {outcome}                                                                AS outcome,
+    outcome = 'Unclassified'                                                 AS outcome_unknown,
+
+    -- people. The four id columns are ESPN's structured fields; the bridge
+    -- snap.scrimmage_athlete carries all twelve roles and every tackler, and is what a
+    -- defensive leaderboard has to be built on.
+    {player_id}                                                              AS player_id,
+    {player}                                                                 AS player,
+    NULL::DOUBLE                                                             AS player_conf,
+    FALSE                                                                    AS player_name_unparsed,
+    s.passer_athlete_id, s.passer_name, s.passer_position,
+    s.rusher_athlete_id, s.rusher_name, s.rusher_position,
+    s.receiver_athlete_id, s.receiver_name, s.receiver_position,
+    s.tackler_athlete_id, s.tackler_name, s.tackler_position,
+
+    -- teams, from the subject's end
+    s.{subj}_team_id                                                         AS team_id,
+    s.{subj}_team                                                            AS team,
+    s.{subj}_conference                                                      AS conference,
+    s.{subj}_division                                                        AS division,
+    s.{other}_team_id                                                        AS opp_id,
+    s.{other}_team                                                           AS opponent,
+    s.{other}_conference                                                     AS opp_conference,
+    s.{other}_division                                                       AS opp_division,
+    -- An unknown home flag is NULL, not 'Away'. 15 rows carry no is_home_offense,
+    -- and defaulting them would have put the same team at home on both lenses.
+    CASE WHEN s.neutral_site THEN 'Neutral'
+         WHEN s.is_home_offense IS NULL THEN NULL
+         WHEN {home} THEN 'Home' ELSE 'Away' END                             AS site,
+
+    -- situation
+    s.period                                                                 AS qtr,
+    s.clock_secs_period,
+    lpad((s.clock_secs_period / 60)::INT::VARCHAR, 2, '0') || ':' ||
+      lpad((s.clock_secs_period % 60)::VARCHAR, 2, '0')                      AS clock,
+    s.game_secs_remaining,
+    s.down,
+    s.distance                                                               AS dist_to_go,
+    s.distance_bucket,
+    s.yards_to_goal,
+    s.field_zone,
+    {sign}s.score_diff_offense                                               AS score_diff,
+    CASE WHEN {sign}s.score_diff_offense > 0 THEN 'Leading'
+         WHEN {sign}s.score_diff_offense = 0 THEN 'Tied' ELSE 'Trailing' END AS score_state,
+    s.is_clutch,
+
+    -- environment
+    CAST(s.kickoff_utc AS DATE)                                              AS game_date,
+    s.venue_name,
+    s.venue_city,
+    s.venue_state,
+    s.surface,
+    s.attendance,
+    s.neutral_site,
+    s.conference_game,
+    s.fbs_vs_fbs,
+
+    -- provenance
+    s.play_text,
+    s.source
+FROM snap.scrimmage s
+"""
+
+_SUBJECT = {
+    "off": {"subj": "offense", "other": "defense", "sign": "",
+            "home": "s.is_home_offense",
+            "player_id": "COALESCE(s.passer_athlete_id, s.rusher_athlete_id)",
+            "player": "COALESCE(s.passer_name, s.rusher_name)"},
+    "def": {"subj": "defense", "other": "offense", "sign": "-",
+            "home": "NOT s.is_home_offense",
+            "player_id": "s.tackler_athlete_id",
+            "player": "s.tackler_name"},
+}
+
+
+def _scrim_sql(key: str) -> str:
+    return _SCRIM_VIEW.format(view=lens.VIEW[key], limit=YARD_LIMIT,
+                              outcome=_SCRIM_OUTCOME[key].strip(), **_SUBJECT[key])
+
 
 _lock = threading.Lock()
 _con: duckdb.DuckDBPyConnection | None = None
@@ -171,7 +354,9 @@ def con() -> duckdb.DuckDBPyConnection:
                 )
             c = duckdb.connect(":memory:")
             c.execute(f"ATTACH '{DB_PATH}' AS snap (READ_ONLY)")
-            c.execute(_VIEW)
+            c.execute(_ST_VIEW)
+            c.execute(_scrim_sql("off"))
+            c.execute(_scrim_sql("def"))
             _con = c
         return _con
 
@@ -183,6 +368,11 @@ def q(sql: str) -> pd.DataFrame:
 def scalar(sql: str):
     row = con().cursor().sql(sql).fetchone()
     return None if row is None else row[0]
+
+
+def view(f: dict | None) -> str:
+    """The view the current filter state reads."""
+    return lens.VIEW[lens.resolve((f or {}).get("lens"))]
 
 
 # --------------------------------------------------------------------------- SQL literals
@@ -203,21 +393,42 @@ def in_list(col: str, vals) -> str:
     return f"{col} IN ({', '.join(lit(v) for v in vals)})"
 
 
+def _any_of(cols: list[str], vals) -> str:
+    """One id matched against several role columns -- a receiver is as findable as
+    the passer who threw to him."""
+    vals = [v for v in (vals or []) if v not in (None, "")]
+    if not vals:
+        return "TRUE"
+    ids = ", ".join(lit(int(v)) for v in vals)
+    return "(" + " OR ".join(f"{c} IN ({ids})" for c in cols) + ")"
+
+
+# The columns a player filter matches, per lens. Offense spans the three offensive
+# roles ESPN puts on the row; defense has only the one, and that is the whole reason a
+# defensive leaderboard needs the bridge instead.
+PLAYER_COLS = {
+    "off": ["passer_athlete_id", "rusher_athlete_id", "receiver_athlete_id"],
+    "def": ["tackler_athlete_id"],
+    "st": ["player_id"],
+}
+
+
 # --------------------------------------------------------------------------- filters
 def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
-    """Translate the sidebar filter store into a WHERE clause.
+    """Translate the sidebar filter store into a WHERE clause for the current lens.
 
     `ignore` drops a facet so a chart can show the distribution of the thing the
     user is filtering on without that filter flattening it.
     """
     f = f or {}
+    key = lens.resolve(f.get("lens"))
     parts: list[str] = []
 
-    def use(key: str) -> bool:
-        return key not in ignore and bool(f.get(key))
+    def use(name: str) -> bool:
+        return name not in ignore and bool(f.get(name))
 
     if use("phases"):
-        parts.append(in_list("play_kind", f["phases"]))
+        parts.append(in_list("play_kind", lens.kinds_for(key, f["phases"])))
     if f.get("seasons"):
         lo, hi = f["seasons"]
         parts.append(f"season BETWEEN {int(lo)} AND {int(hi)}")
@@ -230,7 +441,7 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
     if use("divisions"):
         parts.append(in_list("division", f["divisions"]))
     if use("players"):
-        parts.append(in_list("player_id", [int(p) for p in f["players"]]))
+        parts.append(_any_of(PLAYER_COLS[key], f["players"]))
     if use("outcomes"):
         parts.append(in_list("outcome", f["outcomes"]))
     if use("season_types"):
@@ -241,7 +452,16 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
         parts.append(in_list("qtr", [int(x) for x in f["qtrs"]]))
     if use("score_states"):
         parts.append(in_list("score_state", f["score_states"]))
-    if f.get("dist"):
+
+    # Lens-specific facets. Down and field zone are the first two questions anyone
+    # asks of a scrimmage table and mean nothing on a kickoff; kick distance is the
+    # reverse.
+    if lens.is_scrimmage(key):
+        if use("downs"):
+            parts.append(in_list("down", [int(x) for x in f["downs"]]))
+        if use("zones"):
+            parts.append(in_list("field_zone", f["zones"]))
+    elif f.get("dist"):
         lo, hi = f["dist"]
         blo, bhi = dist_bounds()
         # At full range this filter must be a no-op. Three kickoffs carry an
@@ -251,6 +471,7 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
         if int(lo) > blo or int(hi) < bhi:
             parts.append(
                 f"(kick_yds IS NULL OR kick_yds BETWEEN {int(lo)} AND {int(hi)})")
+
     if f.get("clutch_only"):
         parts.append("is_clutch")
     if f.get("fbs_only"):
@@ -269,9 +490,11 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
     return " AND ".join(parts) if parts else "TRUE"
 
 
-def phase_set(f: dict | None) -> set[str]:
-    sel = (f or {}).get("phases") or PHASE_ORDER
-    return set(sel)
+def chip_set(f: dict | None) -> list[str]:
+    """The phase chips currently selected, in the lens's own order."""
+    key = lens.resolve((f or {}).get("lens"))
+    sel = set((f or {}).get("phases") or lens.default_chips(key))
+    return [c for c in lens.chips(key) if c in sel]
 
 
 # --------------------------------------------------------------------------- ag grid requests
@@ -355,23 +578,30 @@ def sort_model_to_sql(model: list | None, default: str = "game_date DESC") -> st
     return ", ".join([t for t in terms if t] + ["play_uid"])
 
 
-@functools.lru_cache(maxsize=512)
-def count_rows(where: str) -> int:
-    return int(scalar(f"SELECT count(*) FROM st WHERE {where}") or 0)
+@functools.lru_cache(maxsize=1024)
+def count_rows(view_name: str, where: str) -> int:
+    return int(scalar(f"SELECT count(*) FROM {view_name} WHERE {where}") or 0)
 
 
 # --------------------------------------------------------------------------- option lists
 @functools.lru_cache(maxsize=1)
 def snapshot_meta() -> dict:
     row = con().cursor().sql("SELECT built_at, rows FROM snap.snapshot_meta").fetchone()
-    n = int(scalar("SELECT count(*) FROM st") or 0)
-    return {"built_at": row[0] if row else None, "snapshot_rows": row[1] if row else None,
-            "rows": n}
+    rows = {k: int(scalar(f"SELECT count(*) FROM {lens.VIEW[k]}") or 0)
+            for k in lens.KEYS}
+    return {"built_at": row[0] if row else None,
+            "snapshot_rows": row[1] if row else None,
+            "rows": rows,
+            # off and def are the same events read twice, so the corpus is the
+            # scrimmage fact plus the kicks, not the sum of all three views.
+            "total": rows["off"] + rows["st"]}
 
 
 @functools.lru_cache(maxsize=1)
 def season_bounds() -> tuple[int, int]:
-    lo, hi = con().cursor().sql("SELECT min(season), max(season) FROM st").fetchone()
+    """The corpus window. Both facts span it identically, so one table answers it."""
+    lo, hi = con().cursor().sql(
+        "SELECT min(season), max(season) FROM snap.season_status").fetchone()
     return int(lo), int(hi)
 
 
@@ -399,51 +629,94 @@ def in_progress_seasons() -> list[dict]:
 @functools.lru_cache(maxsize=1)
 def dist_bounds() -> tuple[int, int]:
     lo, hi = con().cursor().sql(
-        "SELECT min(kick_yds), max(kick_yds) FROM st").fetchone()
+        "SELECT min(kick_yds), max(kick_yds) FROM st_play").fetchone()
     return int(lo), int(hi)
 
 
-@functools.lru_cache(maxsize=1)
-def team_options() -> list[dict]:
-    df = q("""
-        SELECT team_id, any_value(team) AS team, count(*) n
-        FROM st GROUP BY team_id ORDER BY team
+@functools.lru_cache(maxsize=8)
+def team_options(key: str) -> list[dict]:
+    df = q(f"""
+        SELECT team_id, any_value(team) AS team, count(*) AS n
+        FROM {lens.VIEW[lens.resolve(key)]}
+        WHERE team_id IS NOT NULL GROUP BY team_id ORDER BY team
     """)
-    return [{"value": str(r.team_id), "label": r.team} for r in df.itertuples()]
+    return [{"value": str(r.team_id), "label": r.team} for r in df.itertuples()
+            if isinstance(r.team, str) and r.team]
 
 
-@functools.lru_cache(maxsize=1)
-def conference_options() -> list[str]:
-    return q("""SELECT DISTINCT conference FROM st
-                WHERE conference IS NOT NULL ORDER BY 1""")["conference"].tolist()
+@functools.lru_cache(maxsize=8)
+def conference_options(key: str) -> list[str]:
+    return q(f"""SELECT DISTINCT conference FROM {lens.VIEW[lens.resolve(key)]}
+                 WHERE conference IS NOT NULL ORDER BY 1""")["conference"].tolist()
 
 
-@functools.lru_cache(maxsize=1)
-def surface_options() -> list[str]:
-    return q("""SELECT DISTINCT surface FROM st
-                WHERE surface IS NOT NULL ORDER BY 1""")["surface"].tolist()
+@functools.lru_cache(maxsize=8)
+def surface_options(key: str) -> list[str]:
+    return q(f"""SELECT DISTINCT surface FROM {lens.VIEW[lens.resolve(key)]}
+                 WHERE surface IS NOT NULL ORDER BY 1""")["surface"].tolist()
 
 
-@functools.lru_cache(maxsize=1)
-def outcome_options() -> list[str]:
-    return q("SELECT DISTINCT outcome FROM st ORDER BY 1")["outcome"].tolist()
+@functools.lru_cache(maxsize=8)
+def outcome_options(key: str) -> list[str]:
+    return q(f"SELECT DISTINCT outcome FROM {lens.VIEW[lens.resolve(key)]} "
+             "ORDER BY 1")["outcome"].tolist()
+
+
+@functools.lru_cache(maxsize=8)
+def zone_options(key: str) -> list[str]:
+    """Field zone is a scrimmage column and the facet is hidden on the kicks, so the
+    kicks answer with nothing rather than with an error. The control that reads this
+    is populated for every lens by one callback; returning [] is what keeps that
+    callback lens-blind."""
+    key = lens.resolve(key)
+    if not lens.is_scrimmage(key):
+        return []
+    return q(f"""SELECT DISTINCT field_zone FROM {lens.VIEW[key]}
+                 WHERE field_zone IS NOT NULL ORDER BY 1""")["field_zone"].tolist()
+
+
+# A player has to clear this many plays to appear in the picker. Without a floor the
+# offense list is ~25,000 names, every one of which ships to the browser on page load.
+_PLAYER_FLOOR = {"off": 25, "def": 25, "st": 3}
 
 
 @functools.lru_cache(maxsize=64)
-def player_options(phases: tuple[str, ...] = ()) -> list[dict]:
-    """Kickers/punters with a linked athlete id, labelled with their volume."""
-    where = in_list("play_kind", list(phases)) if phases else "TRUE"
+def player_options(key: str, phases: tuple[str, ...] = ()) -> list[dict]:
+    """The players a filter can name, scoped to the selected phases.
+
+    Offense unions the three roles ESPN puts on the row, so a receiver is as findable
+    as the passer who threw to him. Defense has only the first-tackler column, which is
+    why its list is thin -- see lens.PLAYER_HINT.
+    """
+    key = lens.resolve(key)
+    v = lens.VIEW[key]
+    kinds = lens.kinds_for(key, list(phases)) if phases else None
+    where = in_list("play_kind", kinds) if kinds else "TRUE"
+    floor = _PLAYER_FLOOR[key]
+
+    if key == "off":
+        src = " UNION ALL ".join(
+            f"SELECT {i} AS athlete_id, {n} AS nm, season FROM {v} "
+            f"WHERE {i} IS NOT NULL AND {where}"
+            for i, n in (("passer_athlete_id", "passer_name"),
+                         ("rusher_athlete_id", "rusher_name"),
+                         ("receiver_athlete_id", "receiver_name")))
+    elif key == "def":
+        src = (f"SELECT tackler_athlete_id AS athlete_id, tackler_name AS nm, season "
+               f"FROM {v} WHERE tackler_athlete_id IS NOT NULL AND {where}")
+    else:
+        src = (f"SELECT player_id AS athlete_id, player AS nm, season "
+               f"FROM {v} WHERE player_id IS NOT NULL AND {where}")
+
     df = q(f"""
-        SELECT player_id, any_value(player) AS player, count(*) n,
-               min(season) s0, max(season) s1
-        FROM st WHERE player_id IS NOT NULL AND {where}
-        GROUP BY player_id HAVING count(*) >= 3
-        ORDER BY player
+        SELECT athlete_id, any_value(nm) AS nm, count(*) AS n,
+               min(season) AS s0, max(season) AS s1
+        FROM ({src}) t
+        GROUP BY athlete_id HAVING count(*) >= {floor} ORDER BY nm
     """)
     return [
-        {"value": str(r.player_id),
-         "label": f"{r.player} · {r.s0}-{r.s1} · {r.n:,}"}
-        for r in df.itertuples()
+        {"value": str(r.athlete_id), "label": f"{r.nm} · {r.s0}-{r.s1} · {r.n:,}"}
+        for r in df.itertuples() if isinstance(r.nm, str) and r.nm
     ]
 
 

@@ -10,6 +10,17 @@ renders on, in both modes:
   fg outcomes    blue(made) red(missed) violet(blocked)   -- the documented diverging
                  pair, because made/missed is a polarity, not an identity
                  light: CVD dE 21.6, normal dE 32.3       dark: CVD dE 19.2
+  scrimmage      blue orange aqua yellow magenta violet red -- the kick order above
+  outcomes       with the red pole appended, validated 2026-09-09 as its own sequence
+                 light: CVD dE 9.1 (protan, yellow/aqua), normal dE 19.6, same
+                        contrast WARN on aqua/yellow/magenta
+                 dark:  CVD dE 8.4 (protan, yellow/aqua), normal dE 19.3, all >= 3:1
+                 The worst adjacent pair is the same yellow/aqua one the kick
+                 sequence already carries, so this adds no new risk. Seven was the
+                 ceiling: every ordering that also used green failed, and red beside
+                 magenta failed the normal-vision floor at dE 7.8 in dark mode.
+  conversions    blue(converted) red(failed) -- the same polarity pair as the field
+                 goals, for the same reason
 
 Two obligations follow from those runs and are honoured in the charts:
   * the light-mode contrast WARN triggers the relief rule -> stacked segments carry
@@ -64,29 +75,91 @@ SEQ_BLUE = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
 KICK_OUTCOMES = ["Touchback", "Fair catch", "Out of bounds", "Downed", "Returned",
                  "Onside", "Blocked", "Unknown"]
 FG_OUTCOMES = ["Made", "Missed", "Blocked", "Negated"]
+CONV_OUTCOMES = ["Converted", "Failed", "Unknown"]
 
 _KICK_HUE = {"Touchback": "blue", "Fair catch": "orange", "Out of bounds": "aqua",
              "Downed": "yellow", "Returned": "magenta", "Onside": "violet",
              "Blocked": "violet"}
 _FG_HUE = {"Made": "blue", "Missed": "red", "Blocked": "violet"}
+_CONV_HUE = {"Converted": "blue", "Failed": "red"}
 
 # `Onside` and `Blocked` share violet. They can never appear in one chart: kickoffs
 # carry a NULL `kick_blocked` on every row and punts can never be onside.
 
+# --------------------------------------------------------------------- scrimmage
+# The views carry a finer outcome vocabulary than a stacked bar can hold -- ten
+# values on offense -- so charts read the grouped form and the grid keeps the full
+# one. Grouping is per lens because three labels mean different things to each side:
+# a sack is part of the offense's "no gain or loss" and part of the defense's "stop".
+#
+# Seven groups, in the order the validator passed, running from the outcome the
+# subject most wants to the one it least wants. Red is always that far pole, which is
+# the same rule the field-goal pair follows.
+SCRIM_OUTCOMES = {
+    "off": ["Touchdown", "First down", "Gain", "No gain or loss", "Incomplete",
+            "Penalty", "Turnover"],
+    "def": ["Takeaway", "Stop", "Incomplete", "Gain allowed", "First down allowed",
+            "Penalty", "TD allowed"],
+}
 
-def outcome_colors(mode: str) -> dict[str, str]:
-    """Colour by outcome identity, stable across every filter state."""
+_SCRIM_HUE_ORDER = ["blue", "orange", "aqua", "yellow", "magenta", "violet", "red"]
+
+SCRIM_GROUP = {
+    "off": {"Touchdown": "Touchdown", "First down": "First down", "Gain": "Gain",
+            "No gain": "No gain or loss", "Loss": "No gain or loss",
+            "Sack": "No gain or loss", "Incomplete": "Incomplete",
+            "Penalty": "Penalty", "Turnover": "Turnover", "Turnover TD": "Turnover"},
+    "def": {"Takeaway": "Takeaway", "Takeaway TD": "Takeaway", "Stop": "Stop",
+            "Sack": "Stop", "Incomplete": "Incomplete",
+            "Gain allowed": "Gain allowed",
+            "First down allowed": "First down allowed", "Penalty": "Penalty",
+            "TD allowed": "TD allowed"},
+}
+
+
+def group_of(key: str, outcome: str) -> str:
+    """The chart-level group an outcome belongs to, for a scrimmage lens."""
+    return SCRIM_GROUP.get(key, {}).get(outcome, "Unclassified")
+
+
+def outcome_colors(mode: str, key: str = "st") -> dict[str, str]:
+    """Colour by outcome identity, stable across every filter state.
+
+    Every value the grid can show is in here, not just the chart groups: a
+    `Turnover TD` cell takes its group's red so the chip and the chart agree.
+    """
     s, t = SLOTS[mode], TOKENS[mode]
+    if key in SCRIM_OUTCOMES:
+        hue = dict(zip(SCRIM_OUTCOMES[key], _SCRIM_HUE_ORDER))
+        out = {g: s[h] for g, h in hue.items()}
+        for raw, grp in SCRIM_GROUP[key].items():
+            out[raw] = s[hue[grp]]
+        out["Unclassified"] = t["muted"]
+        return out
     out = {k: s[v] for k, v in _KICK_HUE.items()}
     out.update({k: s[v] for k, v in _FG_HUE.items()})
+    out.update({k: s[v] for k, v in _CONV_HUE.items()})
     out["Unknown"] = t["muted"]
     out["Negated"] = t["muted"]
     return out
 
 
-def ordered_outcomes(present: list[str], phase_set: set[str]) -> list[str]:
+# Values painted in muted ink rather than a hue: they are data-quality states, not
+# outcomes, and must read as absence.
+MUTED_OUTCOMES = ("Unknown", "Negated", "Unclassified")
+
+
+def ordered_outcomes(present: list[str], key: str = "st",
+                     chips: set[str] | None = None) -> list[str]:
     """Outcomes in stack order, restricted to those actually present."""
-    order = FG_OUTCOMES if phase_set == {"field_goal"} else KICK_OUTCOMES
+    if key in SCRIM_OUTCOMES:
+        order = SCRIM_OUTCOMES[key] + ["Unclassified"]
+    elif chips == {"field_goal"}:
+        order = FG_OUTCOMES
+    elif chips == {"conversion"}:
+        order = CONV_OUTCOMES
+    else:
+        order = KICK_OUTCOMES
     tail = [o for o in present if o not in order]
     return [o for o in order if o in present] + sorted(tail)
 
@@ -94,9 +167,17 @@ def ordered_outcomes(present: list[str], phase_set: set[str]) -> list[str]:
 # --------------------------------------------------------------------- plotly
 FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
-# Phase identity, for the charts that compare the three phases against each other.
-# Slots 1/2/3 -- the validated all-pairs-safe leading three.
-PHASE_HUE = {"Field goal": "blue", "Punt": "orange", "Kickoff": "aqua"}
+# Phase identity, for the charts that compare phases against each other. The order
+# is the validated sequence again, so a chart carrying all six kick phases or all
+# five scrimmage phases is safe by the same measurement.
+PHASE_HUE = {
+    # kicks
+    "Field goal": "blue", "Punt": "orange", "Kickoff": "aqua",
+    "Extra point": "yellow", "Two-point": "magenta", "Defensive conv": "violet",
+    # scrimmage
+    "Rush": "blue", "Pass": "orange", "Sack": "aqua", "Penalty": "yellow",
+    "Other": "magenta",
+}
 
 
 def plotly_layout(mode: str, height: int = 300, legend: bool = True, **kw) -> dict:

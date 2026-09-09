@@ -9,9 +9,49 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 
-from . import data, theme
+from . import data, lens, theme
 
 _MIN_LABEL_SHARE = 0.07  # below this a segment is too thin to hold a legible label
+
+
+def _abbr(n: int) -> str:
+    """Short form for a denominator printed under an axis tick.
+
+    The under-tick denominator is a convention worth keeping (a 100% stack that hides
+    its n reads as confidently on two plays as on two thousand), but it only works if
+    it fits. At scrimmage volumes the full form is seven characters -- "128,994" --
+    which plotly rotates to 45 degrees and then overlaps into the legend. Four
+    characters stays horizontal and legible.
+    """
+    n = int(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 10_000:
+        return f"{n // 1000:,}k"
+    if n >= 1_000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+def _seasons(xs) -> bool:
+    """True when the axis is a run of seasons wide enough to need short ticks."""
+    if len(xs) <= 8:
+        return False
+    try:
+        return all(1900 <= int(x) <= 2100 for x in xs)
+    except (TypeError, ValueError):
+        return False
+
+
+def _tick(x, short: bool) -> str:
+    """Two-digit years once the axis gets crowded.
+
+    Thirteen four-digit years do not fit a 290px panel, and plotly's answer is to
+    rotate them 45 degrees -- which on a two-line tick puts the year and its
+    denominator on top of each other and then on top of the legend. Two digits fit
+    horizontally, and the sidebar's season slider already reads that way.
+    """
+    return str(x)[2:] if short else str(x)
 
 
 def empty_fig(mode: str, msg: str = "No plays match these filters", height: int = 300):
@@ -27,15 +67,23 @@ def empty_fig(mode: str, msg: str = "No plays match these filters", height: int 
 
 _MAX_LABELLED_CATEGORIES = 14  # past this the bars are too narrow to hold a label
 
+# Draw order for the by-phase charts, which is theme.PHASE_HUE's order and therefore
+# the validated one. A chart that claims to show every selected phase has to iterate
+# the whole list, not the three the app used to have.
+_KICK_PHASES = ("Field goal", "Punt", "Kickoff", "Extra point", "Two-point",
+                "Defensive conv")
+_SCRIM_PHASES = ("Rush", "Pass", "Sack", "Penalty", "Other")
 
-def _stacked_share(df, xcol, mode, phases, title, height=300, xtype=None):
+
+def _stacked_share(df, xcol, mode, phases, title, height=300, xtype=None,
+                   key="st", noun="plays"):
     """100% stacked bar of outcome share. Direct-labels every segment >= 7%."""
     if df.empty:
         return empty_fig(mode, height=height)
     t = theme.TOKENS[mode]
-    colors = theme.outcome_colors(mode)
+    colors = theme.outcome_colors(mode, key)
     present = df["outcome"].unique().tolist()
-    order = theme.ordered_outcomes(present, set(phases))
+    order = theme.ordered_outcomes(present, key, set(phases))
 
     totals = df.groupby(xcol, observed=True)["n"].sum()
     xs = sorted(totals.index.tolist())
@@ -61,7 +109,7 @@ def _stacked_share(df, xcol, mode, phases, title, height=300, xtype=None):
             textfont=dict(size=10), cliponaxis=False,
             customdata=counts,
             hovertemplate=(f"<b>{oc}</b><br>%{{x}}<br>"
-                           "%{customdata:,} plays · %{y:.1%}<extra></extra>"),
+                           f"%{{customdata:,}} {noun} · %{{y:.1%}}<extra></extra>"),
         )
     fig.update_layout(**theme.plotly_layout(mode, height=height, barmode="stack",
                                             bargap=0.22, title=dict(text=title)))
@@ -70,17 +118,29 @@ def _stacked_share(df, xcol, mode, phases, title, height=300, xtype=None):
     fig.update_xaxes(title=None, type=xtype or "-")
 
     # A 100% stack hides its denominator: a band with two kicks reads exactly as
-    # confidently as one with two thousand, so n goes under each tick.
+    # confidently as one with two thousand, so n is printed for every bar.
     #
-    # On the tick and not in an annotation: plotly coerces a numeric-looking
-    # annotation x on a category axis into a numeric *coordinate*, so an annotation
-    # at "2016" stretched the x range to [-0.5, 2116] and squashed the bars flat.
+    # Above the bar, not under the tick. Under the tick it has to share a two-line
+    # label with the category, and plotly rotates a crowded axis as a block -- at
+    # thirteen seasons in a 290px panel the year and its n ended up printed on top of
+    # each other and then on top of the legend.
+    #
+    # Positioned in *domain* fractions rather than category coordinates: plotly
+    # coerces a numeric-looking annotation x on a category axis into a numeric
+    # coordinate, which once stretched the x range to [-0.5, 2116] and squashed the
+    # bars flat. Category i sits at (i + 0.5)/n of the domain by construction, so
+    # this cannot be misread as a year.
     if label:
-        fig.update_xaxes(
-            tickvals=xp,
-            ticktext=[f"{x}<br><span style='font-size:9px'>{int(totals[x]):,}</span>"
-                      for x in xs],
-        )
+        fig.update_xaxes(tickvals=xp,
+                         ticktext=[_tick(x, _seasons(xs)) for x in xs])
+        n_cat = len(xs)
+        for i, x in enumerate(xs):
+            fig.add_annotation(
+                x=(i + 0.5) / n_cat, xref="x domain", xanchor="center",
+                y=1.0, yref="y", yanchor="bottom", yshift=3,
+                text=_abbr(totals[x]), showarrow=False,
+                font=dict(size=9, color=t["muted"]),
+            )
     return fig
 
 
@@ -88,23 +148,24 @@ def _stacked_share(df, xcol, mode, phases, title, height=300, xtype=None):
 def outcome_mix_by_season(where: str, phases, mode: str, height: int = 300):
     df = data.q(f"""
         SELECT season, outcome, count(*) AS n
-        FROM st WHERE {where} GROUP BY 1, 2
+        FROM st_play WHERE {where} GROUP BY 1, 2
     """)
     return _stacked_share(df, "season", mode, phases,
-                          "Outcome mix by season", height, xtype="category")
+                          "Outcome mix by season", height, xtype="category",
+                          key="st", noun="kicks")
 
 
 def outcome_by_distance(where: str, phases, mode: str, height: int = 300):
     """Where each outcome lives along the distance axis, in 5-yard bands."""
     df = data.q(f"""
         SELECT kick_bucket, outcome, count(*) AS n
-        FROM st WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1, 2
+        FROM st_play WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1, 2
     """)
     unit = {"field_goal": "attempt distance", "punt": "gross punt",
             "kickoff": "kick distance"}.get(theme_key(phases), "kick distance")
     return _stacked_share(df, "kick_bucket", mode, phases,
                           f"Outcome mix by {unit} (5-yard bands)", height,
-                          xtype="linear")
+                          xtype="linear", key="st", noun="kicks")
 
 
 def theme_key(phases) -> str:
@@ -116,7 +177,7 @@ def volume_by_distance(where: str, phases, mode: str, height: int = 300):
     """Single-series distribution -- how many kicks at each distance. No legend needed."""
     df = data.q(f"""
         SELECT kick_bucket AS b, count(*) AS n
-        FROM st WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1 ORDER BY 1
+        FROM st_play WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1 ORDER BY 1
     """)
     if df.empty:
         return empty_fig(mode, height=height)
@@ -143,7 +204,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
         df = data.q(f"""
             SELECT kick_bucket AS b, count(*) n,
                    sum(CASE WHEN outcome = 'Made' THEN 1 ELSE 0 END) made
-            FROM st WHERE {where} AND kick_bucket IS NOT NULL AND outcome <> 'Negated'
+            FROM st_play WHERE {where} AND kick_bucket IS NOT NULL AND outcome <> 'Negated'
             GROUP BY 1 HAVING count(*) >= 10 ORDER BY 1
         """)
         if df.empty:
@@ -170,7 +231,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
         df = data.q(f"""
             SELECT (yards_to_goal / 10)::INT * 10 AS b,
                    avg(punt_gross_yds) gross, avg(punt_net_yds) net, count(*) n
-            FROM st WHERE {where} AND yards_to_goal IS NOT NULL
+            FROM st_play WHERE {where} AND yards_to_goal IS NOT NULL
             GROUP BY 1 HAVING count(*) >= 200 ORDER BY 1
         """)
         if df.empty:
@@ -200,7 +261,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
                    sum(CASE WHEN outcome = 'Touchback' THEN 1 ELSE 0 END) tb,
                    sum(CASE WHEN outcome = 'Returned'  THEN 1 ELSE 0 END) ret,
                    sum(CASE WHEN outcome = 'Unknown'   THEN 1 ELSE 0 END) unk
-            FROM st WHERE {where} AND NOT COALESCE(onside, FALSE)
+            FROM st_play WHERE {where} AND NOT COALESCE(onside, FALSE)
             GROUP BY 1 ORDER BY 1
         """)
         if df.empty:
@@ -227,13 +288,13 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
     # mixed: mean kick distance per phase. All three series are yards.
     df = data.q(f"""
         SELECT season, phase, avg(kick_yds) d, count(*) n
-        FROM st WHERE {where} AND kick_yds IS NOT NULL GROUP BY 1, 2 ORDER BY 1
+        FROM st_play WHERE {where} AND kick_yds IS NOT NULL GROUP BY 1, 2 ORDER BY 1
     """)
     if df.empty:
         return empty_fig(mode, height=height)
-    hue = {"Field goal": s["blue"], "Punt": s["orange"], "Kickoff": s["aqua"]}
+    hue = {ph: s[theme.PHASE_HUE[ph]] for ph in _KICK_PHASES}
     fig = go.Figure()
-    for ph in ("Field goal", "Punt", "Kickoff"):
+    for ph in _KICK_PHASES:
         sub = df[df["phase"] == ph]
         if sub.empty:
             continue
@@ -267,7 +328,7 @@ def season_trend(where: str, mode: str, kind: str, height: int = 260):
     title, expr, fmt, hexv = spec
     df = data.q(f"""
         SELECT season, {expr} AS v, count(*) n
-        FROM st WHERE {where} AND play_kind = '{kind}' GROUP BY 1 ORDER BY 1
+        FROM st_play WHERE {where} AND play_kind = '{kind}' GROUP BY 1 ORDER BY 1
     """)
     df = df[df["v"].notna()]
     if df.empty:
@@ -294,7 +355,8 @@ def season_trend(where: str, mode: str, kind: str, height: int = 260):
 # -- two slots past the palette -- with Made and Touchback both painted blue. When
 # more than one phase is selected the comparison is therefore *by phase*, which is
 # the only axis the three actually share.
-def _phase_stack(df, xcol, mode, title, height, xtype=None):
+def _phase_stack(df, xcol, mode, title, height, xtype=None, phases=None,
+                 noun="kicks"):
     if df.empty:
         return empty_fig(mode, height=height)
     t = theme.TOKENS[mode]
@@ -302,24 +364,27 @@ def _phase_stack(df, xcol, mode, title, height, xtype=None):
     width_kw = {"width": 4.4} if xtype == "linear" else {}
     xp = [str(x) for x in xs] if xtype == "category" else xs
     fig = go.Figure()
-    for ph in ("Field goal", "Punt", "Kickoff"):
+    for ph in (phases or _KICK_PHASES):
         sub = df[df["phase"] == ph].set_index(xcol)["n"]
         if sub.empty:
             continue
         hexv = theme.SLOTS[mode][theme.PHASE_HUE[ph]]
         fig.add_bar(x=xp, y=[int(sub.get(x, 0)) for x in xs], name=ph, **width_kw,
                     marker=dict(color=hexv, line=dict(color=t["surface"], width=1)),
-                    hovertemplate=f"<b>{ph}</b><br>%{{x}}<br>%{{y:,}} kicks<extra></extra>")
+                    hovertemplate=(f"<b>{ph}</b><br>%{{x}}<br>"
+                                   f"%{{y:,}} {noun}<extra></extra>"))
     fig.update_layout(**theme.plotly_layout(mode, height=height, barmode="stack",
                                             bargap=0.22, title=dict(text=title)))
     fig.update_yaxes(tickformat=",", title=None)
     fig.update_xaxes(title=None, type=xtype or "-")
+    if _seasons(xs):
+        fig.update_xaxes(tickvals=xp, ticktext=[_tick(x, True) for x in xs])
     return fig
 
 
 def kicks_by_phase_season(where: str, mode: str, height: int = 300):
     df = data.q(f"""
-        SELECT season, phase, count(*) AS n FROM st WHERE {where} GROUP BY 1, 2
+        SELECT season, phase, count(*) AS n FROM st_play WHERE {where} GROUP BY 1, 2
     """)
     return _phase_stack(df, "season", mode, "Kicks by phase and season", height,
                         xtype="category")
@@ -327,7 +392,7 @@ def kicks_by_phase_season(where: str, mode: str, height: int = 300):
 
 def kicks_by_phase_distance(where: str, mode: str, height: int = 300):
     df = data.q(f"""
-        SELECT kick_bucket AS b, phase, count(*) AS n FROM st
+        SELECT kick_bucket AS b, phase, count(*) AS n FROM st_play
         WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1, 2
     """)
     return _phase_stack(df, "b", mode,
@@ -340,13 +405,13 @@ def unknown_share_by_phase(where: str, mode: str, height: int = 300):
     df = data.q(f"""
         SELECT season, phase, count(*) AS n,
                sum(CASE WHEN outcome = 'Unknown' THEN 1 ELSE 0 END) AS unk
-        FROM st WHERE {where} GROUP BY 1, 2 ORDER BY 1
+        FROM st_play WHERE {where} GROUP BY 1, 2 ORDER BY 1
     """)
     if df.empty:
         return empty_fig(mode, height=height)
     t = theme.TOKENS[mode]
     fig = go.Figure()
-    for ph in ("Field goal", "Punt", "Kickoff"):
+    for ph in _KICK_PHASES:
         sub = df[df["phase"] == ph]
         if sub.empty:
             continue
@@ -366,13 +431,111 @@ def unknown_share_by_phase(where: str, mode: str, height: int = 300):
     return fig
 
 
-def explorer_figs(where: str, phases, mode: str, height: int = 300):
-    """The three charts for a selection, whichever phases it spans.
+# --------------------------------------------------------------------------- scrimmage
+# The views expose ten outcome values on offense and nine on defense -- more than a
+# stacked bar can carry legibly, and more than the palette has validated slots for.
+# Charts read the seven-way grouping in theme.SCRIM_GROUP; the grid keeps the full
+# vocabulary. Grouping happens here rather than in SQL so it lives in one place
+# beside the colours it has to agree with.
+def _grouped(view: str, where: str, key: str, xexpr: str, xname: str,
+             extra: str = "TRUE"):
+    df = data.q(f"""
+        SELECT {xexpr} AS {xname}, outcome, count(*) AS n
+        FROM {view} WHERE {where} AND {extra} GROUP BY 1, 2
+    """)
+    if df.empty:
+        return df
+    df["outcome"] = [theme.group_of(key, o) for o in df["outcome"]]
+    return df.groupby([xname, "outcome"], as_index=False, observed=True)["n"].sum()
+
+
+def scrim_outcome_by_season(where: str, key: str, chips, mode: str, height: int = 300):
+    df = _grouped(lens.VIEW[key], where, key, "season", "season")
+    return _stacked_share(df, "season", mode, chips, "Outcome mix by season", height,
+                          xtype="category", key=key)
+
+
+def scrim_outcome_by_down(where: str, key: str, chips, mode: str, height: int = 300):
+    df = _grouped(lens.VIEW[key], where, key, "down", "down",
+                  extra="down BETWEEN 1 AND 4")
+    return _stacked_share(df, "down", mode, chips, "Outcome mix by down", height,
+                          xtype="category", key=key)
+
+
+def scrim_phase_by_season(where: str, key: str, mode: str, height: int = 300):
+    df = data.q(f"""
+        SELECT season, phase, count(*) AS n
+        FROM {lens.VIEW[key]} WHERE {where} GROUP BY 1, 2
+    """)
+    return _phase_stack(df, "season", mode, "Plays by kind and season", height,
+                        xtype="category", phases=_SCRIM_PHASES, noun="plays")
+
+
+def scrim_yards_by_down(where: str, key: str, mode: str, height: int = 300):
+    """Mean yards by down, one series per play kind. One y-axis, grouped bars.
+
+    Turnover rows are excluded and the title says so. ESPN puts the *defense's
+    return* in statYardage on an interception -- 35 yards on the offense's row of a
+    35-yard pick-six -- so leaving them in lifts the passing mean from 7.5 to 13.2
+    and tells the reader nothing true from either side.
+    """
+    df = data.q(f"""
+        SELECT down, phase, avg(yards_gained) AS y, count(*) AS n
+        FROM {lens.VIEW[key]}
+        WHERE {where} AND down BETWEEN 1 AND 4 AND NOT COALESCE(is_turnover, FALSE)
+              AND yards_gained IS NOT NULL
+        GROUP BY 1, 2
+    """)
+    if df.empty:
+        return empty_fig(mode, height=height)
+    t = theme.TOKENS[mode]
+    verb = "gained" if key == "off" else "allowed"
+    xs = [1, 2, 3, 4]
+    fig = go.Figure()
+    for ph in _SCRIM_PHASES:
+        sub = df[df["phase"] == ph].set_index("down")
+        if sub.empty:
+            continue
+        hexv = theme.SLOTS[mode][theme.PHASE_HUE[ph]]
+        fig.add_bar(
+            x=[str(x) for x in xs],
+            y=[float(sub["y"].get(x, float("nan"))) for x in xs], name=ph,
+            marker=dict(color=hexv, cornerradius=4,
+                        line=dict(color=t["surface"], width=1)),
+            customdata=[int(sub["n"].get(x, 0)) for x in xs],
+            hovertemplate=(f"<b>{ph}</b><br>down %{{x}}<br>%{{y:.2f}} yd {verb}"
+                           "<br>%{customdata:,} plays<extra></extra>"),
+        )
+    # The exclusion is load-bearing, so it is in the title rather than only in the
+    # hover -- but on its own line, because the one-line form clipped at panel width.
+    fig.update_layout(**theme.plotly_layout(
+        mode, height=height, barmode="group", bargap=0.28,
+        title=dict(text=f"Mean yards {verb} by down<br>"
+                        "<span style='font-size:10px'>turnover rows "
+                        "excluded</span>")))
+    fig.update_yaxes(title=None, zeroline=True, zerolinecolor=t["axis"])
+    fig.update_xaxes(title=None, type="category")
+    return fig
+
+
+# --------------------------------------------------------------------------- dispatch
+def explorer_figs(key: str, where: str, chips, mode: str, height: int = 300):
+    """The three charts for a selection, whichever lens and phases it spans.
 
     One phase -> the outcome vocabulary is coherent, so show the outcome mix and the
-    measure that matters for that phase. More than one -> compare the phases instead.
+    measure that matters for that phase. More than one -> compare the phases instead,
+    which on the kicks is the only axis all of them share.
     """
-    ps = sorted(phases or [])
+    key = lens.resolve(key)
+    ps = sorted(chips or [])
+    if lens.is_scrimmage(key):
+        if len(ps) == 1:
+            return (scrim_outcome_by_season(where, key, ps, mode, height),
+                    scrim_outcome_by_down(where, key, ps, mode, height),
+                    scrim_yards_by_down(where, key, mode, height))
+        return (scrim_phase_by_season(where, key, mode, height),
+                scrim_outcome_by_season(where, key, ps, mode, height),
+                scrim_yards_by_down(where, key, mode, height))
     if len(ps) == 1:
         return (outcome_mix_by_season(where, ps, mode, height),
                 outcome_by_distance(where, ps, mode, height),
