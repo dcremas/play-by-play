@@ -269,11 +269,11 @@ artifact did not.
 
 **Phase 2b — Third dialect: the gamebook rendering. [COMPLETE 2026-08-30]**
 
-Found by the validation console (`app.py`), which asks a question `verify.sql` never did:
-*does every punt and kickoff land in one of its outcome buckets?* It did not. 49% of 2025
-punts and 25% of 2025 kickoffs had every outcome flag `false` — and because those columns
-have no NULL state, that is indistinguishable from a kick that genuinely had none of those
-outcomes, so every fair-catch, downed and return rate after 2020 was understated.
+Found by asking a question `verify.sql` never did — *does every punt and kickoff land in one of
+its outcome buckets?* It did not. 49% of 2025 punts and 25% of 2025 kickoffs had every outcome
+flag `false` — and because those columns have no NULL state, that is indistinguishable from a
+kick that genuinely had none of those outcomes, so every fair-catch, downed and return rate
+after 2020 was understated.
 
 Phase 3 spotted this dialect arriving in *PAT* text in 2025 and handled it there. It was
 also arriving on punts and kickoffs, from 2021, and nothing was matching it:
@@ -407,7 +407,8 @@ place, so picking it up is a fresh decision rather than a re-derivation:
 does not exist publicly — most kicking data carries game-level weather at best.
 
 **Phase 6 — Serve it.** Same pattern already proven with `weatherdata`: a read-only MCP
-server over the schema, and/or a Streamlit view. Not scoped until the data is trusted.
+server over the schema, and/or a browsable view over it. Not scoped until the data is
+trusted.
 
 ## 6. Schema sketch
 
@@ -730,11 +731,11 @@ query time. Recommendation of §10j.2 accepted; it matches decision §8.2.
 
 **3. Two-point conversions stay in `pbp.special_teams_play`.** Not duplicated. Unchanged.
 
-**4. The apps are out of scope this round.** `app.py` and `web/` stay special-teams-only,
-and player profile pages stay kicking-side only. The UI question is deferred *deliberately*
-until the new tables can be queried directly — the shape of an offensive play page is not
-knowable before looking at the data. §10j.4 asked whether the app was in scope; the answer
-is "not yet, and not because it is hard".
+**4. The apps are out of scope this round.** They stay special-teams-only, and player
+profile pages stay kicking-side only. The UI question is deferred *deliberately* until the
+new tables can be queried directly — the shape of an offensive play page is not knowable
+before looking at the data. §10j.4 asked whether the apps were in scope; the answer is
+"not yet, and not because it is hard".
 
 **5. Scope stops at play-level facts.** `scrimmage_play`, the athlete bridge, and drives.
 No derived player stat lines (per-game / per-season passing, rushing, receiving, defence)
@@ -777,19 +778,17 @@ Stages are ordered so that each one leaves both existing apps working.
 
 ### 10l. Rename traps — measured, not guessed
 
-Blast radius is smaller than §10i assumed, but two of these will cause real damage if the
-sweep is done with a naive substitution.
+Blast radius is smaller than §10i assumed, but one of these will cause real damage if the
+sweep is done with a naive substitution. A blanket `s/st\./pbp./` is never safe: the sweep
+must target the table names (`pbp.special_teams_play`, `pbp.dim_athlete`, `pbp.play_athlete`,
+`pbp.fact_game`, `pbp.dim_team_season`, `pbp.dim_team`, `pbp.dim_venue`, `pbp.dim_conference`,
+`st.stg_*`), never the bare prefix.
 
-- **`app.py` does `import streamlit as st`.** A blanket `s/st\./pbp./` would rewrite 150+
-  Streamlit calls — `st.subheader`, `st.sidebar`, `st.dataframe` and the rest. The sweep
-  must target the table names (`pbp.special_teams_play`, `pbp.dim_athlete`, `pbp.play_athlete`,
-  `pbp.fact_game`, `pbp.dim_team_season`, `pbp.dim_team`, `pbp.dim_venue`, `pbp.dim_conference`,
-  `st.stg_*`), never the bare prefix.
 - **`web/data.py` creates a DuckDB view literally named `st`.** Unrelated to the Postgres
   schema and independently named; decide it separately rather than letting the sweep catch it.
 - **The repo path is hardcoded in six files, one line each**: `scripts/fetch_espn.py`,
   `fetch_participants.py`, `build_table.py`, `build_dims.py`, `flatten_game.py`, and
   `README.md`.
-- **`data/out/pbp.duckdb` has seven references** across the two apps and the snapshot builder.
+- **`data/out/pbp.duckdb` has seven references** across the apps and the snapshot builder.
 - **~180 prose mentions of "special teams"**, concentrated in `scripts/build_erd.py` (32),
   `PLAN.md` (18), `README.md` (16) and the verification SQL.

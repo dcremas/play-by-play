@@ -17,7 +17,7 @@ from typing import NamedTuple
 
 from xlsxwriter.utility import xl_col_to_name
 
-# Pulled off app.py so the workbook and the console read as one product.
+# One house style in one place, so every workbook reads as one product.
 ACCENT = "#3b7dd8"
 INK = "#1f2933"
 MUTED = "#6b7785"

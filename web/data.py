@@ -8,8 +8,8 @@ carried no kicker identity at all; that was fixed on 2026-08-31 and conversions 
 at 98.6%. What still holds is that they are ~71k attempts at one distance.
 
 The snapshot is opened READ_ONLY and attached to an in-memory database, so the view
-below is created without writing to the file and the Streamlit console can keep
-using it at the same time.
+below is created without writing to the file and any other reader of the snapshot can
+keep using it at the same time.
 
 The view is called `st` and that is still correct after the 2026-09-08 rename of the
 Postgres schema from `st` to `pbp`. The two are unrelated: this one means SPECIAL TEAMS,
@@ -384,7 +384,7 @@ def in_progress_seasons() -> list[dict]:
     snapshot built before season_status existed reports none rather than failing.
 
     This app is descriptive and fits no models, so a part-season is not a correctness
-    problem the way it is for the Streamlit console's baselines -- it is a reading problem.
+    problem the way it would be for a fitted baseline -- it is a reading problem.
     A team's 2026 row is three games next to twelve full ones, and nothing on the row says
     so. These are the seasons that need saying so.
     """

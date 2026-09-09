@@ -10,17 +10,15 @@
 > schema name and was left alone on purpose: it still means special teams, which is exactly
 > what this app shows.
 
-A Dash application for reading the snapshot one **kick at a time**. Where `app.py`
-(the Streamlit console) answers "is this table trustworthy and what is worth
-modelling", this answers "show me the actual instances, by player and by team, and
-let me take them apart."
+A Dash application for reading the snapshot one **kick at a time**: "show me the actual
+instances, by player and by team, and let me take them apart."
 
 ```bash
 .venv/bin/python -m web.app          # http://127.0.0.1:8060
 ```
 
 It reads `data/out/pbp.duckdb` **read-only**, attached to an in-memory database, so it
-runs alongside the Streamlit console without contending for the file.
+runs alongside any other reader of the snapshot without contending for the file.
 
 ## Scope
 
@@ -122,18 +120,20 @@ exactly the problem: a team's 2026 row is a game or two sitting next to twelve f
 kicked off inside the last 30 days. `data.in_progress_seasons()` reads it, the header carries
 a **`2026 partial`** badge whose tooltip gives games, kicks and week, and the by-season grids
 on team pages carry a note above them. Nothing is filtered out — this app fits no models, so
-a part-season is a *reading* problem here, not a correctness one. The Streamlit console has
-the correctness half: it holds an in-progress season out of both fitted baselines.
+a part-season is a *reading* problem here, not a correctness one. The correctness half only
+ever mattered to something fitted, and nothing in the repository fits a model any more.
 
 The rule needs nothing unset in January. A month after the last bowl, 2026 stops being in
 progress on its own.
 
 ## No models
 
-Descriptive only, by design. The two baselines the Streamlit console fits
-(`fg_exp.p_hat`, `punt_exp.exp_net`) are deliberately *not* carried over — every
-number here traces directly to a column, with nothing to calibrate or defend. That
-is a reversible decision, not a permanent one.
+Descriptive only, by design. Two fitted baselines (`fg_exp.p_hat`, `punt_exp.exp_net`)
+once lived in the Streamlit console and were deliberately *not* carried over here — every
+number on these pages traces directly to a column, with nothing to calibrate or defend.
+The console was removed on 2026-09-09, so carrying them over is now a rebuild rather than a
+port; what they measured is recorded in the README's "Not built". Reversible, not
+permanent.
 
 ## Colour
 

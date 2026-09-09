@@ -14,7 +14,7 @@ that are disjoint by construction:
 | `pbp.scrimmage_play` | 1,510,679 | rushes, passes, sacks, penalties |
 
 Built from ESPN play-by-play and nothing else. Stored in local Postgres, read through a
-DuckDB snapshot by three applications.
+DuckDB snapshot by two applications.
 
 > **The name.** This repository was `cfb-special-teams` and the schema was `st` until
 > 2026-09-08, when the scrimmage fact was added and both became misnomers. The special-teams
@@ -35,7 +35,7 @@ implementation notes) are kept, but nothing here depends on them.
 | **Read path** | `data/out/pbp.duckdb` — wide `play` and `scrimmage` tables plus `drive`, 251 MB, rebuilt from Postgres in one command |
 | **Parse quality** | kicks: 98.51% of rows `exact`. Scrimmage needs no parser — `statYardage` and `down` are structured fields at 100% coverage |
 | **People** | one shared `dim_athlete` of 62,879 athletes, 100% named and positioned from ESPN; 29,819 appear in both facts. 98.7% of kicks carry a kicker id |
-| **Apps** | Streamlit validation console · Dash instance explorer · Excel reports · one-page ERD. All three are special-teams-only by choice — see [Not built](#not-built) |
+| **Apps** | Dash instance explorer · Excel reports · one-page ERD. Both apps are special-teams-only by choice — see [Not built](#not-built) |
 
 Does it behave like football? These come out of the data, not out of a reference book:
 
@@ -70,7 +70,7 @@ the touchdown curve backwards.
 - [Known limits](#known-limits) — read this before quoting a number
 - [The pipeline](#the-pipeline) — the DAG, what owns what
 - [Runbooks](#runbooks) — the nine procedures, and which loader is right when
-- [The applications](#the-applications) — console, explorer, reports, ERD
+- [The applications](#the-applications) — explorer, reports, ERD
 - [Query recipes](#query-recipes)
 - [Changelog](#changelog) — every material fix, dated
 - [Not built](#not-built) — what was decided against or deferred, and what it would take
@@ -118,8 +118,7 @@ cfb-pbp/
 │   ├── enrich_game_context.sql                   the three columns the loaders leave NULL
 │   └── verify.sql  verify_phase4.sql             assertion suites
 │
-├── app.py             Streamlit validation & pre-analysis console (5 tabs, 1,189 lines)
-├── web/               Dash instance explorer (separate app, same snapshot)
+├── web/               Dash instance explorer, over the snapshot
 ├── reports/           formatted Excel workbooks + the ERD output
 │
 └── data/              ~1 GB, all of it re-derivable from ESPN
@@ -144,7 +143,6 @@ cfb-pbp/
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt   # first time only
 .venv/bin/python scripts/build_snapshot.py                          # Postgres -> DuckDB
-.venv/bin/streamlit run app.py                                      # the console
 .venv/bin/python -m web.app                                         # the explorer, :8060
 ```
 
@@ -153,19 +151,19 @@ machine were compiled without `blake2`, which breaks `hashlib` and therefore pip
 runs 3.14.7.
 
 Nothing in either app talks to Postgres at runtime. They open `data/out/pbp.duckdb`
-read-only, so both start cold in about a second, run side by side without contending for
-the file, and keep working when the database is down. The console's sidebar and the
-explorer's header both show how old the snapshot is.
+read-only, so the explorer starts cold in about a second, any number of readers can share
+the file without contending for it, and both keep working when the database is down. The
+explorer's header shows how old the snapshot is.
 
 ### State of play
 
 | | |
 |---|---|
-| **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts; all three applications; the weekly in-season update; the ERD |
+| **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts; both applications; the weekly in-season update; the ERD |
 | **In progress right now** | the 2026 season, 99 games deep. `scripts/update_season.py 2026` pulls both facts forward |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); the apps reading the scrimmage fact |
-| **Open follow-ups** | Reconsider PATs for the explorer now that they link at 98.8%; decide whether the explorer carries the console's two fitted baselines; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9). All in [Not built](#not-built) |
+| **Open follow-ups** | Reconsider PATs for the explorer now that they link at 98.8%; decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9). All in [Not built](#not-built) |
 
 ---
 
@@ -284,8 +282,8 @@ unset in January.
 
 - **Every game with at least one FBS team is ingested**, FBS-vs-FCS included, and filtered
   at query time rather than at ingest. 274,629 rows are FBS-vs-FBS; 38,954 are not. The
-  snapshot carries `fbs_vs_fbs` precomputed, and the console defaults to FBS-only, because
-  kicker-quality work almost always wants that cut.
+  snapshot carries `fbs_vs_fbs` precomputed, so either cut is one `WHERE` — and
+  kicker-quality work almost always wants the FBS-only one.
 - **Extra points and two-point tries are in the table.** They are placekicks, they are
   71,385 rows, and they are cheap to carry. The Dash explorer excludes them from its own
   scope; the table does not.
@@ -337,10 +335,10 @@ game ids from ESPN returned more plays every time. On the ESPN spine the step be
 typed `start.team.id` as `double` in 2016 and 2018 and `int64` elsewhere, which made a
 string comparison silently set receiving team = kicking team on 24,676 rows.
 
-The lesson is written into the checks: `kicking team = receiving team` and
-`null kicking team` are both assertions in `app.py` with a tolerance of zero, and the
-console's season-continuity chart still draws a marker at the old boundary so a
-source-shaped discontinuity would be visible if one ever reappeared.
+The lesson is written into the checks: `kicking = receiving` and `null kicking_team` are
+both counted by `sql/verify.sql` on every run and must both come back zero, and its
+per-season counts by kind would still expose a source-shaped discontinuity at the old
+boundary if one ever reappeared.
 
 **A CFBD API key was planned for 2022–2025 and never needed.** The archive turned out to
 *be* parsed ESPN data, so running `st_parser.py` against live ESPN text returned `exact` on
@@ -530,8 +528,8 @@ Two defences are in place. `pbp.dim_team_season` carries a `COMMENT` saying so, 
 `build_snapshot.py` resolves every conference at **build time** on `(team_id, season)` —
 so the snapshot's `play` table has `kicking_conference` and `receiving_conference` already
 correct and a query cannot get it wrong later. `verify_phase4.sql` runs both versions of
-the query side by side and prints them, and the console's SQL tab ships the comparison as
-its first sample query.
+the query side by side and prints them, and the same comparison is the first entry in
+[Query recipes](#query-recipes).
 
 FBS membership is likewise per season, and it grows: 134 FBS teams in 2014, 129 in 2016,
 136 in 2025, 138 in 2026. `dim_team_season.division` is the right test for "was this team
@@ -840,9 +838,9 @@ is deflated. What you must not do is treat a season's rate as equally solid rega
 
 A clean season runs ~5%. Above that, a per-season outcome rate rests on a visibly smaller
 denominator — 2023's touchback rate of 68.6% is computed on 72% of that season's kickoffs.
-The console scores this as an assertion with a 5% tolerance and colours anything over 12%
-red; the explorer makes `Unknown` a first-class, filterable outcome value with its own stat
-tile, painted in muted ink rather than a categorical hue so it reads as *absence*.
+The explorer makes `Unknown` a first-class, filterable outcome value with its own stat
+tile, painted in muted ink rather than a categorical hue so it reads as *absence*. Treat any
+season above ~12% as one whose denominator has to be quoted alongside the rate.
 
 **No answer key can adjudicate this.** Any comparison source that also defaults an
 unreadable outcome to `false` scores those rows as agreement either way, because
@@ -893,12 +891,12 @@ marking any season whose most recent game kicked off inside **30 days** as in pr
 the rule is self-maintaining: roughly a month after the last bowl, 2026 stops being in
 progress on its own, and the offseason correctly reports none.
 
-The two applications treat it differently, on purpose:
+Whether that matters depends on what is reading it:
 
-- **The console holds it out of both fitted baselines and out of the season-continuity
-  chart.** `fg_exp` enters season *linearly*, so a 2026 twenty-one attempts deep would tug
-  the whole decade-long quality trend and every kicker in every season would be measured
-  against it. That is a correctness problem.
+- **Anything fitted has to hold it out.** The retired `fg_exp` baseline entered season
+  *linearly*, so a 2026 twenty-one attempts deep would have tugged the whole decade-long
+  quality trend and every kicker in every season would have been measured against it. That
+  is a correctness problem, and it is what `season_status` exists for.
 - **The explorer filters nothing.** It fits no models, so a part-season is a *reading*
   problem there, not a correctness one. It carries a `2026 partial` badge whose tooltip
   gives games, kicks and week, and a note above every by-season grid.
@@ -907,7 +905,7 @@ The two applications treat it differently, on purpose:
 
 ESPN omits the start yardline on some plays and it arrives as `0`, not NULL — 1,114 rows
 (0.36%), spread across all five kinds. Exclude it from any field-position analysis or it
-reads as a snap on the opponent's goal line. The punt baseline restricts to
+reads as a snap on the opponent's goal line. The retired punt baseline restricted itself to
 `yards_to_goal BETWEEN 20 AND 100` for exactly this reason.
 
 ### 7. `wallclock_utc` is ~67% populated in 2017, in both facts
@@ -1046,25 +1044,6 @@ fixed at the parser and all 1,012 now link to a real athlete id. The column stay
 next dialect ESPN introduces lights up in a grid instead of quietly producing phantom
 kickers.
 
-### 12. Where the baselines are weak, stated plainly
-
-The console fits two models. Both are fit on the **whole corpus**, never on the filtered
-subset — "above expected" needs a fixed league yardstick or a filter moves the goalposts
-along with the players — and both exclude any in-progress season.
-
-**`fg_exp.p_hat`** — P(make | distance, season). Cubic spline in distance, linear in season.
-30,932 attempts. **AUC 0.7172, Brier 0.1694, log loss 0.5116.** AUC that low is the ceiling,
-not a weak fit: distance is very nearly the only observable signal in a field goal.
-Calibration is what a leaderboard depends on, and calibration is good — within **1.2
-points** in every 5-yard bucket holding 2,000+ attempts. The two thin long-distance buckets
-drift: 55–59 (403 attempts) is 2.4 points optimistic, 60+ (41 attempts) 1.7 points
-pessimistic. Do not read a "points above expected" figure built mostly on 55+ kicks.
-
-**`punt_exp.exp_net`** — E[net | yards to goal at the snap]. 85,040 punts. **R² 0.0374, RMSE
-10.97 yd.** Low *by construction*: one punt's net is decided by the returner, not by the
-line of scrimmage. It is a conditional mean, not a predictor. The residual only means
-something averaged over 100+ punts.
-
 ---
 
 ## The pipeline
@@ -1116,11 +1095,11 @@ something averaged over 100+ punts.
                     v
              data/out/pbp.duckdb  (251 MB)
                     │
-     ┌──────────────┼──────────────────┐
-     v              v                  v
-   app.py       web/app.py          reports/
- Streamlit     Dash explorer      xlsxwriter
-  console         :8060            workbooks
+          ┌────────┴────────┐
+          v                 v
+     web/app.py         reports/
+    Dash explorer      xlsxwriter
+        :8060           workbooks
 ```
 
 Nothing reads Postgres at runtime. The extract is one direction, one command, and the
@@ -1262,7 +1241,7 @@ psql -d cfb -f sql/load_1_stage.sql
 psql -d cfb -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
 psql -d cfb -f sql/reparse.sql                                # UPDATE, not TRUNCATE
 .venv/bin/python scripts/build_snapshot.py
-psql -d cfb -f sql/verify.sql                                 # then read the console's checks
+psql -d cfb -f sql/verify.sql                                 # read it season by season
 ```
 
 `reparse.sql` updates the **25 columns the loader derives** — the 22 from the parser plus
@@ -1272,9 +1251,9 @@ scoreboard), so leaving them out would load a corrected CSV and change nothing. 
 else — the athlete ids, the situation, `play_text` — is left alone. Pre-update values go to
 `pbp.special_teams_play_prereparse`; drop that table once you are satisfied.
 
-Judge the result on the console's Validation tab, not on the pooled rate. It scores every
-assertion on the **worst single season**, which is the whole reason the 2025 punt gap was
-findable: it was 46% of that season and 4.6% of the decade.
+Judge the result **season by season, not on the pooled rate** — which is what `verify.sql`
+prints counts by season and kind for. The 2025 punt gap was findable because it was 46% of
+that season; it is invisible pooled, where it is 4.6% of the decade.
 
 ### C. Add a finished season (backfill)
 
@@ -1430,16 +1409,16 @@ and does not need this.
 ```bash
 psql -d cfb -f sql/verify.sql          # counts by season/kind, football sanity, integrity
 psql -d cfb -f sql/verify_phase4.sql   # athlete coverage, the conference trap, surface, orphans
-.venv/bin/streamlit run app.py         # then the Validation tab: 20 assertions
 ```
 
-`verify.sql` and `verify_phase4.sql` print; they do not assert. The console's Validation tab
-is the part that grades. Between them they cover row counts by season and kind (which is
-how a new dialect gets caught — one season's PAT count merely looks low), the monotonic
-field-goal curve, punt gross, the 2018 touchback step, parse confidence, athlete coverage on
-the right denominators, the team-only versus team-season conference comparison run side by
-side, field goals by surface (empty if the enrichment was skipped), and four
-referential-integrity counts.
+`verify.sql` and `verify_phase4.sql` print; they do not assert, and **nothing in the repository
+grades them any more** — the 20 scored assertions lived in the Streamlit console and went with
+it on 2026-09-09. Read the output season by season rather than pooled. Between them they cover
+row counts by season and kind (which is how a new dialect gets caught — one season's PAT count
+merely looks low), the monotonic field-goal curve, punt gross, the 2018 touchback step, parse
+confidence, athlete coverage on the right denominators, the team-only versus team-season
+conference comparison run side by side, field goals by surface (empty if the enrichment was
+skipped), and four referential-integrity counts.
 
 ### Rollback points currently in Postgres
 
@@ -1458,31 +1437,7 @@ join-key re-fetch.
 
 ## The applications
 
-Three separate front ends over the same snapshot, with deliberately different jobs.
-
-### `app.py` — the Streamlit validation and pre-analysis console
-
-One page, five tabs. Two jobs kept together on purpose: *does this table say what it
-claims*, and *what is worth modelling*.
-
-| tab | what it answers |
-|---|---|
-| **Validation** | 20 rule assertions, scored on the **worst single season** rather than the pooled rate; a field-completeness heatmap that colours only the cells carrying an expectation; season-over-season continuity with a marker at the old source boundary; parse confidence; athlete-link coverage on the right denominator |
-| **Placekicking** | make rate by distance with Wilson 95% intervals against the fitted baseline, a calibration table, kickers ranked by points above expected, splits held at equal difficulty |
-| **Punting** | net versus gross by field position, outcome mix, punters ranked by net above expected, and the outcome-classification panel |
-| **Kickoffs & returns** | touchback rate against the 2018 rule change, kickoff distance, return rates on the returned-only denominator, onside kicks and return touchdowns |
-| **SQL** | read-only scratchpad over the snapshot, with both baselines joinable as `fg_exp` / `punt_exp` and five worked sample queries |
-
-Three design choices in it are worth not undoing:
-
-- **Assertions are scored on the worst season and their tolerances are *shares*,** so a check
-  means the same thing on one conference-season as on the whole decade. Pooling ten seasons
-  hides a defect that lives in one of them.
-- **A non-zero count is not automatically a failure.** Several checks track documented source
-  defects the build chose to keep visible; each carries a note saying which. Selecting a row
-  shows the offending plays with their `play_text`.
-- **Each check has a `scope`,** i.e. its own denominator. A punt-only defect measured against
-  every special-teams play reads three times cleaner than it is.
+Two front ends over the same snapshot, with deliberately different jobs, plus the ERD.
 
 ### `web/` — the Dash instance explorer
 
@@ -1490,9 +1445,9 @@ Three design choices in it are worth not undoing:
 .venv/bin/python -m web.app          # http://127.0.0.1:8060
 ```
 
-Where the console answers "is this trustworthy and what should I model", this answers "show
-me the actual instances and let me take them apart". Field goals, punts and kickoffs only —
-244,937 of the 316,397 rows — and profiles for the **kicking side only**.
+It answers "show me the actual instances and let me take them apart". Field goals, punts
+and kickoffs only — 244,937 of the 316,397 rows — and profiles for the **kicking side
+only**.
 
 | surface | route | what it is |
 |---|---|---|
@@ -1593,7 +1548,7 @@ travel to a y.
 ## Query recipes
 
 All of these run against the DuckDB snapshot (`data/out/pbp.duckdb`), where the dimensions
-are already flattened onto `play`. The console's SQL tab ships the first one as its default.
+are already flattened onto `play`.
 
 **The conference trap — the same 2018 punt count, two ways**
 
@@ -1715,10 +1670,11 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-08 | **Names taken from ESPN instead of play text** | voting names out of the text named only **25.9%** of athletes, and would have done worse on scrimmage — 107 of 698 passers in 2024 | `fetch_athletes.py`; **100% named, 100% with a position**. The voted name is kept in `text_name` as an independent cross-check: 8,018 of 8,794 agree exactly, and all 776 disagreements are spelling variants, gamebook initials or real name changes |
 | 2026-09-08 | **Standalone conversions recovered** | `emit_pat` fires on `scoringPlay or "kick attempt" in text`, read off the *touchdown* play, so it never saw the conversions ESPN emits as their own row | 48 two-point attempts (mostly overtime) and 75 `defensive_conversion` rows — the defence returning a blocked PAT, a different event from the offence's failed try. `emit_pat` also assigned the scoring team by *swapping* two ids, which fails when `start.team.id` is NULL: all three conversions in the 9OT Illinois–Penn State game were on Penn State |
 | 2026-09-08 | **Empty-staging guard on both athlete loaders** | every other guard passes vacuously on an empty set, so `TRUNCATE pbp.dim_athlete` emptied the dimension, the bridge `DELETE` removed a season, the apply put nothing back — and psql exited **0**. One mistyped `\copy` path is enough | both loaders now refuse. Found by making that exact mistake |
-| 2026-09-08 | **Renamed `st` → `pbp`, repo → `cfb-pbp`** | the schema was named for special teams and now holds every play | 374 references across 29 files, matched on table names rather than the bare `st.` prefix — `app.py` does `import streamlit as st`. The DuckDB view named `st` in `web/data.py` was deliberately left alone: it still means special teams |
+| 2026-09-08 | **Renamed `st` → `pbp`, repo → `cfb-pbp`** | the schema was named for special teams and now holds every play | 374 references across 29 files, matched on table names rather than the bare `st.` prefix — `app.py`, then still in the tree, did `import streamlit as st`. The DuckDB view named `st` in `web/data.py` was deliberately left alone: it still means special teams |
 | 2026-09-08 | **Score-lag repaired** | ESPN's score column reports a stale, pre-scoring snapshot on 6,470 rows and is out of order on 765 more, so the running score stepped backward in 33.9% of games. Read literally that produced 7,237 negative point deltas and credited 14,002 plays with points they did not score | one invariant — a score never goes down — clamps each team's running total to its own maximum, in a helper both builders call. Negative deltas 7,237 → **0**, phantom point rows 14,002 → **584**, reconstructed finals matching the official score 10,021 → **10,053** of 10,301, conversions on the correct team 99.814% → **99.846%** against game-local ground truth. Sorting into clock order first, and using raw deltas as a tiebreak, were both tried and both measured worse |
 | 2026-09-08 | **`score_diff_kicking` means what it says** | it documented "the kicking team's margin before the play" but was computed from ESPN's after-play scoreboard, so a made field goal carried a margin that already included the three points it had just scored | now taken from the repaired running score entering the play, like `score_diff_offense`. **22,562 of 23,220 made field goals moved by exactly −3**; **7,813 of 8,044 missed field goals did not move at all**, which is the control. Conversion rows get the margin the KICKER faced — after the touchdown, before his own kick — since a `pat` row is derived from the touchdown play. `is_clutch` flips on 662 of 316,397 rows; no measured column moved, FG% is 74.27% before and after |
 | 2026-09-08 | **Rollback tables dropped** | four tables from the expansion, kept until the new coverage was trusted | `cfb` 1,369 MB → 1,327 MB; the schema holds exactly the eleven tables the pipeline needs |
+| 2026-09-09 | **The Streamlit console was removed** | it was no longer wanted; the Dash explorer and the Excel reports cover what is still read | `app.py` deleted (1,189 lines) and five pins dropped — `streamlit`, `scikit-learn`, and the `scipy` / `matplotlib` / `pytz` sitting beside them that nothing in the repository imports. Every reference was rewritten, `PLAN.md`'s design record included. **Two capabilities went with it and are replaced nowhere.** The **20 scored rule assertions**: `verify.sql` and `verify_phase4.sql` still print the same underlying counts, but nothing grades them or judges a check on its worst single season. The **two fitted baselines** `fg_exp` / `punt_exp`: what they measured is kept in [Not built](#not-built) so a rebuild starts from a known bar rather than from scratch. |
 
 ---
 
@@ -1778,8 +1734,7 @@ residue is enumerated there and matters for a scoring model.
 
 ### The apps do not read the scrimmage fact
 
-`app.py` and `web/` are special-teams-only, by choice rather than by obstacle
-(PLAN.md §10j.4). The snapshot carries `scrimmage`, `drive` and `scrimmage_athlete`, so the
+`web/` is special-teams-only, by choice rather than by obstacle (PLAN.md §10j.4). The snapshot carries `scrimmage`, `drive` and `scrimmage_athlete`, so the
 data is queryable offline today; what is deferred is the *interface* decision, on the
 grounds that the shape of an offensive play page is not knowable before spending time with
 the data.
@@ -1803,17 +1758,36 @@ Both are the user's words and both are currently unstarted:
    was fixed on 2026-08-31 and they now link at 98.8%, so the original reason no longer
    holds. The other reason — that PATs are ~67k attempts at one distance and would drown any
    distance-based view — still does.
-2. **The baselines.** The explorer deliberately carries no models, and that was framed as
-   provisional ("for now"), making it the likeliest of these decisions to revisit. Carrying
-   `fg_exp` / `punt_exp` across would give it "above expected" leaderboards; not carrying
-   them is what lets every number on the page trace directly to a column with nothing to
-   calibrate or defend.
+2. **The baselines — a rebuild now, not a port.** The explorer deliberately carries no
+   models, and that was framed as provisional ("for now"), making it the likeliest of these
+   decisions to revisit. The two baselines it would have inherited went with the Streamlit
+   console on 2026-09-09, so this is a rebuild. Both were fit on the **whole corpus**, never
+   on a filtered subset — "above expected" needs a fixed league yardstick or a filter moves
+   the goalposts along with the players — and both excluded any in-progress season. What
+   they measured, kept so a rebuild starts from a known bar:
+
+   - **`fg_exp.p_hat`** — P(make | distance, season). Cubic spline in distance, linear in
+     season, 30,932 attempts. **AUC 0.7172, Brier 0.1694, log loss 0.5116.** AUC that low was
+     the ceiling, not a weak fit: distance is very nearly the only observable signal in a
+     field goal. Calibration is what a leaderboard depends on, and it was good — within
+     **1.2 points** in every 5-yard bucket holding 2,000+ attempts, drifting only in the two
+     thin long buckets (55–59, 403 attempts, 2.4 points optimistic; 60+, 41 attempts, 1.7
+     pessimistic). A "points above expected" figure built mostly on 55+ kicks was never
+     readable.
+   - **`punt_exp.exp_net`** — E[net | yards to goal at the snap]. 85,040 punts. **R² 0.0374,
+     RMSE 10.97 yd.** Low *by construction*: one punt's net is decided by the returner, not
+     by the line of scrimmage. It was a conditional mean, not a predictor, and its residual
+     only meant something averaged over 100+ punts.
+
+   Carrying no models at all is what lets every number on the explorer's pages trace
+   directly to a column, with nothing to calibrate or defend.
 
 ### An MCP server
 
-The original Phase 6 was "a read-only MCP server over the schema, and/or a Streamlit view".
-The Streamlit view was built; the MCP server was not. The pattern is already proven elsewhere
-on this machine against a different warehouse, so this is a small job whenever it is wanted.
+The original Phase 6 was a read-only MCP server over the schema, or a browsable view over
+it. The view half was built and has since been retired; the MCP server was never started.
+The pattern is already proven elsewhere on this machine against a different warehouse, so
+this is a small job whenever it is wanted.
 
 ---
 
@@ -1858,9 +1832,11 @@ answer that did not look wrong.
     `build_table.py --out /tmp/new.csv` exists for this.
 11. **Reach for `--dry-run` on the in-season update.** It fetches, builds every CSV, reports
     what would change, and stops.
-12. **Verify after any load, and read the console's Validation tab rather than the pooled
-    rate.** Tolerances are shares and status is judged on the worst single season, because a
-    defect living in one season disappears when thirteen are averaged.
+12. **Verify after any load, and read the result season by season rather than pooled.** A
+    defect living in one season disappears when thirteen are averaged — the 2025 punt gap
+    was 46% of that season and 4.6% of the decade. Judge a check on its worst single season,
+    and state a tolerance as a *share* so it means the same thing on one conference-season as
+    on the whole corpus.
 
 **On the apps**
 
@@ -1869,10 +1845,10 @@ answer that did not look wrong.
 14. **Derived columns are computed once, in the snapshot.** `game_secs_remaining`,
     `is_clutch`, `fg_dist_bucket`, `fbs_vs_fbs` are there so no two queries can disagree
     about their definition.
-15. **Both baselines are fit on the whole corpus and exclude any in-progress season.** "Above
-    expected" needs a fixed yardstick; a filtered fit moves the goalposts along with the
-    players, and a part-season would tug the decade-long trend every kicker is measured
-    against.
+15. **Anything fitted goes on the whole corpus and excludes any in-progress season.** No
+    model ships here today; this is the rule if one comes back. "Above expected" needs a
+    fixed yardstick; a filtered fit moves the goalposts along with the players, and a
+    part-season would tug the decade-long trend every kicker is measured against.
 16. **A 100% stacked bar carries its denominator.** A 67/33 split on three attempts otherwise
     reads as confidently as one on three thousand. The explorer enforces this; so should
     anything new.
