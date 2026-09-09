@@ -162,7 +162,7 @@ explorer's header shows how old the snapshot is.
 | **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts; both applications; the weekly in-season update; the ERD |
 | **In progress right now** | the 2026 season, 99 games deep. `scripts/update_season.py 2026` pulls both facts forward |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
-| **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
+| **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side; the NFL as a league toggle (scoped 2026-09-09 — the feed carries the same detail, the kick parser is the work) |
 | **Open follow-ups** | A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9) |
 
 ---
@@ -1734,7 +1734,7 @@ fixed are in [Known limits](#known-limits).
 
 ## Not built
 
-Four things are deliberately absent. None is blocked; each is a fresh decision rather than
+Five things are deliberately absent. None is blocked; each is a fresh decision rather than
 a re-derivation, and what each would need is written down so picking it up does not start
 from scratch.
 
@@ -1855,6 +1855,140 @@ The original Phase 6 was a read-only MCP server over the schema, or a browsable 
 it. The view half was built and has since been retired; the MCP server was never started.
 The pattern is already proven elsewhere on this machine against a different warehouse, so
 this is a small job whenever it is wanted.
+
+### The NFL, as a league toggle — the feed is there, the kick parser is not
+
+Scoped 2026-09-09, unstarted. The question was whether the same play-level detail exists for
+the NFL over the same window, and what it would take to put it behind a league selector at
+the top of the explorer. **It exists, it comes from the same ESPN API this project already
+depends on, and in places it is richer.** One component does not port: `st_parser.py` scores
+**14.1% `exact` on NFL text against 98.51% on college**, and rewriting it for the NFL dialect
+is roughly 40% of the total effort.
+
+Every number below is measured, not assumed — but most come from samples, and the sample
+size is stated wherever it matters. None of it is a census.
+
+**What is identical.** The two endpoints, `site.api.../summary?event=` and
+`sports.core.api.../plays`, exist for `nfl` in place of `college-football` and return the
+same JSON shape back to 2014:
+
+| the dependency | NFL status |
+|---|---|
+| `drives.previous[].plays[]` | same shape, 2014 onward |
+| `statYardage`, `start.{down,distance,yardLine,yardsToEndzone}`, `end.*` | present, 100% populated |
+| `isTurnover`, `scoringPlay`, `isPenalty`, `wallclock`, `period`, `clock` | all present |
+| `type.id` / `type.text` | **same id space** — `5` Rush, `24` Pass Reception, `3` Pass Incompletion, `52` Punt, `53` Kickoff, `59`/`60` FG Good/Missed, `7` Sack, `8` Penalty, `12`/`32` Kickoff Return |
+| `KIND_BY_TYPE` keys | **11 of the 13 observed directly** across ~190 games, spelled identically, so `classify()` matches without a new entry. The two unobserved — `Blocked Field Goal Touchdown` and `Missed Field Goal Return Touchdown` — are the rarest scoring variants there are; absence from a 190-game sample is a sample-size artifact, not evidence, and should be confirmed on the full pull |
+| `participants[]` roles | same vocabulary — `kicker`, `punter`, `returner`, `passer`, `receiver`, `rusher`, `tackler`, `assistedBy` |
+| participants coverage | 84–91% of plays; the gap is timeouts, end-of-period, two-minute warnings and the coin toss, which is correct |
+| kicker/punter id on kicks | **98.4–100%**, against 98.7% here |
+| `gameInfo.venue.grass`, `address.zipCode`, `attendance` | all present |
+| extra points folded into touchdown text | same, so `emit_pat`'s whole architecture carries over |
+
+**`build_scrimmage.py` is the windfall.** It needs no parser by design, and every structured
+field it reads is fully populated in the NFL feed — so ~85% of the rows come across for
+close to free. Even the derived-`play_kind` recovery survives: reading the snap back from
+the participant roles when ESPN's type names an outcome works identically, because the roles
+are named identically.
+
+**Richer for the NFL than for college.** Kicks name the **long snapper and the holder**
+(`"Center-C.Gresham, Holder-J.Ryan"`), which the college feed never gives — snapper and
+holder identity would be new columns, not ported ones. Games carry `officials[]` (7 per
+game). Athlete records carry `dateOfBirth`, `debutYear`, height and weight, none of which
+`dim_athlete` has today.
+
+**The parser is the whole problem.** NFL play text is the official NFL gamebook rendering —
+a dialect unrelated to any that `st_parser.py` handles, and not the same thing as the NCAA
+gamebook dialect added on 2026-08-30 despite the shared name:
+
+```
+M.Bosher kicks 65 yards from ATL 35 to end zone, Touchback.
+(10:31) M.Koenen punts 44 yards to ATL 17, Center-A.DePaola. D.Hester to TB 35 for 48 yards
+(6:07) S.Hauschka 35 yard field goal is GOOD, Center-C.Gresham, Holder-J.Ryan.
+(:06) M.Bryant 59 yard field goal is No Good, Wide Left, Center-J.Harris, Holder-M.Bosher.
+```
+
+Running the existing parser over 566 kicks from 24 games spanning 2014/2019/2025:
+
+| kind | n | `exact` | `none` | `ambiguous` |
+|---|---|---|---|---|
+| kickoff | 246 | **0.4%** | 99.6% | — |
+| punt | 232 | 29.7% | 65.9% | 4.3% |
+| field_goal | 88 | 11.4% | 88.6% | — |
+| **all** | **566** | **14.1%** | 84.1% | 1.8% |
+
+Two things make that less bad than it reads. The gamebook is **machine-generated from
+official scoring, so it is more regular than any college dialect** — no `#NN` jersey
+prefixes, no `Last,First` rendering, and `Touchback`, `fair catch by`, `downed by`,
+`out of bounds`, `MUFFS catch` and `No Good, Wide Left` are literal and stable. And there is
+**no era drift**: sampling 10 games per season, the gamebook share holds at **84–100% across
+the entire 2014–2025 window**, which is the opposite of the college side, where the dialect
+arrived in 2021 and moved every year (see the 2026-08-30 changelog row). The residual is the
+scoring-summary form (`"Matt Bryant Made 40 Yrd Field Goal"`), which the existing ESPN
+patterns already partly match. A fresh dialect module should clear 98% more easily than
+college did.
+
+**What gets smaller.**
+
+| | college | NFL |
+|---|---|---|
+| completed games 2014–2026 | 10,470 | **3,303** (2026 had not kicked off as of 2026-09-09) |
+| estimated plays | 1,827,076 | **~500–580k** |
+| teams | 275 | 32 |
+| conferences | ~11, heavy realignment | 2 — AFC=`8`, NFC=`7` |
+| `dim_team_season` realignment risk | 83 of 275 teams moved | essentially nil; only relocations (Rams 2016, Chargers 2017, Raiders 2020) |
+| `fbs_vs_fbs` | meaningful, 5 code sites | meaningless, constant true |
+| `groups=80` | required | not applicable |
+| estimated Postgres / DuckDB | 1,327 MB / 251 MB | ~400 MB / ~75 MB |
+| full fetch | 10,470 summaries | ~30–45 min at 6 workers |
+
+The league string is a **one-line constant in exactly four files** — `fetch_espn.py`,
+`fetch_participants.py`, `fetch_athletes.py`, `build_dims.py`. `WEEKS` has to become
+season-dependent: 17 regular-season weeks through 2020, 18 from 2021, plus 5 postseason.
+
+**Effort, by component.**
+
+| component | work | est. |
+|---|---|---|
+| fetchers + dimensions | four constants, season-dependent weeks, drop `groups`, AFC/NFC | 1 d |
+| scrimmage fact | `build_scrimmage.py` near-unchanged; verify, audit the `other` bucket | 1 d |
+| **kick parser, NFL dialect** | new ~400–500 line module, three kick families | **4–6 d** |
+| PAT / two-point | new patterns for `extra point is GOOD`, `Made Ex. Pt`, `TWO-POINT CONVERSION ATTEMPT … ATTEMPT FAILS` | 1 d |
+| schema + loaders | `league` column on both facts and the dimensions; a `division_name` beside `division` (see below); assert `play_uid` uniqueness | 1–2 d |
+| snapshot + verify | reuse; drop `fbs_vs_fbs` | 1 d |
+| explorer league toggle | a `league.py` registry parallel to `lens.py` | 2–3 d |
+| answer-key validation | the reality-check tables this project holds itself to (PLAN.md) | 2 d |
+| | | **~12–16 d** |
+
+**Ship the scrimmage half first.** Because that fact needs no parser, there is a real
+milestone at **4–5 days** that puts NFL Offense and Defense on the explorer over ~450k plays
+with zero parser work, leaving Special teams for later. That maps onto `lens.py` as it
+already stands: the toggle offers the NFL with two of the three lenses live, which is a
+stated scope rather than a missing feature.
+
+**Three things to decide before writing any code.**
+
+1. **One snapshot or two.** `web/data.py`'s filter, sort and row-model layer is already
+   lens-blind — it interpolates a view name and never learns what is in it — so the cheapest
+   toggle is a `league` column on both facts, after which league behaves like any other
+   filter column and the toggle is a chip. The alternative is a second DuckDB file and a
+   swapped `ATTACH`. The column is the smaller diff; the second file keeps the two corpora
+   independently rebuildable.
+2. **`lens.py` hardcodes this corpus.** `PLAYER_HINT` and the phase comments carry literal
+   counts (`1,510,679 plays`, `98.7% of kicks`, `25+ plays`) and `PHASE_DEFAULT` encodes a
+   judgement about ~67k college extra points. Those scalars become per-league dicts. Small,
+   but it is the whole reason the toggle is 2–3 days and not one.
+3. **Assert that game ids do not collide, do not assume it.** A 547-game NFL sample showed
+   **zero overlap** with all 10,470 college ids, but the ranges interleave (college
+   400547640–401870790, NFL 400554214–401772954), so `play_uid` uniqueness across leagues is
+   a property to test in `verify.sql` rather than to trust. Carry a `league` column
+   regardless — it makes the constraint expressible.
+
+One semantic snag worth naming now: `dim_team_season.division` currently means `FBS | FCS`.
+For the NFL the natural content is `AFC East` and its seven siblings. Reusing the column
+overloads it across leagues; a separate `division_name` leaves `division` NULL for the NFL
+and keeps both meanings honest. `fact_game.conference_game` needs no change — same-conference
+means AFC-vs-AFC and is still meaningful.
 
 ---
 
