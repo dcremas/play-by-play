@@ -22,15 +22,22 @@ from . import common
 def layout(mode: str = "dark"):
     return dmc.Stack(gap="md", children=[
         html.Div(id="ex-kpis"),
+        # Collapsed by default since 2026-09-09. The plays grid is what this page is
+        # for, and starting with three 340px charts above it pushed the first row of
+        # detail off most screens. The section keeps its label and chevron, so it reads
+        # as collapsed rather than absent, and one click restores it. The chart
+        # callbacks still fire while it is shut -- they are cheap against a local
+        # snapshot, and gating them on the accordion would serve stale figures the
+        # moment it opened.
         dmc.Accordion(
-            value="shape", variant="separated", radius="sm", chevronPosition="right",
+            value=None, variant="separated", radius="sm", chevronPosition="right",
             children=[dmc.AccordionItem(value="shape", children=[
                 dmc.AccordionControl(dmc.Text("Shape of the current selection", size="xs",
                                               fw=600)),
                 dmc.AccordionPanel(dmc.SimpleGrid(
-                    cols={"base": 1, "lg": 3}, spacing="sm",
-                    children=[ui.graph("ex-c1", 340), ui.graph("ex-c2", 340),
-                              ui.graph("ex-c3", 340)],
+                    id="ex-chartgrid", cols={"base": 1, "lg": 3}, spacing="sm",
+                    children=[ui.graph("ex-c1", 320), ui.graph("ex-c2", 320),
+                              ui.graph("ex-c3", 320)],
                 )),
             ])],
         ),
@@ -100,18 +107,19 @@ def _kick_kpis(flt, where, chips):
         tiles.append(ui.tile("Phases", f"{len(chips)}",
                              ", ".join(lens.PHASES["st"][p] for p in chips)))
 
+    # The "Unknown outcome" tile was dropped on 2026-09-09 at the user's request, and
+    # the five-line caveat under it became the one line below. The number itself is not
+    # hidden: `Unknown` is still a value in the Outcome column, still a filter, and
+    # still a band in the mix chart. What it costs is denominator, never the numerator,
+    # so no measure on these tiles is understated by it -- which is the one thing a
+    # reader has to know and all that is left here.
     unk = int(r.unk)
-    tiles.append(ui.tile("Unknown outcome", f"{unk / n:.1%}" if unk else "0%",
-                         f"{unk:,} kicks"))
     note = None
     if unk:
         note = ui.note(
-            f"{unk:,} of these {n:,} kicks ({unk / n:.1%}) state no outcome anywhere in "
-            "the play text — ESPN's terse form names none, and no regex recovers what is "
-            "not written. The warehouse records that as NULL rather than false, so they "
-            "are shown as Unknown here instead of being folded into the real outcomes. "
-            "Nothing on this page is understated by them; what they cost is denominator. "
-            "Worst in 2023–2025.", "warn")
+            f"{unk:,} of these {n:,} kicks ({unk / n:.1%}) state no outcome in the play "
+            "text and read as Unknown — they cost denominator, not numerator, so nothing "
+            "above is understated by them.", "warn")
     return tiles, note
 
 
@@ -177,7 +185,10 @@ def _kpi_row(flt, mode):
     elif not isinstance(notes, list):
         notes = [notes]
     return dmc.Stack(gap=6, children=[
-        dmc.SimpleGrid(cols={"base": 2, "sm": 3, "lg": 6}, spacing="xs",
+        # Columns follow the tile count rather than sitting at a fixed 6. The kicks lens
+        # has five tiles since the Unknown-outcome one was dropped on 2026-09-09, and a
+        # six-column grid left the row stopping short with dead space on the right.
+        dmc.SimpleGrid(cols={"base": 2, "sm": 3, "lg": min(len(tiles), 6)}, spacing="xs",
                        children=tiles),
         *notes,
     ])
@@ -191,16 +202,26 @@ def _kpis(flt, mode):
 # --------------------------------------------------------------------------- charts
 @callback(
     Output("ex-c1", "figure"), Output("ex-c2", "figure"), Output("ex-c3", "figure"),
+    Output("ex-c3", "style"), Output("ex-chartgrid", "cols"),
     Input("flt", "data"), Input("mode", "data"),
 )
 def _charts(flt, mode):
     """Every chart honours every filter, including the outcome filter. Filtering to
     one outcome does flatten the mix charts to 100%, but a chart that quietly ignored
     part of the sidebar would be worse than one that looks degenerate for an honest
-    reason."""
+    reason.
+
+    A selection may have two charts rather than three -- `explorer_figs` returns None
+    in the third slot for the multi-phase kicks view. Hiding the slot is not enough on
+    its own: SimpleGrid would keep three columns and leave the two survivors at a third
+    of the width each, so the column count moves with them."""
     key = lens.resolve((flt or {}).get("lens"))
-    return charts.explorer_figs(key, data.where_from_filters(flt),
-                                data.chip_set(flt), mode or "dark", 340)
+    c1, c2, c3 = charts.explorer_figs(key, data.where_from_filters(flt),
+                                      data.chip_set(flt), mode or "dark", 320)
+    if c3 is None:
+        return c1, c2, charts.empty_fig(mode or "dark", height=320), \
+            {"display": "none"}, {"base": 1, "lg": 2}
+    return c1, c2, c3, {"height": "320px"}, {"base": 1, "lg": 3}
 
 
 # --------------------------------------------------------------------------- grid chrome
@@ -251,12 +272,12 @@ def _grid(grain, mode, extra, flt):
         hint = ui.note("Click any row to open the play. Column headers carry their own "
                        "filters, which run in DuckDB and compose with the sidebar.",
                        "neutral")
-        return ui.grid("grid-plays", mode, infinite=True, height="620px",
+        return ui.grid("grid-plays", mode, infinite=True, height="720px",
                        columns=columns.build(key, chips, extra, mode)), hint
     if grain == "kickers":
         hint = ui.note("Click a row to open that player's profile. Rates are computed "
                        "on the filtered kicks only.", "neutral")
-        return ui.grid("grid-kickers", mode, height="620px",
+        return ui.grid("grid-kickers", mode, height="720px",
                        columns=common.agg_cols(key, "player", chips, mode),
                        row_id="player_id"), hint
     if lens.is_scrimmage(key):
@@ -266,7 +287,7 @@ def _grid(grain, mode, extra, flt):
             "defense profiles are the next pass.", "neutral")
     else:
         hint = ui.note("Click a row to open that team's profile.", "neutral")
-    return ui.grid("grid-teams", mode, height="620px",
+    return ui.grid("grid-teams", mode, height="720px",
                    columns=common.agg_cols(key, "team", chips, mode),
                    row_id="team_id"), hint
 

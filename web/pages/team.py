@@ -72,9 +72,9 @@ def layout(team_id: int, mode: str = "dark"):
             "filter itself.", "info" if not moved else "warn"),
         html.Div(id="tm-kpis"),
         dmc.Divider(label="Across the whole window", labelPosition="left"),
-        dmc.SimpleGrid(cols={"base": 1, "lg": 3}, spacing="sm", children=[
-            ui.graph("tm-c1", 330), ui.graph("tm-c2", 330), ui.graph("tm-c3", 330),
-        ]),
+        dmc.SimpleGrid(id="tm-chartgrid", cols={"base": 1, "lg": 3}, spacing="sm",
+                       children=[ui.graph("tm-c1", 330), ui.graph("tm-c2", 330),
+                                 ui.graph("tm-c3", 330)]),
         dmc.Divider(label="By season", labelPosition="left"),
         dmc.Tabs(id="tm-tabs", value="field_goal", children=[
             dmc.TabsList([dmc.TabsTab(lens.PHASES["st"][k], value=k)
@@ -116,16 +116,17 @@ def _kpis(ent, flt, mode):
         ui.tile("Touchback rate",
                 f"{r['tb_rate']:.1%}" if r.get("tb_rate") is not None else "—",
                 "onside excluded"),
-        ui.tile("Unknown outcome",
-                f"{r['unk_share']:.1%}" if r.get("unk_share") is not None else "—",
-                f"{int(r['unknowns'] or 0):,} kicks"),
     ]
-    return dmc.SimpleGrid(cols={"base": 2, "sm": 3, "lg": 6}, spacing="xs",
-                          children=tiles)
+    # The Unknown-outcome tile was dropped here on 2026-09-09 alongside the explorer's.
+    # The Unknown COLUMN stays in the by-season grids below, and so does the note that
+    # explains it -- that grid is the detail this page exists for.
+    return dmc.SimpleGrid(cols={"base": 2, "sm": 3, "lg": min(len(tiles), 6)},
+                          spacing="xs", children=tiles)
 
 
 @callback(
     Output("tm-c1", "figure"), Output("tm-c2", "figure"), Output("tm-c3", "figure"),
+    Output("tm-c3", "style"), Output("tm-chartgrid", "cols"),
     Input("ent", "data"), Input("flt", "data"), Input("mode", "data"),
 )
 def _charts(ent, flt, mode):
@@ -134,7 +135,14 @@ def _charts(ent, flt, mode):
     mode = mode or "dark"
     where = common.entity_where(ent, flt)
     ps = common.st_chips(flt)
-    return charts.explorer_figs("st", where, ps, mode, 330)
+    # Same two-or-three shape as the explorer: `explorer_figs` returns None in the
+    # third slot for the multi-phase kicks view, which is this page's default. Hide the
+    # slot AND drop the column count, or the two survivors keep a third of the width.
+    c1, c2, c3 = charts.explorer_figs("st", where, ps, mode, 330)
+    if c3 is None:
+        return c1, c2, charts.empty_fig(mode, height=330), \
+            {"display": "none"}, {"base": 1, "lg": 2}
+    return c1, c2, c3, {"height": "330px"}, {"base": 1, "lg": 3}
 
 
 # --------------------------------------------------------------------------- panels

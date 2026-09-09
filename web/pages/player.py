@@ -137,12 +137,11 @@ def _kpis(ent, flt, mode):
         tiles.append(ui.tile("Touchback rate",
                              f"{r['tb_rate']:.1%}" if r.get("tb_rate") is not None else "—",
                              "onside excluded"))
-    unk = r.get("unk_share")
-    if unk:
-        tiles.append(ui.tile("Unknown outcome", f"{unk:.1%}",
-                             f"{int(r['unknowns']):,} kicks"))
-    return dmc.SimpleGrid(cols={"base": 2, "sm": 3, "lg": 6}, spacing="xs",
-                          children=tiles)
+    # The Unknown-outcome tile was dropped here on 2026-09-09 alongside the explorer's.
+    # The Unknown COLUMN stays in the by-season grids below, with the note that explains
+    # it -- that grid is the detail this page exists for.
+    return dmc.SimpleGrid(cols={"base": 2, "sm": 3, "lg": min(len(tiles), 6)},
+                          spacing="xs", children=tiles)
 
 
 # --------------------------------------------------------------------------- phase panels

@@ -109,10 +109,25 @@ When this app was first built the warehouse could not express that: the outcome 
 NULL state, so a kick whose ending the parser could not read was stored `false` on every one
 of them, and this view had to reconstruct the unreadable set by testing for all-false. As of
 2026-08-31 `st_parser.py` writes NULL on the five flags in exactly that case, so
-`returned IS NULL` is the single-column test and the derivation here just reads it. Unknown
-is a visible slice in every chart, a filterable value in every grid, and a stat tile on every
-page. It is worst in 2023–2025 — 29.6% of 2023 punts and 28.0% of its kickoffs — so rates
-from those seasons rest on a visibly smaller denominator.
+`returned IS NULL` is the single-column test and the derivation here just reads it. It is
+worst in 2023–2025 — 29.6% of 2023 punts and 28.0% of its kickoffs — so rates from those
+seasons rest on a visibly smaller denominator.
+
+**Where it is surfaced changed on 2026-09-09, at the user's request.** It used to also be a
+stat tile on every page and a dedicated chart — "Unreadable-outcome share by season", the
+third chart of the multi-phase kicks view. Both are gone: the tile from the explorer, the
+team page and the player page, and the chart entirely (`unknown_share_by_phase` is deleted,
+not just unwired). What remains is where it belongs — **a value in the Outcome column, a
+filterable option in the sidebar, a band in the mix charts, an `Unknown` column in the
+by-season grids, and one line of note under the tiles.**
+
+That is a presentation change and not a retreat from the decision above, but the line is
+worth naming: the number is no longer *summarised* anywhere, only *shown*. A reader who
+never scrolls the grid will not learn that 8.6% of the corpus has no stated outcome unless
+they read the note. The note is therefore not optional furniture — it is the only remaining
+summary, which is why it survived the cull and why it still carries the count, the share and
+the reason. The notes on the team and player pages survived for the same reason: they explain
+the `Unknown` column in the grid directly beneath them, which is still there.
 
 **2. `Onside` is tested before the real outcomes.** An onside kick is a different play, not
 a kickoff with an unusual result. Folding it in both muddied touchback rates and dumped
@@ -227,7 +242,10 @@ web/
   app.py            shell, the side selector, global filters, routing, the detail drawer
   data.py           read-only DuckDB attach, the three views, filter + AG Grid translation
   columns.py        per-lens, per-phase column sets and the opt-in catalogue
-  charts.py         Plotly figures; explorer_figs() dispatches on lens and phase count
+  charts.py         Plotly figures; explorer_figs() dispatches on lens and phase count.
+                    Always returns a 3-tuple, but the THIRD MAY BE None -- the multi-phase
+                    kicks view has two charts. Callers hide the dead slot and drop their
+                    SimpleGrid to two columns, or the survivors keep a third of the width
   detail.py         the single-play drawer, one renderer per fact
   theme.py          validated palettes, Plotly and AG Grid defaults
   ui.py             stat tiles, notes, grid factory
@@ -236,6 +254,19 @@ web/
     explorer.py  player.py  team.py
   assets/app.css    surfaces, ink, and all AG Grid colour variables
 ```
+
+**The explorer opens on the detail, not the summary (2026-09-09).** "Shape of the current
+selection" is an accordion that starts **collapsed**, because the plays grid is what the page
+is for and three 340px charts above it pushed the first row of detail off most screens. The
+section keeps its label and chevron so it reads as collapsed rather than absent, and the grid
+grew from 620px to 720px with the space. Two consequences to know:
+
+- **The chart callbacks still fire while the section is shut.** They are cheap against a
+  local snapshot, and gating them on the accordion would serve stale figures the moment it
+  opened. If they ever stop being cheap, cache them — do not gate them.
+- **Stat-tile rows size to their content**, `min(len(tiles), 6)` columns rather than a fixed
+  6. The kicks lens has five tiles since the Unknown-outcome one was dropped, and a
+  six-column grid left the row stopping short with dead space on the right.
 
 Two implementation notes that cost real debugging time:
 

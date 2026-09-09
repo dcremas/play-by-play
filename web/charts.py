@@ -400,37 +400,6 @@ def kicks_by_phase_distance(where: str, mode: str, height: int = 300):
                         xtype="linear")
 
 
-def unknown_share_by_phase(where: str, mode: str, height: int = 300):
-    """The data-quality story, which is the one thing worth three lines on one axis."""
-    df = data.q(f"""
-        SELECT season, phase, count(*) AS n,
-               sum(CASE WHEN outcome = 'Unknown' THEN 1 ELSE 0 END) AS unk
-        FROM st_play WHERE {where} GROUP BY 1, 2 ORDER BY 1
-    """)
-    if df.empty:
-        return empty_fig(mode, height=height)
-    t = theme.TOKENS[mode]
-    fig = go.Figure()
-    for ph in _KICK_PHASES:
-        sub = df[df["phase"] == ph]
-        if sub.empty:
-            continue
-        hexv = theme.SLOTS[mode][theme.PHASE_HUE[ph]]
-        fig.add_scatter(x=sub["season"], y=sub["unk"] / sub["n"], name=ph,
-                        mode="lines+markers", line=dict(color=hexv, width=2),
-                        marker=dict(size=8, color=hexv,
-                                    line=dict(color=t["surface"], width=2)),
-                        customdata=sub["unk"],
-                        hovertemplate=f"<b>{ph}</b><br>%{{x}}<br>%{{y:.1%}} "
-                                      "(%{customdata:,} kicks)<extra></extra>")
-    fig.update_layout(**theme.plotly_layout(
-        mode, height=height,
-        title=dict(text="Unreadable-outcome share by season")))
-    fig.update_yaxes(tickformat=".0%", rangemode="tozero", title=None)
-    fig.update_xaxes(title=None, dtick=1, type="category")
-    return fig
-
-
 # --------------------------------------------------------------------------- scrimmage
 # The views expose ten outcome values on offense and nine on defense -- more than a
 # stacked bar can carry legibly, and more than the palette has validated slots for.
@@ -520,7 +489,10 @@ def scrim_yards_by_down(where: str, key: str, mode: str, height: int = 300):
 
 # --------------------------------------------------------------------------- dispatch
 def explorer_figs(key: str, where: str, chips, mode: str, height: int = 300):
-    """The three charts for a selection, whichever lens and phases it spans.
+    """The charts for a selection, whichever lens and phases it spans.
+
+    Always a 3-tuple, but the third may be None -- the multi-phase kicks view has two.
+    Callers must hide the empty slot AND narrow their grid; see web/pages/explorer.py.
 
     One phase -> the outcome vocabulary is coherent, so show the outcome mix and the
     measure that matters for that phase. More than one -> compare the phases instead,
@@ -540,6 +512,12 @@ def explorer_figs(key: str, where: str, chips, mode: str, height: int = 300):
         return (outcome_mix_by_season(where, ps, mode, height),
                 outcome_by_distance(where, ps, mode, height),
                 phase_detail(where, ps, mode, height))
+    # Two charts, not three. The third used to be the unreadable-outcome share by
+    # season -- removed 2026-09-09 at the user's request. `None` rather than an empty
+    # figure so the caller can collapse the slot and let these two have the width;
+    # an empty figure would hold a third of the row to say nothing. The 8.6% of kicks
+    # that state no outcome are still an `Unknown` value in the Outcome column and in
+    # the mix chart, and the note under the tiles still explains them.
     return (kicks_by_phase_season(where, mode, height),
             kicks_by_phase_distance(where, mode, height),
-            unknown_share_by_phase(where, mode, height))
+            None)
