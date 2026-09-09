@@ -80,7 +80,23 @@ a view with no such columns. Team rows on the offense and defense lenses therefo
 navigate, and the hint above the grid says so rather than silently changing the subject.
 
 Filters in the sidebar are **global**: a player page and a team page both honour
-them, each ignoring only the facet it *is*. Clicking any play row opens a detail
+them, each ignoring only the facet it *is*.
+
+**The Roof filter's two sides are not complements, and that is on purpose (added
+2026-09-09).** `venue_indoor` is nullable — 438 kick and 2,149 scrimmage rows have no venue
+at all, the 14 Hawai'i home games in 2019–2020 that carry no venue in the scoreboard — so
+the clause is `venue_indoor` for indoor and `venue_indoor IS FALSE` for outdoor, and rows
+with an unknown roof leave the selection under *either* choice. On the default kick
+selection that reads 11,033 indoor + 233,584 outdoor against 244,937 total: the 320-row
+shortfall is the point, not a bug. The feed does not say those plays were outdoors, and a
+filter that kept unknown-roof rows on the outdoor side would be claiming something it
+cannot know. It is a `Select` rather than a chip pair for the same reason — two toggles
+would imply each is the other's inverse.
+
+It is also a **stadium** property and not a **game** condition: 5 of the 18 indoor venues
+are retractable and read indoor whether or not the roof was open that day. The control
+carries that caveat inline, because someone filtering to indoor kicks is usually asking a
+weather question and this is the one thing that would mislead them. Clicking any play row opens a detail
 drawer that leads with **who was involved**. On a kick that is the kicker, returner,
 tackler, whoever got a hand on it, plus assisting tacklers from `play_athlete` — each with
 the parser's name-match confidence and a link to their profile, and the kicker carrying the

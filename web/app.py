@@ -160,6 +160,21 @@ def sidebar() -> list:
                                         data=data.surface_options(key),
                                         value=[], size="xs", clearable=True,
                                         placeholder="Both"),
+                        dmc.Space(h=8),
+                        # A Select, not a chip pair: the two sides are not complements.
+                        # `indoor` is a STADIUM property -- 5 of the 18 indoor venues are
+                        # retractable and read true whether or not the roof was open that
+                        # day -- and it is NULL where the feed gives no venue. So "Indoor
+                        # only" is not "everything the other chip excludes", and offering
+                        # them as toggles would imply it was.
+                        dmc.Select(id="f-roof", size="xs", value="any",
+                                   allowDeselect=False, label="Roof",
+                                   data=[{"value": "any", "label": "Either"},
+                                         {"value": "indoor", "label": "Indoor only"},
+                                         {"value": "outdoor", "label": "Outdoor only"}]),
+                        ui.note("Indoor is the stadium, not the day: 5 of the 18 indoor "
+                                "venues have a retractable roof and read indoor whether "
+                                "or not it was open.", "info"),
                         _label("Division"),
                         dmc.ChipGroup(id="f-divisions", multiple=True, value=[],
                                       children=dmc.Group(gap=4, children=[
@@ -400,6 +415,7 @@ _FILTER_INPUTS = [
     ("surfaces", "f-surfaces", "value"),
     ("divisions", "f-divisions", "value"),
     ("neutral", "f-neutral", "value"),
+    ("roof", "f-roof", "value"),
     ("linked_only", "f-linked", "checked"),
 ]
 
@@ -410,7 +426,7 @@ _RESET = {
     "conferences": [], "season_types": [], "fbs_only": False, "conf_game": "any",
     "qtrs": [], "score_states": [], "downs": [], "zones": [], "dist": [D0, D1],
     "clutch_only": False, "surfaces": [], "divisions": [], "neutral": "any",
-    "linked_only": False,
+    "roof": "any", "linked_only": False,
 }
 
 # phases, players and outcomes are reset by the two lens-scoped callbacks above,

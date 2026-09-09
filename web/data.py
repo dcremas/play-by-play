@@ -172,6 +172,7 @@ SELECT
     p.venue_city,
     p.venue_state,
     p.surface,
+    p.venue_indoor,
     p.attendance,
     p.neutral_site,
     p.conference_game,
@@ -311,6 +312,7 @@ SELECT
     s.venue_city,
     s.venue_state,
     s.surface,
+    s.venue_indoor,
     s.attendance,
     s.neutral_site,
     s.conference_game,
@@ -480,6 +482,19 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
         parts.append("NOT neutral_site")
     elif f.get("neutral") == "only":
         parts.append("neutral_site")
+
+    # Roof. Three-state like neutral site, not a value list like surface, because it is
+    # a boolean -- and a nullable one: 438 kick and 2,149 scrimmage rows have no venue at
+    # all (14 Hawai'i home games in 2019-2020 that carry no venue in the scoreboard), so
+    # venue_indoor is NULL there. `IS FALSE` rather than `NOT venue_indoor` states on
+    # purpose that those rows leave the selection under "Outdoor only": the feed does not
+    # say they were outdoors, and a roof filter that quietly kept unknown-roof rows on the
+    # outdoor side would be claiming something it cannot know. Both sides are therefore
+    # narrowing, and neither is the complement of the other.
+    if f.get("roof") == "indoor":
+        parts.append("venue_indoor")
+    elif f.get("roof") == "outdoor":
+        parts.append("venue_indoor IS FALSE")
     if f.get("conf_game") == "only":
         parts.append("conference_game")
     elif f.get("conf_game") == "exclude":
