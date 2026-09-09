@@ -14,7 +14,7 @@ Athlete is derived from fetched participants plus the names the parser already e
     python build_dims.py athlete  -> data/out/dim_athlete.csv, fact_play_athlete.csv
 
 `conf` and `venue` always write the whole window; the tables are small (3.4k team-seasons,
-200 venues) and sql/load_dims.sql replaces them wholesale, so there is nothing to scope.
+201 venues) and sql/load_dims.sql replaces them wholesale, so there is nothing to scope.
 
 `athlete` builds ONE dimension over BOTH fact tables (PLAN.md §10d). The union is 62,879
 athletes: 33,891 from special teams, 58,800 from scrimmage, 29,812 in both. A receiver who
@@ -156,6 +156,28 @@ def stage_conf():
 
 def stage_venue():
     venues, games = {}, []
+    # Roof comes from a different payload than the rest of the venue. `summary.gameInfo.venue`
+    # has `grass` but no `indoor`; only the scoreboard states it, and fetch_espn.stage_games
+    # keeps it as `venue_indoor` per game. So it is accumulated per venue here and joined on
+    # venue_id below, rather than read off the summary with everything else.
+    #
+    # Venue-grain is safe but not free: measured over all 10,470 games, 201 venues each report
+    # a single consistent value and NOT ONE reports both -- so there is no per-game roof state
+    # to lose. The guard below stays anyway, because if ESPN ever does disagree with itself the
+    # right outcome is a visible complaint, not a silent first-wins.
+    indoor_by_vid, indoor_conflict = {}, {}
+    for season in SEASONS:
+        gp = f"{ESPN}/games_{season}.json"
+        if not os.path.exists(gp):
+            continue
+        for g in json.load(open(gp)).values():
+            vid, vi = g.get("venue_id"), g.get("venue_indoor")
+            if not vid or vi is None:
+                continue
+            vi = bool(vi)
+            if vid in indoor_by_vid and indoor_by_vid[vid] != vi:
+                indoor_conflict.setdefault(vid, set()).update({indoor_by_vid[vid], vi})
+            indoor_by_vid[vid] = vi
     for season in SEASONS:
         gp = f"{ESPN}/games_{season}.json"
         if not os.path.exists(gp):
@@ -179,7 +201,8 @@ def stage_venue():
                 a = v.get("address") or {}
                 venues[vid] = [vid, v.get("fullName"), a.get("city"), a.get("state"),
                                a.get("zipCode"), a.get("country") or "USA",
-                               "grass" if v.get("grass") else "turf"]
+                               "grass" if v.get("grass") else "turf",
+                               indoor_by_vid.get(vid)]
             home = next((t["id"] for t in g["teams"] if t["home_away"] == "home"), None)
             away = next((t["id"] for t in g["teams"] if t["home_away"] == "away"), None)
             games.append([gid, season, g["week"],
@@ -203,7 +226,8 @@ def stage_venue():
 
     with open(f"{OUT}/dim_venue.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["venue_id", "venue_name", "city", "state", "zip", "country", "surface"])
+        w.writerow(["venue_id", "venue_name", "city", "state", "zip", "country", "surface",
+                    "indoor"])
         for v in sorted(venues.values(), key=lambda r: int(r[0])):
             w.writerow(v)
     with open(f"{OUT}/fact_game.csv", "w", newline="") as f:
@@ -215,6 +239,12 @@ def stage_venue():
     surf = collections.Counter(v[6] for v in venues.values())
     intl = sum(1 for v in venues.values() if v[5] and v[5] != "USA")
     print(f"  surfaces: {dict(surf)}; non-US venues: {intl}")
+    roof = collections.Counter(v[7] for v in venues.values())
+    print(f"  roof: indoor={roof[True]}, outdoor={roof[False]}, unknown={roof[None]}")
+    if indoor_conflict:
+        print(f"  !! {len(indoor_conflict)} venues report BOTH indoor and outdoor across "
+              f"games; last value wins and the roof is not trustworthy for them: "
+              f"{sorted(indoor_conflict)}")
 
 
 def load_identity():

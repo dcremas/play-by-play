@@ -49,6 +49,34 @@ FROM pbp.special_teams_play p JOIN pbp.dim_venue v ON v.venue_id = p.venue_id
 WHERE p.play_kind='field_goal' AND p.fg_made IS NOT NULL
 GROUP BY 1 ORDER BY 1;
 
+-- Roof coverage and behaviour. Two things this catches. If `indoor` goes all-NULL the
+-- games lists were rebuilt by a fetcher that does not capture `venue_indoor` -- only the
+-- SCOREBOARD states a roof, and a stage_games without it discards the field silently.
+-- If the indoor/outdoor ordering inverts or collapses, the flag is joined to the wrong
+-- thing: a roof raises all three of these measures, and did by 2.4 points of FG%, 0.97
+-- yards of punt gross and 1.7 points of touchback rate when it was built on 2026-09-09.
+\echo '=== roof coverage (NULL here on anything but the 14 venue-less games means the fetcher dropped venue_indoor)'
+SELECT count(*) AS venues,
+       count(*) FILTER (WHERE indoor)          AS indoor,
+       count(*) FILTER (WHERE indoor IS FALSE) AS outdoor,
+       count(*) FILTER (WHERE indoor IS NULL)  AS unknown
+FROM pbp.dim_venue;
+
+\echo '=== kicking under a roof vs in the open (FBS v FBS; a roof should raise all three)'
+SELECT CASE WHEN v.indoor THEN 'indoor' ELSE 'outdoor' END AS roof,
+       count(*) FILTER (WHERE p.play_kind='field_goal' AND p.fg_made IS NOT NULL) AS fg_att,
+       round(100.0*avg(CASE WHEN p.play_kind='field_goal' AND p.fg_made IS NOT NULL
+                            THEN p.fg_made::int END),2) AS fg_pct,
+       round(avg(CASE WHEN p.play_kind='punt' THEN p.punt_gross_yds END),2) AS punt_gross,
+       round(100.0*avg(CASE WHEN p.play_kind='kickoff' AND p.touchback IS NOT NULL
+                            THEN p.touchback::int END),2) AS tb_pct
+FROM pbp.special_teams_play p
+JOIN pbp.dim_venue v ON v.venue_id = p.venue_id
+JOIN pbp.dim_team_season kts ON kts.team_id = p.kicking_team_id   AND kts.season = p.season
+JOIN pbp.dim_team_season rts ON rts.team_id = p.receiving_team_id AND rts.season = p.season
+WHERE v.indoor IS NOT NULL AND kts.division='FBS' AND rts.division='FBS'
+GROUP BY 1 ORDER BY 1;
+
 \echo '=== referential integrity'
 SELECT 'plays with no game row' AS check, count(*) FROM pbp.special_teams_play p
   LEFT JOIN pbp.fact_game g ON g.game_id=p.game_id WHERE g.game_id IS NULL

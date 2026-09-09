@@ -35,7 +35,8 @@ CREATE TABLE pbp.dim_venue (
   state      text,
   zip        text,
   country    text,
-  surface    text               -- grass | turf
+  surface    text,              -- grass | turf
+  indoor     boolean            -- from the SCOREBOARD payload, not the summary
 );
 
 DROP TABLE IF EXISTS pbp.fact_game CASCADE;
@@ -54,6 +55,17 @@ CREATE TABLE pbp.fact_game (
 );
 CREATE INDEX ON pbp.fact_game (season, week);
 CREATE INDEX ON pbp.fact_game (venue_id);
+
+COMMENT ON COLUMN pbp.dim_venue.indoor IS
+  'Roof, as ESPN states it -- and ONLY the scoreboard payload states it. summary.gameInfo.venue
+   carries `grass` but never `indoor`, so a venue loader that reads only the summary (as this
+   one did until 2026-09-09) can record surface and not roof.
+
+   A STADIUM PROPERTY, NOT A GAME CONDITION. A retractable roof reads true whether or not it
+   was open that day, and 5 of the 18 indoor venues are retractable. Do not read indoor = true
+   as "weather does not apply here"; it means "weather may not apply, and the feed cannot say".
+   Consistent across all 10,470 games -- no venue reports both values -- so the venue grain is
+   the feed''s own grain, not an aggregation this project chose.';
 
 COMMENT ON TABLE pbp.dim_team_season IS
   'Conference membership BY SEASON. Joining a play to a conference must go through

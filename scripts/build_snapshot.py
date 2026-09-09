@@ -15,6 +15,10 @@ the corpus ended in 2025 and the conference was down to two members.
 
 Two facts since 2026-09-08: `play` is special teams, `scrimmage` is everything else, and the
 two are disjoint with play_uid unique across both. `drive` spans them.
+
+`venue_indoor` is a stadium property, not a game condition: a retractable roof reads true
+whether or not it was open that day, and 5 of the 18 indoor venues are retractable. It is
+not a substitute for "weather did not affect this play".
 """
 import argparse, os, sys, time
 
@@ -50,7 +54,7 @@ SELECT
     -- game / venue
     g.kickoff_utc, g.attendance, p.neutral_site, p.conference_game,
     p.venue_id, v.venue_name, v.city AS venue_city, v.state AS venue_state,
-    v.country AS venue_country, v.surface,
+    v.country AS venue_country, v.surface, v.indoor AS venue_indoor,
 
     -- team-season identity (realignment-safe)
     kt.display_name AS kicking_team, rt.display_name AS receiving_team,
@@ -120,7 +124,7 @@ SELECT
     -- game / venue
     g.kickoff_utc, g.attendance, p.neutral_site, p.conference_game,
     p.venue_id, v.venue_name, v.city AS venue_city, v.state AS venue_state,
-    v.country AS venue_country, v.surface,
+    v.country AS venue_country, v.surface, v.indoor AS venue_indoor,
 
     -- team-season identity (realignment-safe)
     ot.display_name AS offense_team, dt.display_name AS defense_team,

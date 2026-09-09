@@ -310,7 +310,8 @@ requiring a key:
 | endpoint | gives | used for |
 |---|---|---|
 | `site.api.../scoreboard?dates=<season>&seasontype=&week=&groups=80` | the completed-game list per week | `games_<season>.json`, `fact_game`, `dim_team` |
-| `site.api.../summary?event=<game_id>` | drives → plays: type id, start/end yard line, `statYardage`, `wallclock`, plus `gameInfo.venue` (name, city, state, zip, **`grass` boolean**) and attendance | play text, `dim_venue` |
+| `site.api.../summary?event=<game_id>` | drives → plays: type id, start/end yard line, `statYardage`, `wallclock`, plus `gameInfo.venue` (name, city, state, zip, **`grass` boolean** — but **no roof**) and attendance | play text, `dim_venue` |
+| `site.api.../scoreboard` (same call as the games list) | `competitions[].venue.indoor` — **the only place ESPN states a roof.** Captured as `venue_indoor` per game by `fetch_espn.stage_games` and accumulated per venue by `build_dims.py venue` | `dim_venue.indoor` |
 | `sports.core.api.../events/<id>/competitions/<id>/plays` | `participants[]` with an athlete `$ref` per role | every athlete id in the warehouse |
 | `sports.core.api.../seasons/<y>/types/2/groups/{80,81}/children` | conference membership by season | `dim_team_season`, `dim_conference` |
 
@@ -659,7 +660,7 @@ the derived columns, so no query has to repeat a join or a `CASE`. Everything ab
 |---|---|
 | `kicker_known_name`, `kicker_name_confidence` | `dim_athlete` on `kicker_athlete_id` |
 | `kickoff_utc`, `attendance` | `fact_game` |
-| `venue_name`, `venue_city`, `venue_state`, `venue_country`, `surface` | `dim_venue` |
+| `venue_name`, `venue_city`, `venue_state`, `venue_country`, `surface`, `venue_indoor` | `dim_venue` |
 | `kicking_team`, `receiving_team` | `dim_team` |
 | `kicking_conference`, `kicking_division`, `receiving_conference`, `receiving_division` | `dim_team_season` on **`(team_id, season)`** |
 
@@ -773,7 +774,7 @@ plays have two tacklers and 1,156 have three.
 | `pbp.drive` | 258,795 | one drive | see its own section above |
 | `pbp.dim_team_season` | 3,368 | team × season | `team_id`, `season` PK · `conference_id` · `conference_name` · `division` (`FBS` \| `FCS`) |
 | `pbp.dim_team` | 246 | one team | `team_id` PK · `display_name` (the team's *most recent* name in the window) |
-| `pbp.dim_venue` | 200 | one venue | `venue_id` PK · `venue_name` · `city` · `state` · `zip` · `country` · `surface` (73 grass / 127 turf). **No roof field** and no lat/lon |
+| `pbp.dim_venue` | 201 | one venue | `venue_id` PK · `venue_name` · `city` · `state` · `zip` · `country` · `surface` (73 grass / 128 turf) · `indoor` (**18 indoor / 183 outdoor / 0 unknown**, added 2026-09-09 — a *stadium* property, not a game condition; 5 of the 18 are retractable and read true whether or not the roof was open). No lat/lon |
 | `pbp.dim_conference` | 31 | one conference | `conference_id` PK · `conference_name` · `short_name` |
 
 `dim_athlete` is a **career aggregate**, and that is load-bearing: `first_season`,
@@ -1152,7 +1153,11 @@ clears three groups of columns that its own `INSERT` column list does not repopu
 
 The venue columns are the quiet one. Nothing errors; every `dim_venue` join simply returns
 zero rows, so the field-goal-by-surface section of `verify_phase4.sql` goes silently empty.
-**Run the verify suite after any backfill and check that section is non-empty.**
+**Run the verify suite after any backfill and check that section is non-empty.** The two roof
+sections added on 2026-09-09 fail the same quiet way and catch one more thing: if `indoor` reads
+all-NULL, the games lists were rebuilt by a `stage_games` that does not capture `venue_indoor`
+— the scoreboard is the only payload that states a roof, and dropping the field costs nothing
+visible until someone asks which kicks were indoors.
 `load_3_season.sql` avoids the whole problem by applying that season's game context inside
 the same transaction, so the enrichment cannot be forgotten.
 
@@ -1203,7 +1208,7 @@ one worth remembering:
 | `pbp.special_teams_play`, `pbp.play_athlete`, the three id columns | season | `DELETE` + `INSERT` on that season only; earlier seasons are provably untouched, and both loaders print every season's coverage so you can see they did not move |
 | `pbp.scrimmage_play`, `pbp.scrimmage_athlete`, `pbp.drive` | season | `sql/load_scrimmage_3_season.sql`, same pattern, enrichment in the same transaction |
 | `data/espn/athletes.json.gz` | **global, incremental** | `fetch_athletes.py` only pulls ids it has never seen, so a weekly run is a few hundred calls |
-| `dim_team_season`, `dim_venue`, `dim_team`, `fact_game` | **global** | small enough that a wholesale swap cannot leave a stale row behind — 200 venues, 3.4k team-seasons, 10.4k games |
+| `dim_team_season`, `dim_venue`, `dim_team`, `fact_game` | **global** | small enough that a wholesale swap cannot leave a stale row behind — 201 venues, 3.4k team-seasons, 10.4k games |
 | `pbp.dim_athlete` | **global** | a *career* aggregate. A 2026-only rebuild would give every returning kicker `first_season = 2026`. Eight games of 2026 updated 100 existing athletes |
 
 That last row is why `build_dims.py athlete` takes `--plays` with several extracts: it
@@ -1728,6 +1733,7 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-08 | **`score_diff_kicking` means what it says** | it documented "the kicking team's margin before the play" but was computed from ESPN's after-play scoreboard, so a made field goal carried a margin that already included the three points it had just scored | now taken from the repaired running score entering the play, like `score_diff_offense`. **22,562 of 23,220 made field goals moved by exactly −3**; **7,813 of 8,044 missed field goals did not move at all**, which is the control. Conversion rows get the margin the KICKER faced — after the touchdown, before his own kick — since a `pat` row is derived from the touchdown play. `is_clutch` flips on 662 of 316,397 rows; no measured column moved, FG% is 74.27% before and after |
 | 2026-09-08 | **Rollback tables dropped** | four tables from the expansion, kept until the new coverage was trusted | `cfb` 1,369 MB → 1,327 MB; the schema holds exactly the eleven tables the pipeline needs |
 | 2026-09-09 | **Explorer reads every play, through three lenses** | the app covered 244,937 of 1,827,076 plays; the scrimmage fact had been queryable offline since 2026-09-08 and no surface read it | `web/lens.py` and three views — `off_play` and `def_play` over `snap.scrimmage`, `st_play` over `snap.play`, all normalised to one column vocabulary so the filter and sort translation stayed lens-blind. **Offense and defense are one row read from opposite ends, not two copies**: verified over all 1,510,679 rows that `score_diff` and `points_scored` are exact negations and the team ids exactly swap. Conversions joined the kicks lens as a default-off chip. Two feed defects surfaced and are handled rather than published: `statYardage` on a turnover is the *defense's return* (it lifts the passing mean 7.5 → 13.2, so turnovers are out of every mean-yards measure) and four rows carry an impossible value (11,131 yards on a 2017 pass), NULLed not clamped, flagged by `yards_impossible`. Found `is_home_offense` NULL on 15 rows reading as "Away" on **both** lenses at once; `site` is now NULL there, and the same latent defect was fixed on the kicks' 4 rows |
+| 2026-09-09 | **`dim_venue.indoor` — the roof ESPN was already sending** | `dim_venue` recorded surface but not roof, and this file asserted there is **no roof field in the ESPN payload**, so flagging domes "needs a separate source or a manual list". Wrong on both counts. `summary.gameInfo.venue` carries `grass` but never `indoor`, and `build_dims.py` reads venue from the summary — but the **scoreboard** states `venue.indoor`, and `fetch_espn.stage_games` was already fetching that exact payload and keeping only `venue_id` off it. The roof had been arriving and being discarded on every one of 10,470 games since 2026-08-30 | `dim_venue.indoor` on **201 of 201 venues — 18 indoor, 183 outdoor, 0 unknown** — and denormalised onto both facts as `venue_indoor`. **Purely additive, and checked to be:** the games lists were re-fetched for all 13 seasons at **+0 delta** in every one, `fact_game.csv` came back byte-identical, and `dim_venue.csv` is identical after dropping the new column. **Not one of the 201 venues reports both values** across 10,470 games, so the venue grain is the feed's own rather than an aggregation chosen here; the guard that would complain stays in `stage_venue` regardless. NULL on 438 kick and 2,149 scrimmage rows, which are **exactly** the rows whose venue was already entirely NULL (14 Hawai'i home games in 2019–2020 that carry no venue in the scoreboard at all) — the column adds no gap of its own. Reality check, FBS-vs-FBS: FG% **76.86 indoor against 74.50 outdoor**, punt gross **42.77 against 41.80**, touchback **52.05% against 50.32%**, and indoor leads in every distance bucket under 50 yards — three independent kicking measures moving the way a roof should, which a flag wired to the wrong column would not produce. **It is a stadium property, not a game condition**: 5 of the 18 are retractable and read true whether or not the roof was open, so `indoor = true` means "weather may not apply", never "weather did not" |
 | 2026-09-09 | **The Streamlit console was removed** | it was no longer wanted; the Dash explorer and the Excel reports cover what is still read | `app.py` deleted (1,189 lines) and five pins dropped — `streamlit`, `scikit-learn`, and the `scipy` / `matplotlib` / `pytz` sitting beside them that nothing in the repository imports. Every reference was rewritten, `PLAN.md`'s design record included. **Two capabilities went with it and are replaced nowhere.** The **20 scored rule assertions**: `verify.sql` and `verify_phase4.sql` still print the same underlying counts, but nothing grades them or judges a check on its worst single season. The **two fitted baselines** `fg_exp` / `punt_exp`: what they measured is kept in [Not built](#not-built) so a rebuild starts from a known bar rather than from scratch. |
 
 ---
@@ -1748,8 +1754,8 @@ Already in place:
 
 - `wallclock_utc` on 96.6% of rows — a real UTC timestamp, so the join can be at the moment
   of the kick rather than at the game.
-- `dim_venue` with city, state, zip and country for 200 venues; `fact_game.venue_id` links
-  every game and `venue_id` is denormalised onto every play.
+- `dim_venue` with city, state, zip, country and **roof** for 201 venues; `fact_game.venue_id`
+  links every game and `venue_id` is denormalised onto every play.
 
 Three things to decide before writing any code:
 
@@ -1758,10 +1764,21 @@ Three things to decide before writing any code:
    (free, ~2,000 US airport stations, decades of history) is the likely better fit. Either
    way `dim_venue` has **no lat/lon** — only city/state/zip — so venue geocoding is the first
    task.
-2. **Indoor venues must be flagged first.** `dim_venue` records surface but not roof, and
-   there is no roof field in the ESPN payload — it needs a separate source or a manual list.
-   Assigning outdoor conditions to a dome is worse than assigning nothing. The five non-US
-   venues need their own handling.
+2. **~~Indoor venues must be flagged first.~~ Built 2026-09-09 — `dim_venue.indoor`.**
+   *This item used to say there is no roof field in the ESPN payload and that it needed a
+   separate source or a manual list. That was wrong: the **scoreboard** carries
+   `venue.indoor`, and `fetch_espn.stage_games` was already fetching that payload and
+   discarding it.* Now captured, on **201 of 201 venues — 18 indoor, 183 outdoor, 0
+   unknown** — and denormalised onto both facts as `venue_indoor`. No new source and no
+   manual list. See the 2026-09-09 changelog row.
+
+   **It is a *stadium* property, not a *game* condition, and the distinction is the whole
+   caveat.** A retractable roof reads true whether or not it was open that day, and 5 of the
+   18 are retractable (AT&T, State Farm, Mercedes-Benz, Allegiant, Lucas Oil). So `indoor`
+   narrows the problem rather than closing it: `indoor = false` is a clean "weather applies",
+   `indoor = true` means "weather may not apply, and the feed cannot say which". Deciding what
+   to do about the retractables — a per-game source, or excluding them — is still open, and
+   so are the five non-US venues.
 3. **Grain.** Nearest-station-at-kick-time is the obvious default, but its quality varies
    silently with station distance. Store the station id **and its distance from the venue**
    on every row, so weak joins stay filterable — the same discipline `parse_confidence`

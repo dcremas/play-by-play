@@ -23,7 +23,7 @@ DELETE FROM pbp.dim_team_season;
 DELETE FROM pbp.dim_conference;
 DELETE FROM pbp.dim_team;
 
-\copy pbp.dim_venue       (venue_id, venue_name, city, state, zip, country, surface) FROM 'data/out/dim_venue.csv' WITH (FORMAT csv, HEADER true)
+\copy pbp.dim_venue       (venue_id, venue_name, city, state, zip, country, surface, indoor) FROM 'data/out/dim_venue.csv' WITH (FORMAT csv, HEADER true)
 \copy pbp.dim_team        (team_id, display_name) FROM 'data/out/dim_team.csv' WITH (FORMAT csv, HEADER true)
 \copy pbp.dim_conference  (conference_id, conference_name, short_name) FROM 'data/out/dim_conference.csv' WITH (FORMAT csv, HEADER true)
 \copy pbp.dim_team_season (team_id, season, conference_id, conference_name, division) FROM 'data/out/dim_team_season.csv' WITH (FORMAT csv, HEADER true)
@@ -43,6 +43,13 @@ UNION ALL SELECT 'dim_team', count(*) FROM pbp.dim_team
 UNION ALL SELECT 'dim_conference', count(*) FROM pbp.dim_conference
 UNION ALL SELECT 'dim_team_season', count(*) FROM pbp.dim_team_season
 UNION ALL SELECT 'fact_game', count(*) FROM pbp.fact_game;
+
+\echo '=== venue roof coverage (indoor comes from the scoreboard, not the summary)'
+SELECT count(*) AS venues,
+       count(*) FILTER (WHERE indoor)            AS indoor,
+       count(*) FILTER (WHERE indoor IS FALSE)   AS outdoor,
+       count(*) FILTER (WHERE indoor IS NULL)    AS unknown
+FROM pbp.dim_venue;
 
 \echo '=== games and FBS team-seasons by season (a new season should appear in both)'
 SELECT g.season, count(*) AS games,

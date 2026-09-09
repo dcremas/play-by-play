@@ -85,6 +85,12 @@ def stage_games(refresh=False):
                     "neutral_site": c.get("neutralSite"),
                     "conference_competition": c.get("conferenceCompetition"),
                     "venue_id": (c.get("venue") or {}).get("id"),
+                    # The ONLY place ESPN states a roof. `summary.gameInfo.venue` carries
+                    # `grass` but not `indoor`, and build_dims reads venue from the summary,
+                    # so without capturing it here dim_venue can record surface and not
+                    # roof -- which is what blocked the weather phase. Venue-grain, and a
+                    # retractable roof reads true whether or not it was open on the day.
+                    "venue_indoor": (c.get("venue") or {}).get("indoor"),
                     "teams": [{"id": t["team"]["id"], "name": t["team"].get("displayName"),
                                "home_away": t.get("homeAway"), "score": t.get("score")}
                               for t in c.get("competitors", [])],
