@@ -39,11 +39,14 @@ OPPONENT = {"off": "Defense faced", "def": "Offense faced", "st": "Receiving tea
 PLAYER = {"off": "Passer / rusher", "def": "First tackler", "st": "Kicker / punter"}
 PLAYER_HINT = {
     "off": "The passer on a pass or sack, the rusher on a run. Receivers are their own "
-           "column and their own filter.",
+           "column and their own filter. The list holds anyone with 25+ plays; type to "
+           "search it.",
     "def": "ESPN credits one tackler per play in the structured field, and only on 41% "
            "of rushes and 28% of passes. Real defensive counts need the participant "
-           "bridge -- that is the next pass, not this one.",
-    "st": "Placekickers, punters and kickoff specialists. 98.7% of kicks carry an id.",
+           "bridge -- that is the next pass, not this one. The list holds anyone with "
+           "25+ plays; type to search it.",
+    "st": "Placekickers, punters and kickoff specialists, with 3+ kicks. 98.7% of "
+          "kicks carry an id.",
 }
 
 # --------------------------------------------------------------------------- phases
