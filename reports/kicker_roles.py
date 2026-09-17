@@ -153,6 +153,36 @@ def build(con, league: str, scope: str, seasons: tuple[int, int],
     WHERE p.league = '{league}' AND p.play_kind = 'kickoff'
       AND p.kicker_athlete_id IS NOT NULL;
 
+    -- What a kickoff actually produced. The bottom line is where the receiving team then
+    -- snapped it, taken from the next scrimmage play's `yards_to_goal` rather than
+    -- `drive.start_yards_to_goal`: after a touchback the scrimmage column reads exactly 75
+    -- on 97.3% of drives, which is the own 25 and is the check that it means what it says.
+    CREATE OR REPLACE TEMP VIEW kickoff_outcome AS
+    SELECT k.play_uid, k.season, k.kicking_team_id AS team_id, k.kicker_athlete_id AS aid,
+           k.touchback, k.returned, k.return_yds, k.kickoff_yds, k.out_of_bounds,
+           k.returned_for_td, 100 - f.yards_to_goal AS opp_start
+    FROM (SELECT p.*, try_cast(regexp_extract(split_part(p.play_uid, ':', 3), '^[0-9]+')
+                                AS BIGINT) AS seq
+          FROM play p WHERE p.league = '{league}' AND p.play_kind = 'kickoff'
+            AND NOT p.onside AND p.kicker_athlete_id IS NOT NULL) k
+    LEFT JOIN LATERAL (
+      SELECT s.yards_to_goal FROM (
+        SELECT game_id, offense_team_id, yards_to_goal,
+               try_cast(regexp_extract(split_part(play_uid, ':', 3), '^[0-9]+') AS BIGINT) AS seq
+        FROM scrimmage WHERE league = '{league}') s
+      WHERE s.game_id = k.game_id AND s.offense_team_id = k.receiving_team_id
+        AND s.seq > k.seq ORDER BY s.seq LIMIT 1) f ON true;
+
+    -- The era baseline, in scope. Touchback rates ran 40.8% in 2014 and 74.5% in 2023, so a
+    -- raw rate ranks kickers by when they played; every rate below is also shown against the
+    -- average for the exact seasons the man actually kicked.
+    CREATE OR REPLACE TEMP VIEW kickoff_era AS
+    SELECT o.season,
+           avg(o.touchback::int) FILTER (WHERE o.returned IS NOT NULL) AS tb_rate,
+           avg(o.opp_start)                                            AS opp_start_avg
+    FROM kickoff_outcome o JOIN eligible e USING (season, team_id)
+    GROUP BY o.season;
+
     CREATE OR REPLACE TEMP VIEW player_season AS
     SELECT s.*, d.known_name, d.position,
            CASE WHEN s.ko   >= 20 AND s.pk < 5 AND s.punt < 5 THEN 'kickoff specialist'
@@ -346,12 +376,31 @@ PANELS: dict[str, tuple[str, str]] = {
                  AS pct_led_by_the_season_kickoff_leader
         FROM per_game g JOIN eligible e USING (season, team_id)"""),
 
-    "top_specialists": ("Longest-serving kickoff specialists", """
-        SELECT any_value(known_name) AS player, count(*) AS seasons,
-               sum(ko) AS kickoffs, sum(fg) AS fg, sum(pat) AS pat,
-               string_agg(DISTINCT team, ', ') AS teams
-        FROM player_season WHERE archetype = 'kickoff specialist'
-        GROUP BY aid ORDER BY sum(ko) DESC LIMIT 15"""),
+    "top_specialists": ("Longest-serving kickoff specialists, and whether they were any good", """
+        WITH spec AS (
+          SELECT aid, season, team_id, any_value(known_name) AS player, any_value(team) AS team
+          FROM player_season WHERE archetype = 'kickoff specialist'
+          GROUP BY aid, season, team_id)
+        SELECT any_value(s.player) AS player,
+          string_agg(DISTINCT s.team, ', ')                          AS teams,
+          count(DISTINCT s.season)                                   AS seasons,
+          min(s.season)::text || '-' || max(s.season)::text          AS span,
+          count(*)                                                   AS kickoffs,
+          round(100.0 * avg(o.touchback::int) FILTER (WHERE o.returned IS NOT NULL), 1) AS tb_pct,
+          round(100.0 * (avg(o.touchback::int) FILTER (WHERE o.returned IS NOT NULL)
+                       - avg(e.tb_rate)        FILTER (WHERE o.returned IS NOT NULL)), 1)
+            AS tb_vs_era,
+          round(100.0 * avg(o.returned::int) FILTER (WHERE o.returned IS NOT NULL), 1)
+            AS return_rate,
+          round(avg(o.return_yds) FILTER (WHERE o.returned), 1)      AS ret_yds_allowed,
+          round(avg(o.opp_start), 1)                                 AS opp_start,
+          round(avg(o.opp_start) - avg(e.opp_start_avg), 1)          AS opp_start_vs_era,
+          sum(o.returned_for_td::int)                                AS td_allowed
+        FROM spec s
+        JOIN kickoff_outcome o ON o.aid = s.aid AND o.season = s.season AND o.team_id = s.team_id
+        JOIN kickoff_era e ON e.season = o.season
+        GROUP BY s.aid HAVING count(*) >= 20
+        ORDER BY count(*) DESC LIMIT 20"""),
 
     "top_dual": ("Heaviest dual-duty placekickers", """
         SELECT any_value(known_name) AS player, count(*) AS seasons,
