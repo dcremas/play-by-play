@@ -1556,6 +1556,100 @@ their zero**, because 0 for 4 from 50 is a real and different statement. And unp
 distances land in an `Unknown` row rather than being dropped, so `All distances` reconciles
 to the team's true attempt count.
 
+### `reports/kicker_roles.py` — who kicks off, measured rather than looked up
+
+Not a workbook. A console report plus tidy CSVs, because the question it answers is
+analytical rather than distributional: **is the placekicker also the man who kicks off?**
+
+```bash
+.venv/bin/python -m reports.kicker_roles                            # power conferences, 2014-2025
+.venv/bin/python -m reports.kicker_roles --scope p4                 # strict four-conference reading
+.venv/bin/python -m reports.kicker_roles --league nfl --scope all
+.venv/bin/python -m reports.kicker_roles --csv-dir data/out/kicker_roles   # 17 panels + 2 detail files
+```
+
+**The role cannot be read off `dim_athlete.position`.** ESPN knows `PK` and `P` and nothing
+else: 193 athletes in the power-conference corpus are listed `PK`, kicked off 20+ times in a
+season, and attempted **zero** field goals and extra points in it. The kickoff specialist is
+a real job with no label, so the module infers every role from the kicks themselves.
+
+The unit is the **team-season**, which is the unit the decision is made at — 90.8% of
+team-games are kicked off by the man who led his team for the year, so an annual leader is
+not hiding a mid-season handover. Within each team-season every athlete is scored on
+`pk` (field goals **+** extra points, counted together — 96.2% of the time one man does
+both), `ko` and `punt`, and the three leaders `pk1` / `ko1` / `p1` give a mutually exclusive
+typology: *placekicker also kicks off* · *kickoff specialist* · *punter kicks off*.
+
+Three scope decisions the module makes explicit rather than silently:
+
+- **"Power 4" is not constant across the window.** The Pac-12 was a power conference through
+  2023 and 12 of ~64 power programs every season before 2024. `--scope power` (default)
+  includes it through 2023; `--scope p4` is strict. They differ by 114 team-seasons and by
+  0.0 points on the headline — which is the useful thing to know about the choice.
+- Conference is resolved **per season** via `kicking_conference`, never per team. See
+  [Conference realignment](#conference-realignment-is-handled-and-it-is-the-single-most-likely-way-to-get-a-wrong-answer).
+- Kicks with no `kicker_athlete_id` leave **numerator and denominator both** — 0.59% of
+  kickoffs, 1.33% of field goals — reported on a coverage panel rather than assumed away.
+- FCS drops out on its own: the feed only ingests FCS teams as FBS opponents, so no FCS
+  team-season clears a 30-kickoff floor. That is the scope decision working, not a gap.
+
+`--success` adds six more panels plus two statistical summaries, joining each team-season to
+its derived win-loss record (`reports/margins.py`). It answers a second question — *do the
+successful teams share the duties?* — and the answer is a carefully qualified **no**:
+
+| | shared duties | dedicated placekicker |
+|---|---|---|
+| win % | 56.3 | 55.2 |
+| point margin | +3.99 | +3.90 |
+| reached postseason | 66.8% | **68.4%** |
+| within-program difference, win % | — | **−2.2 pts**, CI [−5.9, +1.5] |
+
+The raw elite-band tilt is real (65.5% of .850+ seasons share the duties against a 49.2% base
+rate, z = +2.41) but it is one of five tiers tested, it **flips sign** under a within-program
+comparison, and it has an obvious confound the module measures: an elite team's placekicker
+makes 60.6% from 50+ against a sub-.300 team's 47.3%, and range is exactly what predicts the
+shared model. `two_sample()` and `within_program()` return intervals rather than verdicts,
+because the finding is an absence and a point estimate would hide it.
+
+What it finds, on 768 power-conference team-seasons: the split is a **coin flip and
+strongly bimodal** — 50.0% placekicker, 42.3% specialist, 7.7% punter, and 33% of
+team-seasons have the placekicker taking ≤10% of kickoffs against 37% taking ≥90%. Almost
+nobody splits the job evenly. The NFL, same method, same window: **85.2% / 1.0% / 13.8%** —
+a 53-man roster cannot carry a third specialist and a 105-man one can.
+
+### `reports/margins.py` — final scores, derived, because the warehouse has none
+
+**There is no score column anywhere in this schema.** `fact_game` stops at venue and
+attendance; both facts carry only `score_diff_*`, the margin *before* the snap. This module
+reconstructs a final margin as the last play's pre-play margin plus that play's own points,
+taking the special-teams points from the outcome flags (`fg_made` → 3, `converted` → 1 or 2,
+`returned_for_td` → −6 to the receiving side).
+
+```bash
+.venv/bin/python -m reports.margins     # prints every check below
+```
+
+It exposes four temp views — `game_margin`, `team_game`, `team_schedule`, `team_record` —
+via `install(con)`, so anything needing a record can have one.
+
+**Plays are ordered by ESPN's `sequenceNumber`, carried in `play_uid`, not by period and
+clock.** That is load-bearing, not stylistic: a period-and-clock sort cannot separate plays
+sharing a clock reading and overtime runs no clock at all, and it leaves **210** college
+games deriving a 0–0 margin. The sequence-number sort leaves **27**. College football has had
+no ties since 1996, so that count *is* the error rate, and it falls from 2.04% to **0.26%**
+purely on the sort key.
+
+Three checks, none of them targeted: home teams win **62.4%** college / **55.0%** NFL, both
+the published home-field figures; margins mode at 3, then 7, 10, 14, 21 — the football score
+distribution; and the spot checks land UCF 2017, Clemson 2018, LSU 2019, Alabama 2020,
+Georgia 2021 and 2022, Michigan 2023 exactly.
+
+**The known gap.** 1.9% of college games in `fact_game` carry no plays in either fact and so
+no derivable margin — **6.4% in 2021** and 4.8% in 2022, under 1% in most seasons. Ohio State
+2024 reads 12–2 rather than 14–2 for exactly this reason. So **win totals run low and win
+rate is the metric to quote**; `team_record.missing` is exposed so a caller can restrict to
+complete schedules. 1,240 of 1,513 team-seasons are complete.
+
 ### The ERD
 
 **Two sheets since 2026-09-08, one per fact family.** Eleven tables and two forty-column
