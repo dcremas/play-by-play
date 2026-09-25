@@ -124,6 +124,8 @@ pbp/
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
 │   ├── sync_ec2.py            local Postgres -> the EC2 mirror, then the serving
 │   │                          layer, the grants and the comments. Runbook H.
+│   ├── verify_mirror.py       diffs both catalogs and checksums every row, local
+│   │                          vs mirror. The deep check behind runbook H.
 │   └── build_erd.py           live Postgres                -> reports/pbp_erd.pdf (2 sheets)
 │
 ├── sql/               DDL and loaders
@@ -1679,6 +1681,34 @@ Verify the mirror end to end:
 ```bash
 cd mcp_server && ./.venv/bin/python -m pbp_mcp.selftest
 ```
+
+**And to prove it is a mirror rather than the right shape:**
+
+```bash
+.venv/bin/python scripts/verify_mirror.py              # structure + content, ~40s
+.venv/bin/python scripts/verify_mirror.py --structure  # catalogs only, seconds
+.venv/bin/python scripts/verify_mirror.py --content --table drive
+```
+
+`sync_ec2.py`'s closing reconcile counts rows, which is the right check to run on every
+sync and cannot catch **a row present on both sides and different**, nor say anything at
+all about the schema. `verify_mirror.py` is the deeper one: it diffs both catalogs — every
+column, constraint, index, view, routine, grant — and then checksums every row of every
+table. Run it after a schema change, after a full resync, or whenever the mirror's answers
+stop agreeing with local. On a mismatch it re-hashes column by column, so the failure names
+the column rather than the table.
+
+Three divergences are correct, and it prints each as a note rather than hiding it:
+`loaded_at` is `DEFAULT now()` and is excluded from the hash; the serving layer and the
+`mcp_ro` grants exist on the mirror only; and the bridges are compared **through their
+fact**, so the stranded local orphans of [Known limits](#known-limits) §14 are reported
+separately instead of failing every run.
+
+Two things will make it lie if you change it. It reads both catalogs **as a superuser** —
+`information_schema` shows only what the current role may see, so probing the mirror as
+`mcp_ro` would omit whatever it cannot read and report a match. And **PG18 catalogs `NOT
+NULL` in `pg_constraint` while PG16 does not**, so it drops those rows and compares
+`attnotnull` per column instead; a naive constraint diff reports ~33 phantom differences.
 
 ### Rollback points currently in Postgres
 
