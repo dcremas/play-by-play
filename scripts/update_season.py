@@ -49,7 +49,7 @@ Where the season boundary sits, and why:
             pbp.dim_venue                          UPSERT -- shared across leagues
             pbp.dim_athlete, pbp.play_athlete      GLOBAL full replace, both leagues
 """
-import argparse, csv, os, subprocess, sys, time
+import argparse, csv, os, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import league as lg
@@ -200,6 +200,9 @@ def main():
         print(f"\n--dry-run: the database was not modified. To apply:\n"
               f"  psql -d {a.db} -v league={L} -v season={s} -f sql/load_league.sql\n"
               f"  psql -d {a.db} -f sql/load_athletes_league.sql\n"
+              f"  # then, per league: build_dims.py athlete --leagues <one>, and\n"
+              f"  psql -d {a.db} -v league=<l> -v schema=<l> -v root=$PWD "
+              f"-f sql/split_leagues.sql\n"
               f"  .venv/bin/python scripts/build_snapshot.py")
         return
 
@@ -216,6 +219,36 @@ def main():
     # wholesale from the extract build_dims just wrote. The bridge is per league and this
     # reloads both, which is correct and cheap.
     psql(a.db, "-f", "sql/load_athletes_league.sql")
+
+    # ---------------------------------------------------------------- serving layer
+    #
+    # THE SNAPSHOT NO LONGER READS pbp.*, SO THIS STEP IS NOT OPTIONAL. Before the leagues
+    # were split, build_snapshot.py extracted straight from the system of record and the
+    # chain was load -> snapshot. It now copies cfb.*/nfl.*, which are a PROJECTION of
+    # pbp.* that only sql/split_leagues.sql refreshes. Skip this and the week's load lands
+    # in Postgres while both apps keep serving last week's numbers -- with no error
+    # anywhere, which is the worst shape a staleness bug can take.
+    #
+    # The per-league athlete dimensions have to be rebuilt first for the same reason. The
+    # build above writes the COMBINED dim_athlete.csv (`--leagues cfb nfl`), which is what
+    # pbp.dim_athlete loads; split_leagues.sql loads dim_athlete_<league>.csv instead, and
+    # those are a different computation, not a filter -- see sql/split_leagues.sql on why
+    # filtering a combined career dimension puts Mahomes at Arizona.
+    for one in lg.SPEC:
+        run([PY, "scripts/build_dims.py", "athlete", "--league", one, "--leagues", one,
+             "--plays", FULL_PLAYS, plays_csv,
+             "--scrim-fact", FULL_SCRIM, scrim_csv,
+             "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv])
+        shutil.move(f"{OUT}/dim_athlete.csv", f"{OUT}/dim_athlete_{one}.csv")
+    # Restore the combined extract the pbp loader owns: the loop above overwrote it.
+    run([PY, "scripts/build_dims.py", "athlete", "--league", L, "--leagues", *lg.SPEC,
+         "--plays", FULL_PLAYS, plays_csv,
+         "--scrim-fact", FULL_SCRIM, scrim_csv,
+         "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv])
+
+    for one in lg.SPEC:
+        psql(a.db, "-v", f"league={one}", "-v", f"schema={one}",
+             "-v", f"root={HOME}", "-f", "sql/split_leagues.sql")
 
     # ---------------------------------------------------------------- snapshot
     run([PY, "scripts/build_snapshot.py", "--db", a.db])

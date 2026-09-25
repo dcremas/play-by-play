@@ -36,19 +36,27 @@ BEGIN
         -- later added to by accident. Every privilege it has is granted below,
         -- explicitly, and is visible in this file.
         --
-        -- CONNECTION LIMIT 10 is not arbitrary. db.py's pool is max_size=4, and
-        -- there are legitimately two clients: the systemd service on the box and
-        -- a developer's tunnel from the laptop. 4 + 4 + headroom for selftest.
-        -- The point is that a connection leak in this server cannot exhaust
-        -- max_connections and take the OTHER databases on this box down with it.
-        CREATE ROLE pbp_ro LOGIN NOINHERIT CONNECTION LIMIT 10
+        -- CONNECTION LIMIT 12, and both the old value and the obvious fix were
+        -- wrong. db.py's pool is max_size=4 and there are now THREE legitimate
+        -- clients -- pbp-mcp@cfb, pbp-mcp@nfl and a developer's tunnel -- so 12
+        -- at saturation against the previous limit of 10 would have surfaced as an
+        -- intermittent "too many connections for role" under load.
+        --
+        -- But this box runs max_connections=40, not the 100 a bigger server would,
+        -- and ~18 are already held by the other services. Raising this to 20 would
+        -- let pbp alone claim half the instance and leave 2 spare -- trading an
+        -- occasional error here for a hard outage everywhere. 12 covers the three
+        -- clients exactly and leaves the remaining headroom to everything else,
+        -- which is the actual point: a leak here must not take the other databases
+        -- on this box down with it.
+        CREATE ROLE pbp_ro LOGIN NOINHERIT CONNECTION LIMIT 12
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
         RAISE NOTICE 'created role pbp_ro -- it has NO PASSWORD yet, see README section 3';
     ELSE
         RAISE NOTICE 'role pbp_ro already exists; re-applying settings and grants';
         -- Re-asserted rather than assumed: this file is the record of what the
         -- role may do, so a hand-edit made in psql is undone by the next run.
-        ALTER ROLE pbp_ro LOGIN NOINHERIT CONNECTION LIMIT 10
+        ALTER ROLE pbp_ro LOGIN NOINHERIT CONNECTION LIMIT 12
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
     END IF;
 END
@@ -172,7 +180,7 @@ SELECT table_name, privilege_type
 FROM information_schema.table_privileges
 WHERE grantee = 'mcp_ro' AND table_schema = 'pbp';
 
-\echo '=== role attributes (expect f for all but rolcanlogin; connlimit 10)'
+\echo '=== role attributes (expect f for all but rolcanlogin; connlimit 12)'
 SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls,
        rolinherit, rolcanlogin, rolconnlimit
 FROM pg_roles WHERE rolname = 'pbp_ro';
