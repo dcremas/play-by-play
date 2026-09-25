@@ -1,7 +1,22 @@
 -- Build ONE league's schema: cfb.* or nfl.*, with no `league` column anywhere.
 --
---     psql -d pbp -v league=cfb -v schema=cfb -v root=$PWD -f sql/split_leagues.sql
---     psql -d pbp -v league=nfl -v schema=nfl -v root=$PWD -f sql/split_leagues.sql
+--     psql -d pbp -v league=cfb -v schema=cfb_next -v root=$PWD -f sql/split_leagues.sql
+--
+-- BUILD INTO A STAGING SCHEMA, THEN SWAP. `schema` is the TARGET and is normally
+-- `<league>_next`, not the live name. This file opens with DROP SCHEMA ... CASCADE on its
+-- target, and pointing that at a live corpus is a 1m39s outage on the EC2 box for a
+-- public endpoint -- see sql/swap_schema.sql, which moves the finished schema into place
+-- in under a millisecond. The full order is:
+--
+--     split_leagues.sql   -v schema=cfb_next        build
+--     setup_role_pbp.sql  -v schemas=cfb_next       grant
+--     comment_tables.sql  -v schema=cfb_next        comment
+--     swap_schema.sql     -v live=cfb -v stage=cfb_next
+--
+-- Grants and comments live on table oids and survive the rename, so the corpus arrives
+-- already readable and already documented. scripts/sync_ec2.py and scripts/update_season.py
+-- both drive exactly that sequence; running this file straight at a live schema name still
+-- works and is what a first install does, when there is nothing to keep available.
 --
 -- WHY THIS EXISTS
 -- ---------------

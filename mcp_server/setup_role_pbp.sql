@@ -110,17 +110,35 @@ ALTER ROLE pbp_ro IN DATABASE pbp SET max_parallel_workers_per_gather = 1;
 -- the NFL tables is `search_path` pinned to one schema plus guard.ALLOWED_TABLES, which is
 -- built from that schema alone; a query naming the other corpus is refused by name.
 GRANT CONNECT ON DATABASE pbp TO pbp_ro;
-GRANT USAGE   ON SCHEMA cfb   TO pbp_ro;
-GRANT USAGE   ON SCHEMA nfl   TO pbp_ro;
 
--- Named table by table rather than with ALL TABLES, in both schemas. Explicit is the
--- point: a new table appearing in either schema is NOT readable until someone adds it here
--- and to guard.READABLE, which is how a table that was not meant to be exposed stays
--- unexposed. selftest.py compares the two lists and fails if they drift.
+-- WHICH SCHEMAS TO GRANT. Defaults to the two live corpora; a caller passes
+-- `-v schemas=cfb_next` to arm a STAGING schema before sql/swap_schema.sql moves it into
+-- place, which is how a rebuild reaches the servers already granted instead of appearing
+-- unreadable for the length of a re-grant.
+--
+-- The value travels through a custom GUC rather than being interpolated into the DO block
+-- below, because psql does not substitute its variables inside a dollar-quoted body -- a
+-- `format(..., :'schemas')` in there fails to parse, which is a trap this repo has already
+-- walked into once (see sql/split_leagues.sql on stg_dim_athlete).
+\if :{?schemas}
+\else
+  \set schemas 'cfb,nfl'
+\endif
+SELECT set_config('pbp.grant_schemas', :'schemas', false);
+
+-- Named table by table rather than with ALL TABLES. Explicit is the point: a new table
+-- appearing in a schema is NOT readable until someone adds it here and to guard.READABLE,
+-- which is how a table that was not meant to be exposed stays unexposed. selftest.py
+-- compares the two lists and fails if they drift. ONE list, applied to whichever schemas
+-- were named above -- a second copy for staging would be a third place to forget.
 DO $$
 DECLARE s text; t text;
 BEGIN
-    FOREACH s IN ARRAY ARRAY['cfb','nfl'] LOOP
+    FOREACH s IN ARRAY string_to_array(current_setting('pbp.grant_schemas'), ',') LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = s) THEN
+            RAISE EXCEPTION 'schema % does not exist -- nothing granted', s;
+        END IF;
+        EXECUTE format('GRANT USAGE ON SCHEMA %I TO pbp_ro', s);
         FOREACH t IN ARRAY ARRAY[
             'play_wide','scrimmage_wide','season_status',
             'special_teams_play','scrimmage_play','drive',
@@ -129,14 +147,16 @@ BEGIN
             'fact_game'] LOOP
             EXECUTE format('GRANT SELECT ON %I.%I TO pbp_ro', s, t);
         END LOOP;
+        RAISE NOTICE 'granted pbp_ro SELECT on 14 tables in %', s;
     END LOOP;
 END $$;
 
--- sql/split_leagues.sql does DROP SCHEMA ... CASCADE and rebuilds, and PRIVILEGES GO WITH A
--- DROPPED TABLE. scripts/sync_ec2.py therefore runs this file after it, every time. If
--- someone reorders those steps the next sync silently revokes both servers' access to
--- everything, and selftest.py's "guard allow-list matches the grants" check is what catches
--- it.
+-- sql/split_leagues.sql builds a STAGING schema and sql/swap_schema.sql renames it into
+-- place; privileges live on table oids and survive a rename, so a staging schema granted
+-- here arrives already readable. The ordering that matters is now build -> grant -> comment
+-- -> swap, and scripts/sync_ec2.py runs it in that order. Grant after the swap instead and
+-- the servers are briefly unable to read a schema that exists, which selftest.py's
+-- "guard allow-list matches the grants" check is what catches.
 
 -- The system of record is not for the MCP. Revoked rather than merely unused, so the
 -- servers cannot reach a `league` column even by accident.
@@ -169,7 +189,7 @@ $$;
 
 -- ---------------------------------------------------------------- proof
 \echo ''
-\echo '=== pbp_ro privileges (expect SELECT on 14 tables in EACH of cfb and nfl, and none in pbp)'
+\echo '=== pbp_ro privileges (expect SELECT on 14 tables per granted schema, and none in pbp)'
 SELECT table_schema, count(*) AS tables_readable
 FROM information_schema.table_privileges
 WHERE grantee = 'pbp_ro' AND privilege_type = 'SELECT'

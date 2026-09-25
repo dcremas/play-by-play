@@ -34,12 +34,20 @@ corpus, and `config.py` refuses to start on any name that is not a real corpus.
 
 ## The order, and why it is that order
 
-1. **`sql/split_leagues.sql`**, once per league — builds `cfb.*` and `nfl.*` from
-   the system of record. Then **`setup_role_pbp.sql`**, which creates `pbp_ro` and
-   grants it on both schemas, and **`comment_tables.sql`**, once per league.
-   **That order is not negotiable:** `split_leagues.sql` does
-   `DROP SCHEMA ... CASCADE`, and privileges *and comments* go with a dropped
-   table. `scripts/sync_ec2.py` runs all three in that order after every sync.
+1. **Build, grant, comment, swap — per league, in that order.**
+   `split_leagues.sql` builds `<league>_next`; `setup_role_pbp.sql -v schemas=<league>_next`
+   grants it; `comment_tables.sql -v schema=<league>_next` documents it;
+   `swap_schema.sql` renames it into place in one transaction.
+   **The order is not negotiable.** Grants and comments live on table oids and survive a
+   rename, so a staging schema armed first arrives live already readable. Grant after the
+   swap instead and the servers briefly cannot read a schema that exists.
+   `scripts/sync_ec2.py` drives exactly this.
+
+   Why staging at all: the rebuild used to `DROP SCHEMA cfb CASCADE` and recreate in
+   place, which is **1m39s measured on this box** during which `pbp-mcp@cfb` has nothing
+   to read — and worse than that, because `DROP SCHEMA` takes `ACCESS EXCLUSIVE` and every
+   new query queues behind it. The rename is **0.76 ms** on the 2.5 GB schema. Verified
+   under load: 231 consecutive live queries through a full rebuild-and-swap, **0 failures**.
 2. **`push.sh` → `provision.sh`** — user, code, venv, credential file, unit,
    nginx vhost (HTTP only), start, verify.
 3. **DNS** — a manual A record at GoDaddy. There is no Route53 zone and no API

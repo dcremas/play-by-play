@@ -203,26 +203,44 @@ def main() -> None:
         run(remote_psql("sql/load_athletes_league.sql"), dry, "athlete dimension")
 
     # ------------------------------------------------------------ 4. the serving layer
-    # DROPs and recreates the two per-league schemas, cfb.* and nfl.*, and drops the
-    # combined wide tables they replace. Both leagues are rebuilt whichever league was
-    # loaded: `dim_venue` and the athlete dimension are shared upstream, so a college-only
-    # sync can still change what the NFL schema should contain.
+    #
+    # BUILD, GRANT, COMMENT, THEN SWAP -- per league, in that order.
+    #
+    # The rebuild happens in `<league>_next`, a schema nothing reads, and sql/swap_schema.sql
+    # renames it into place in one transaction. Measured: the college rebuild is 1m39s on
+    # this box and the rename is 0.76 ms, so a weekly refresh costs a public endpoint
+    # effectively nothing instead of a minute and a half of errors. It used to DROP the live
+    # schema first, and DROP SCHEMA takes ACCESS EXCLUSIVE -- it queues behind running
+    # queries and every new query queues behind it, so the real outage was longer than the
+    # rebuild.
+    #
+    # Grants and comments go on the STAGING schema. They live on table oids and survive the
+    # rename, so the corpus is readable and documented the instant it becomes live. Applying
+    # them after the swap would leave a window where the schema exists and the servers
+    # cannot read it -- the same bug in a smaller costume.
+    #
+    # Both leagues are rebuilt whichever league was loaded: dim_venue and the athlete
+    # dimension are shared upstream, so a college-only sync can still change what the NFL
+    # schema should contain.
     for league in ("cfb", "nfl"):
-        run(remote_psql("sql/split_leagues.sql", f"league={league}", f"schema={league}"),
-            dry, f"build schema {league}")
+        stage = f"{league}_next"
+        run(remote_psql("sql/split_leagues.sql", f"league={league}", f"schema={stage}"),
+            dry, f"build {stage}")
+        run(remote_psql_path(f"{REMOTE_ROOT}/mcp_setup/setup_role_pbp.sql",
+                             (f"schemas={stage}",)), dry, f"grant {stage}")
+        run(remote_psql_path(f"{REMOTE_ROOT}/mcp_setup/comment_tables.sql",
+                             (f"schema={stage}",)), dry, f"comment {stage}")
+        run(remote_psql("sql/swap_schema.sql", f"live={league}", f"stage={stage}"),
+            dry, f"swap {stage} -> {league}")
 
-    # ------------------------------------------------------------ 5. re-grant, re-comment
-    # PRIVILEGES AND COMMENTS GO WITH A DROPPED TABLE, and step 4 drops three of
-    # them. Skipping this leaves the MCP server unable to read exactly the tables
-    # it depends on most, with no error until the next question.
+    # ------------------------------------------------------------ 5. the role itself
+    # Re-asserted after the swaps, not before: this is the authoritative definition of
+    # pbp_ro -- its attributes, session defaults and connection limit -- and the per-schema
+    # grants above are the same file called with one schema named. Running it here with no
+    # `schemas` re-grants both live corpora, which is a no-op on a healthy database and the
+    # repair if a swap was interrupted.
     run(remote_psql_path(f"{REMOTE_ROOT}/mcp_setup/setup_role_pbp.sql"),
-        dry, "re-grant mcp_ro")
-    # Once per corpus: the comments carry the NULL semantics and the conference trap,
-    # and describe_table is where a model reads them. A schema without them is a schema
-    # whose caveats silently do not exist.
-    for league in ("cfb", "nfl"):
-        run(remote_psql_path(f"{REMOTE_ROOT}/mcp_setup/comment_tables.sql", (f"schema={league}",)),
-            dry, f"re-apply comments ({league})")
+        dry, "re-assert pbp_ro")
 
     # ------------------------------------------------------------ 6. reconcile
     if not dry:

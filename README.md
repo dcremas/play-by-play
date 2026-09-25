@@ -1610,18 +1610,68 @@ snapshot on restart. Run it after any load.
 ### F. Reclaim space after a backfill
 
 A full-league load followed by the enrichment `UPDATE`s rewrites every row more than once,
-so the heap ends up several times the size of the live data.
+so the heap ends up several times the size of the live data. **The in-season path creates
+it too**, in smaller increments — `load_league.sql` deletes a season and re-inserts it, and
+that is a rewrite whichever way it is scoped.
 
 ```bash
+# Largest first: VACUUM FULL needs free disk equal to the table it is rewriting, and
+# scrimmage_play is the biggest object in the database.
+psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.scrimmage_play"
+psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.scrimmage_athlete"
+psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.drive"
 psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.special_teams_play"
 psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.play_athlete"
 ```
 
 Autovacuum frees the space for reuse but cannot shrink the file. `VACUUM FULL` takes an
-exclusive lock and rewrites the table, but the apps read the snapshot rather than Postgres,
-so it can run any time. It took `pbp` from 612 MB to 232 MB on 2026-08-31 (dropping five
-rollback tables accounted for 173 MB of that). The in-season path does not create the bloat
-and does not need this.
+exclusive lock and rewrites the table; **nothing reads `pbp.*` live** — the apps read the
+DuckDB snapshots and the MCP servers read `cfb`/`nfl` on the box — so it can run any time.
+
+**How to know it is needed, without guessing.** The EC2 mirror holds the same rows but is
+built from scratch every sync, so it never bloats. Comparing the two is a direct measure:
+
+```bash
+python3 - <<'EOF'
+import subprocess
+q = ("SELECT c.relname||' '||pg_total_relation_size(c.oid) FROM pg_class c "
+     "JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pbp' AND c.relkind='r'")
+loc = dict(x.split() for x in subprocess.run(["psql","-d","pbp","-Atc",q],
+           capture_output=True, text=True).stdout.split("\n") if x)
+rem = dict(x.split() for x in subprocess.run(["ssh","awsvm",
+           f'sudo -u postgres psql -d pbp -Atc "{q}"'],
+           capture_output=True, text=True).stdout.split("\n") if x)
+for t in sorted(loc, key=lambda t: -int(loc[t])):
+    if t in rem and int(rem[t]):
+        print(f"  {t:22} local {int(loc[t])/2**20:7.0f}M  mirror {int(rem[t])/2**20:7.0f}M"
+              f"  {int(loc[t])/int(rem[t]):5.2f}x")
+EOF
+```
+
+Measured 2026-09-25, before any of this ran: `scrimmage_play` 2,379 MB local against
+1,408 MB on the mirror, `scrimmage_athlete` 1,352 against 746, `drive` 191 against 108 —
+**1.7× across the board, about 2.3 GB of dead space** carrying 142k and 139k dead tuples.
+Anything at 1.3× or above is worth reclaiming; 1.0× means the table is already tight.
+
+**The mirror needs this too, and its dead-tuple count will say otherwise.** `pbp.*` on the
+box is loaded by the same delete-and-reinsert path, so it bloats the same way — but
+autovacuum there reports `n_dead_tup = 0` because it has already reclaimed the space *for
+reuse*, which does not shrink the file. Compare sizes, not dead tuples. Nothing reads
+`pbp.*` on the box either (`pbp_ro` holds no grants there), so it is equally safe:
+
+```bash
+for t in scrimmage_play scrimmage_athlete special_teams_play drive fact_game; do
+  ssh awsvm "sudo -u postgres psql -d pbp -c 'VACUUM (FULL, ANALYZE) pbp.$t'"
+done
+```
+
+Run 2026-09-25 on both: local `pbp` 7,355 MB → **4,639 MB**, mirror 5,662 MB → **4,637 MB**,
+about 3.7 GB between them. `scrimmage_play` alone went 2,379 → 764 MB locally and
+1,408 → 764 MB on the box — the two agreeing afterwards is itself a check that the
+reclaim was storage and not content, and `scripts/verify_mirror.py` confirms it.
+
+An earlier run took `pbp` from 612 MB to 232 MB on 2026-08-31, though dropping five
+rollback tables accounted for 173 MB of that.
 
 ### G. Verify
 

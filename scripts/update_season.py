@@ -201,8 +201,8 @@ def main():
               f"  psql -d {a.db} -v league={L} -v season={s} -f sql/load_league.sql\n"
               f"  psql -d {a.db} -f sql/load_athletes_league.sql\n"
               f"  # then, per league: build_dims.py athlete --leagues <one>, and\n"
-              f"  psql -d {a.db} -v league=<l> -v schema=<l> -v root=$PWD "
-              f"-f sql/split_leagues.sql\n"
+              f"  # per league: split_leagues -> setup_role -> comment_tables -> "
+              f"swap_schema\n"
               f"  .venv/bin/python scripts/build_snapshot.py")
         return
 
@@ -246,9 +246,17 @@ def main():
          "--scrim-fact", FULL_SCRIM, scrim_csv,
          "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv])
 
+    # Build, grant, comment, swap -- per league. Local traffic is only the two apps
+    # reading DuckDB, so nothing here is serving live queries; the sequence is the same as
+    # scripts/sync_ec2.py's anyway, because one path that is exercised weekly is worth more
+    # than two paths that differ in a way nobody remembers.
     for one in lg.SPEC:
-        psql(a.db, "-v", f"league={one}", "-v", f"schema={one}",
+        stage = f"{one}_next"
+        psql(a.db, "-v", f"league={one}", "-v", f"schema={stage}",
              "-v", f"root={HOME}", "-f", "sql/split_leagues.sql")
+        psql(a.db, "-v", f"schemas={stage}", "-f", "mcp_server/setup_role_pbp.sql")
+        psql(a.db, "-v", f"schema={stage}", "-f", "mcp_server/comment_tables.sql")
+        psql(a.db, "-v", f"live={one}", "-v", f"stage={stage}", "-f", "sql/swap_schema.sql")
 
     # ---------------------------------------------------------------- snapshot
     run([PY, "scripts/build_snapshot.py", "--db", a.db])
