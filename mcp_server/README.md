@@ -160,6 +160,27 @@ Restart Desktop — it reads that file only at launch. **Use the absolute path t
 `.venv/bin/python`**; Desktop does not inherit your shell `PATH`, so a bare
 `python` resolves to nothing and the server appears to fail silently.
 
+### On the EC2 box — NOT DONE
+
+Both modes above run the server **on the Mac**, reaching the box through the
+tunnel. The database is on EC2; the server is not. Running it there, the way
+`weather-mcp.service` runs, is unbuilt and would need:
+
+1. A service user (`pbpmcp`), separate from `weathermcp`, so neither can read the
+   other's credential.
+2. The code and a venv at `/opt/pbp-mcp` — the box has Python but not this package.
+3. `/etc/pbp-mcp/mcp.env`, mode `640 root:pbpmcp`, holding `MCP_DB_PASSWORD`.
+   On-box the connection is local, so `MCP_DB_HOST=127.0.0.1` and `MCP_DB_PORT=5432`
+   — no tunnel.
+4. A systemd unit running `python -m pbp_mcp.server --http`, binding
+   **`127.0.0.1:8771` only** (8770 is weather, 8000 is in use). It must not be
+   proxied by nginx: there is no authentication on that endpoint.
+5. A sync story for the code, which `scripts/sync_ec2.py` does not currently handle
+   — it ships SQL, not the server.
+
+Until then, the answer to "is it usable on the box?" is no; the answer to "is it
+usable against the box?" is yes.
+
 ---
 
 ## 5. The tools
@@ -270,9 +291,29 @@ own.
 **Why `information_schema` is blocked but `describe_table` works.** The catalogs
 are read by *fixed* queries in `queries.py`, filtered through
 `has_table_privilege`, so a client sees structure for the tables it may read and
-nothing else. `run_sql` cannot reach the catalogs at all, which keeps
-`pg_stat_activity` (other sessions' query text) and `pg_settings` (filesystem
-paths) out of reach.
+nothing else. `run_sql` cannot reach the catalogs at all.
+
+**On that point the layering above is not symmetric, and it is worth being exact.**
+Audited 2026-09-25 by bypassing the guard and querying directly as `mcp_ro`:
+
+- **Writes are refused by the role**, every one -- `CREATE TABLE`, `CREATE SCHEMA`,
+  `CREATE EXTENSION` all fail on `ReadOnlySqlTransaction`, and `pg_read_file` and
+  `pg_authid` on `InsufficientPrivilege`. Layer 1 genuinely is the one that matters
+  here.
+- **Catalog reads are not.** `pg_stat_activity`, `pg_settings` and
+  `information_schema` are readable by PUBLIC in Postgres and therefore by
+  `mcp_ro`. For those, **the guard is the only thing standing in the way, not the
+  role.** The exposure if it were bypassed is small -- Postgres redacts other
+  sessions' query text to `<insufficient privilege>` for a non-superuser, and the
+  superuser-only GUCs stay hidden (`ssl_key_file`'s *path* is visible; the key is
+  not) -- but "the database cannot do the thing you are afraid of" is true of
+  writes and only of writes.
+
+**Cross-database reach of the shared credential**, same audit: `mcp_ro` may
+`CONNECT` to six databases (the PUBLIC default) but can read tables in only two --
+`pbp` (14) and `weatherdata` (5), plus `apple_weatherkit`. `recipes`,
+`data_visualization_logging` and `postgres` expose **0 readable tables**. So the
+shared role grants exactly what was intended and nothing more.
 
 Confirm the grants are still what they should be:
 
@@ -290,10 +331,14 @@ where grantee='mcp_ro' and table_schema='pbp' group by 1 order by 1;"
 next sync silently revokes access to the three tables the server depends on most —
 and the selftest's "guard allow-list matches the grants" check is what catches it.
 
-**Network exposure: none added.** The server reaches Postgres through the existing
-tunnel; nothing is opened on the EC2 side. `main_http()` exists for running this
-co-located on the box later (the weather server does, as
-`weather-mcp.service` on `127.0.0.1:8770`) and binds loopback only.
+**Network exposure: none added.** The server runs on the Mac and reaches Postgres
+through the existing tunnel; nothing is opened on the EC2 side.
+
+**It is NOT deployed on the EC2 box**, unlike the weather warehouse, which runs
+there as `weather-mcp.service` on `127.0.0.1:8770`. `main_http()` is provided and
+smoke-tested -- it binds `127.0.0.1:8771`, serves `/mcp` and answers `initialize` --
+but there is no systemd unit, no service user and no `/etc/pbp-mcp/mcp.env`. What
+on-box deployment would need is in section 4.
 
 **The credential** lives only in `.env` (mode 600, gitignored). It is not in any
 client config, not in the repo, and not on any command line.

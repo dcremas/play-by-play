@@ -38,6 +38,7 @@ from __future__ import annotations
 import datetime as dt
 import decimal
 import os
+import sys
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -1076,18 +1077,45 @@ def main() -> None:
 
 
 def main_http() -> None:
-    """HTTP transport, for running this co-located on the EC2 box.
+    """streamable-HTTP transport, for running this co-located on the EC2 box.
 
-    Binds loopback only by default, matching weather-mcp.service. Do not proxy it;
-    the database password is reachable from anything that can call it.
+        ./.venv/bin/python -m pbp_mcp.server --http
+
+    NOT YET DEPLOYED. The weather warehouse runs this way as weather-mcp.service
+    on 127.0.0.1:8770; nothing equivalent exists for pbp yet, so this entrypoint
+    is provided and smoke-tested but has no systemd unit, service user or env
+    file behind it. See README.md section 4.
+
+    `transport="streamable-http"`, not `"http"` -- the SDK accepts only
+    stdio | sse | streamable-http, and the wrong string fails at startup rather
+    than at import, so it survives every check that does not actually bind.
+
+    BINDS TO 127.0.0.1 AND MUST STAY THAT WAY. There is no authentication on this
+    endpoint: anything that can reach it can read the whole warehouse. Port 8770
+    is taken by weather-mcp, hence 8771.
+
+    `stateless_http=True` matches the weather deployment, whose client reconnects
+    rather than resuming a session; sessions would otherwise accumulate with
+    nothing reaping them.
     """
     host = os.environ.get("MCP_HTTP_HOST", "127.0.0.1")
     port = int(os.environ.get("MCP_HTTP_PORT", "8771"))
     try:
-        mcp.run(transport="http", host=host, port=port)
+        mcp.run(
+            transport="streamable-http",
+            host=host,
+            port=port,
+            streamable_http_path="/mcp",
+            stateless_http=True,
+        )
     finally:
         db.close_all()
 
 
 if __name__ == "__main__":
-    main()
+    # `--http` rather than a separate module, so both transports share one import
+    # path and a systemd unit launches the same file Claude Desktop does.
+    if "--http" in sys.argv:
+        main_http()
+    else:
+        main()
