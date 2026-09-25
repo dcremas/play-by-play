@@ -200,7 +200,7 @@ explorer's header shows how old the snapshot is.
 | **In progress right now** | the 2026 season in both leagues — 99 college games and 2 NFL. `scripts/update_season.py 2026 [--league nfl]` pulls both facts forward, one league per run |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
-| **Open follow-ups** | The EC2 mirror is refreshed by hand — `update_season.py` does not call `sync_ec2.py`, so the weekly run leaves the mirror a week stale until someone pushes it; A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
+| **Open follow-ups** | **The MCP server is not deployed on the EC2 box** — it runs on the Mac against the mirror, so it needs the tunnel and this laptop; what on-box deployment would take is in `mcp_server/README.md` §4. The mirror is refreshed by hand — `update_season.py` does not call `sync_ec2.py`, so the weekly run leaves it stale until someone pushes. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 
@@ -1300,6 +1300,42 @@ means the CSV was built from a different fetch, and that is the wrong operation,
 warning. **The in-season loaders deliberately write no rollback table**: copying 313k rows
 aside every week to protect a load that only ever touches one season would cost more than
 the thing it protects, and that season is re-derivable by running the script again.
+
+
+### 14. The bridge strands rows when a `play_uid` changes — 73 in local Postgres
+
+`sql/load_league.sql` deletes bridge rows by joining the fact:
+
+```sql
+DELETE FROM pbp.scrimmage_athlete sa
+ USING pbp.scrimmage_play sp
+ WHERE sa.play_uid = sp.play_uid AND sp.league = :'league' :sp ;
+```
+
+and it runs **after** the fact has already been replaced. So a bridge row whose `play_uid` is
+no longer in the fact cannot be matched, and therefore cannot be deleted — it is stranded
+permanently, and the next load cannot reach it either. This is self-perpetuating rather than
+self-healing.
+
+A `play_uid` changes whenever the `#n` duplicate-sequence suffix is reassigned on a re-parse
+([§10](#10-espn-reuses-one-sequencenumber-for-two-different-plays--507-rows-carry-a-n-suffix)),
+which is by design. Local Postgres currently carries **73 orphaned `pbp.scrimmage_athlete`
+rows** across two 2026 week-1 college games (401858433 and 401868140), 11 of them
+`#n`-suffixed. `pbp.play_athlete` has none.
+
+**It is small and it is not benign in one specific way:** an orphan joins to nothing, so no
+query over the fact is wrong — but `count(*)` on the bridge overstates, and the number only
+grows, once per re-parse that moves a suffix. Found on 2026-09-25 because the EC2 mirror,
+loaded into empty tables, came out 73 rows *lower* and the reconciliation in
+`scripts/sync_ec2.py` refused to call that a match. **The mirror is the clean copy; local is
+the one carrying the residue.**
+
+The fix is one of two lines and has deliberately **not** been applied: either delete the
+bridge *before* replacing the fact, or scope the delete by `game_id` rather than by
+`play_uid`. Both change a loader that is otherwise trusted, and the second changes what
+"scoped by season" means for the bridge, so it wants its own run of runbook G rather than
+being folded into a migration. `sync_ec2.py` reports the orphan counts on both sides every
+run and does not fail on them.
 
 ---
 
