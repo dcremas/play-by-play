@@ -41,6 +41,16 @@ ssh "$SSH_HOST" "rm -rf ${STAGE} && mkdir -p ${STAGE}"
 rsync -az --delete \
       --exclude '.venv/' --exclude '__pycache__/' --exclude '.env' \
       "$SRC/" "${SSH_HOST}:${STAGE}/"
+# The explorer lives beside mcp_server/ in the repo. Staged INSIDE the same directory so
+# the cleanup at the end removes it too -- a second staging root under /tmp would survive
+# every run and quietly accumulate.
+if [[ -d "$SRC/../explorer" ]]; then
+    rsync -az --delete \
+          --exclude '.venv/' --exclude '__pycache__/' --exclude '.env' \
+          --exclude '.budget.json' \
+          "$SRC/../explorer/" "${SSH_HOST}:${STAGE}/explorer/"
+    echo "   explorer staged at ${STAGE}/explorer"
+fi
 echo "   $(find "$SRC" -name '*.py' -not -path '*/.venv/*' | wc -l | tr -d ' ') python files staged at ${STAGE}"
 
 log "Provisioning (sudo on the box)"

@@ -89,13 +89,19 @@ done
 # Its own user, separate from weathermcp. Each holds one database credential and
 # they are now genuinely DIFFERENT credentials (pbp_ro vs mcp_ro), so this
 # separation buys real isolation rather than being decorative.
-log "Service user"
-if id pbpmcp >/dev/null 2>&1; then
-    echo "   pbpmcp exists"
-else
-    useradd --system --no-create-home --shell /sbin/nologin pbpmcp
-    echo "   created pbpmcp"
-fi
+# THREE users, and the separation is the security model. pbpmcp holds the Postgres
+# credential; pbpapp holds the LLM API key and no database credential at all; neither can
+# read the other's file. The public-facing Streamlit process is the one an attacker
+# reaches first and it has nothing to steal.
+log "Service users"
+for user in pbpmcp pbpapp; do
+    if id "$user" >/dev/null 2>&1; then
+        echo "   $user exists"
+    else
+        useradd --system --no-create-home --shell /sbin/nologin "$user"
+        echo "   created $user"
+    fi
+done
 
 # --- 2. Code ------------------------------------------------------------------
 log "Code"
@@ -114,6 +120,19 @@ rsync -a --delete \
 chown -R pbpmcp:pbpmcp /opt/pbp-mcp
 echo "   /opt/pbp-mcp"
 [[ ! -e /opt/pbp-mcp/.env ]] || fail "/opt/pbp-mcp/.env exists -- it must not; remove it"
+
+# The explorer. Shipped from the repo's explorer/ directory, which push.sh stages
+# alongside mcp_server/.
+if [[ -d "$SRC/../explorer" ]]; then
+    mkdir -p /opt/pbp-explorer
+    rsync -a --delete --exclude '.venv/' --exclude '__pycache__/' --exclude '.env' \
+          --exclude '.budget.json' "$SRC/../explorer/" /opt/pbp-explorer/
+    chown -R pbpapp:pbpapp /opt/pbp-explorer
+    echo "   /opt/pbp-explorer"
+    [[ ! -e /opt/pbp-explorer/.env ]] || fail "/opt/pbp-explorer/.env exists -- remove it"
+else
+    echo "   explorer/ not staged -- skipping the app"
+fi
 
 # --- 3. Virtualenv ------------------------------------------------------------
 log "Virtualenv"
@@ -138,7 +157,25 @@ echo "   /opt/pbp-mcp/.venv  ($(/opt/pbp-mcp/.venv/bin/python -V))"
 # that pip printed nothing.
 /opt/pbp-mcp/.venv/bin/python -c 'import sqlglot, psycopg, mcp' \
     || fail "the venv is missing a required package"
+# The app's venv. SEPARATE, and required to be: the servers need mcp>=2 and the app's
+# langchain-mcp-adapters needs mcp<2 (it imports RequestContext from a module v2 moved).
+# One shared venv cannot satisfy both. They are two processes sharing a wire protocol.
+if [[ -d /opt/pbp-explorer ]]; then
+    if [[ -x /opt/pbp-explorer/.venv/bin/python ]]; then
+        HAVE=$(/opt/pbp-explorer/.venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+        [[ "$HAVE" == "$PYVER" ]] || rm -rf /opt/pbp-explorer/.venv
+    fi
+    [[ -x /opt/pbp-explorer/.venv/bin/python ]] || "$PYTHON" -m venv /opt/pbp-explorer/.venv
+    /opt/pbp-explorer/.venv/bin/pip install --quiet --upgrade pip
+    /opt/pbp-explorer/.venv/bin/pip install --quiet -r /opt/pbp-explorer/requirements.txt
+    chown -R pbpapp:pbpapp /opt/pbp-explorer/.venv
+    APP_MCP=$(/opt/pbp-explorer/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("mcp"))')
+    echo "   /opt/pbp-explorer/.venv  (mcp ${APP_MCP})"
+    [[ ${APP_MCP%%.*} -lt 2 ]] || fail "the app venv needs mcp<2, has ${APP_MCP}"
+fi
+
 MCP_VER=$(/opt/pbp-mcp/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("mcp"))')
+[[ ${MCP_VER%%.*} -ge 2 ]] || fail "the server venv needs mcp>=2, has ${MCP_VER}"
 echo "   mcp ${MCP_VER}, sqlglot $(/opt/pbp-mcp/.venv/bin/python -c 'import sqlglot;print(sqlglot.__version__)')"
 
 # --- 4. Credential ------------------------------------------------------------
@@ -159,6 +196,31 @@ EOT
 fi
 chown root:pbpmcp /etc/pbp-mcp/mcp.env
 chmod 640 /etc/pbp-mcp/mcp.env
+
+if [[ -d /opt/pbp-explorer ]]; then
+    mkdir -p /etc/pbp-explorer; chmod 755 /etc/pbp-explorer
+    if [[ -s /etc/pbp-explorer/app.env ]]; then
+        echo "   /etc/pbp-explorer/app.env exists -- left untouched"
+    else
+        cat > /etc/pbp-explorer/app.env <<'EOT'
+# Google AI Studio key for Gemini. NO DATABASE CREDENTIAL BELONGS IN THIS FILE -- the app
+# reaches data only through the MCP servers on the loopback.
+PBPX_API_KEY=
+# Spend caps. Tighter than the laptop defaults: this endpoint is public. nginx cannot
+# enforce them -- see explorer/budget.py.
+PBPX_MAX_SESSION_QUESTIONS=10
+PBPX_MAX_DAILY_TOKENS=1500000
+EOT
+        echo "   /etc/pbp-explorer/app.env CREATED EMPTY -- fill in PBPX_API_KEY"
+    fi
+    chown root:pbpapp /etc/pbp-explorer/app.env
+    chmod 640 /etc/pbp-explorer/app.env
+    # The whole reason for a third user: it must not be able to read the database password.
+    if sudo -u pbpapp test -r /etc/pbp-mcp/mcp.env 2>/dev/null; then
+        fail "pbpapp can read /etc/pbp-mcp/mcp.env -- the isolation is broken"
+    fi
+    echo "   pbpapp cannot read the database credential (checked)"
+fi
 
 # The separation is the point, so prove it rather than asserting it in a comment.
 if id weathermcp >/dev/null 2>&1; then
@@ -183,9 +245,13 @@ if [[ -f /etc/systemd/system/pbp-mcp.service ]]; then
     rm -f /etc/systemd/system/pbp-mcp.service
     echo "   removed the superseded single-instance unit"
 fi
+if [[ -d /opt/pbp-explorer ]]; then
+    install -m 644 "$SRC/pbp-explorer.service" /etc/systemd/system/
+fi
 systemctl daemon-reload
 for L in "${LEAGUES[@]}"; do systemctl enable --quiet "pbp-mcp@${L}"; done
-echo "   installed pbp-mcp@{${LEAGUES[*]}} and enabled"
+[[ -d /opt/pbp-explorer ]] && systemctl enable --quiet pbp-explorer.service
+echo "   installed pbp-mcp@{${LEAGUES[*]}}$([[ -d /opt/pbp-explorer ]] && echo " + pbp-explorer") and enabled"
 
 # --- 6. nginx -----------------------------------------------------------------
 # The vhost goes in AHEAD of the app it proxies. Until something listens on
@@ -258,6 +324,17 @@ for L in "${LEAGUES[@]}"; do
     echo "   pbp-mcp@${L} on ${P}"
 done
 
+if [[ -d /opt/pbp-explorer ]]; then
+    systemctl restart pbp-explorer.service
+    for _ in $(seq 1 60); do
+        curl -fsS -m 2 "http://127.0.0.1:${APP_PORT}/_stcore/health" >/dev/null 2>&1 && break
+        sleep 1
+    done
+    systemctl is-active --quiet pbp-explorer.service \
+        || fail "pbp-explorer did not start: journalctl -u pbp-explorer -n 40"
+    echo "   pbp-explorer on ${APP_PORT}"
+fi
+
 # --- 8. Assert the things that fail silently ----------------------------------
 log "Verification"
 
@@ -314,10 +391,26 @@ for L in "${LEAGUES[@]}"; do
     fi
 done
 
+# Streamlit binding 0.0.0.0 would publish 8504 on the public EIP, past nginx and past its
+# rate limits. This is the check that catches it.
+if [[ -d /opt/pbp-explorer ]]; then
+    if ss -ltn | awk '{print $4}' | grep -qE "(^|[^0-9.])0\.0\.0\.0:${APP_PORT}|^\*:${APP_PORT}|\[::\]:${APP_PORT}"; then
+        fail "${APP_PORT} is listening on a public address -- --server.address is missing"
+    fi
+    echo "   ${APP_PORT} is loopback-only"
+    curl -fsS -m 5 "http://127.0.0.1:${APP_PORT}/_stcore/health" >/dev/null \
+        && echo "   streamlit health ok" \
+        || echo "   WARNING: streamlit health check failed"
+fi
+
 for L in "${LEAGUES[@]}"; do
     MEM=$(systemctl show "pbp-mcp@${L}" -p MemoryCurrent --value)
     echo "   pbp-mcp@${L} memory: $(( MEM / 1024 / 1024 )) MB (MemoryMax 360M)"
 done
+if [[ -d /opt/pbp-explorer ]]; then
+    MEM=$(systemctl show pbp-explorer -p MemoryCurrent --value)
+    echo "   pbp-explorer memory: $(( MEM / 1024 / 1024 )) MB (MemoryMax 560M)"
+fi
 
 # --- Done ---------------------------------------------------------------------
 log "Done"
@@ -346,9 +439,11 @@ if [[ ! -d "/etc/letsencrypt/live/${HOSTNAME_APP}" ]]; then
     note "Issue the certificate: sudo bash ${SRC}/enable-tls.sh"
 fi
 
-note "Build the explorer app on 127.0.0.1:${APP_PORT}. The vhost, the rate
-     limits and the TLS are already waiting for it; until then that host serves
-     the maintenance page. See pbp.conf's header for what the app must do."
+if [[ -d /opt/pbp-explorer ]] \
+   && ! grep -q '[^[:space:]]' <<<"$(sed -n 's/^PBPX_API_KEY=//p' /etc/pbp-explorer/app.env)"; then
+    note "Fill in PBPX_API_KEY in /etc/pbp-explorer/app.env, then:
+       systemctl restart pbp-explorer"
+fi
 
 echo
 echo "${REMAINING} step(s) outstanding."

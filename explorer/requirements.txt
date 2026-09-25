@@ -1,0 +1,16 @@
+streamlit>=1.40
+langchain>=1.0
+langchain-google-genai>=4.0
+langchain-mcp-adapters>=0.3
+pandas>=2.2
+
+# PINNED BELOW 2 ON PURPOSE -- DO NOT UPGRADE.
+#
+# langchain-mcp-adapters imports `RequestContext` from `mcp.shared.context`, which the
+# mcp 2.x SDK moved. Upgrading breaks tool discovery at import time with:
+#   ImportError: cannot import name 'RequestContext' from 'mcp.shared.context'
+#
+# The MCP SERVERS (../mcp_server) run mcp>=2 in their own venv. That is fine and intended:
+# these are separate processes sharing a wire protocol, not a library. The weather
+# explorer has run a v1 client against a v2 server since 2026-08-20.
+mcp<2

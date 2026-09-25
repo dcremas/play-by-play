@@ -128,26 +128,27 @@ ssh awsvm 'systemctl show pbp-mcp -p MemoryCurrent'
 
 ---
 
-## The app that does not exist yet
+## The app
 
-`pbp.conf` proxies `127.0.0.1:8504` and **nothing listens there.** Until something
-does, the host serves `maintenance.html`. That is the intended state: DNS, TLS and
-the rate limits are settled and proven before there is an application to break.
+`pbp.conf` proxies `127.0.0.1:8504`, where `pbp-explorer.service` now runs — the
+Streamlit text-to-SQL app in `explorer/`. It went in after DNS, TLS and the rate limits
+were already settled and proven, which is why the vhost needed no changes when it arrived.
 
-When you build it, the three things the vhost assumes:
+The three things the vhost assumed, all now true:
 
 1. **It binds `127.0.0.1:8504` only.** Streamlit otherwise binds `0.0.0.0`, which
-   publishes the port on the public EIP — past nginx, past its rate limits and
-   past every security header. Add the same assertion `provision.sh` makes for
-   8771.
-2. **It runs as its own user** (`pbpapp`), holding the LLM API key and **no
-   database credential**. `pbp_ro`'s password belongs to `pbpmcp` alone; the
-   public-facing process is the one an attacker reaches first.
-3. **It carries its own spend caps.** nginx cannot provide them — see the long
-   note in `pbp.conf`. Streamlit sends every user action over one long-lived
-   WebSocket, so a visitor can ask twenty questions generating zero further HTTP
-   requests for `limit_req` to count. `limit_conn` bounds parallel sessions and is
-   the useful lever; the actual cap must be a per-session question limit and a
-   daily token budget that fails closed.
+   publishes the port on the public EIP — past nginx, past its rate limits and past every
+   security header. `provision.sh` asserts it, exactly as it does for 8771 and 8772.
+2. **It runs as its own user** (`pbpapp`), holding the LLM API key and **no database
+   credential**. `pbp_ro`'s password belongs to `pbpmcp` alone. Checked both ways every
+   deploy: `pbpapp` cannot read `/etc/pbp-mcp/mcp.env`, and `pbpmcp` cannot read
+   `/etc/pbp-explorer/app.env`.
+3. **It carries its own spend caps** — `explorer/budget.py`, a per-session question limit
+   and a daily token ledger that fails closed. nginx cannot provide them; see the long
+   note in `pbp.conf`.
 
-The weather stack's `sql_explorer/` is the working example of all three.
+| | |
+|---|---|
+| Unit | `pbp-explorer.service`, `MemoryMax=560M`, `StateDirectory=pbp-explorer` |
+| Caps on the box | 10 questions/session, 1.5M tokens/day |
+| Measured | ~45k tokens and 6-8s per question, 45 MB idle |

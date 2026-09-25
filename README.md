@@ -153,6 +153,8 @@ pbp/
 │
 ├── web/               Dash instance explorer — every play, three lenses
 ├── reports/           formatted Excel workbooks + the ERD output
+├── explorer/          the text-to-SQL app at pbp.dustincremascoli.com — Streamlit +
+│                      Gemini over the two MCP servers. Its own README.
 ├── mcp_server/        read-only MCP over the EC2 mirror — 25 tools, its own README
 │   └── deploy/        on-box deployment: systemd unit, nginx vhost, TLS, and
 │                      push.sh, which is the code sync sync_ec2.py does not do
@@ -207,7 +209,7 @@ explorer's header shows how old the snapshot is.
 | **In progress right now** | the 2026 season in both leagues — 99 college games and 2 NFL. `scripts/update_season.py 2026 [--league nfl]` pulls both facts forward, one league per run |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
-| **Open follow-ups** | **The play-by-play explorer app is not built** — the MCP server is deployed on the box (`pbp-mcp.service`, `127.0.0.1:8771`) and `pbp.dustincremascoli.com` is waiting for an app on 8504; see `mcp_server/deploy/README-deploy.md`. The mirror is refreshed by hand — `update_season.py` does not call `sync_ec2.py`, so the weekly run leaves it stale until someone pushes. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
+| **Open follow-ups** | The mirror is refreshed by hand — `update_season.py` does not call `sync_ec2.py`, so the weekly run leaves it stale until someone pushes. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 

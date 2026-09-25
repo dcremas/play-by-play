@@ -1,0 +1,95 @@
+# The Streamlit text-to-SQL explorer, in front of both MCP servers.
+#
+# Install to /etc/systemd/system/pbp-explorer.service (provision.sh does this).
+#
+# A THIRD SERVICE USER, AND THAT IS THE POINT.
+# `pbpmcp` owns the Postgres credential; `pbpapp` owns the LLM API key and NO database
+# credential at all. The public-facing Streamlit process -- the one an attacker reaches
+# first -- has no way to obtain the warehouse password even if it is fully compromised,
+# because it never had one. It reaches data only by calling MCP tools over the loopback,
+# and the only tool that runs SQL runs it through a parser as a SELECT-only role.
+
+[Unit]
+Description=Play-by-Play Explorer (Streamlit + LangChain + Gemini, two corpora)
+Documentation=file:///opt/pbp-explorer/README.md
+After=network-online.target pbp-mcp@cfb.service pbp-mcp@nfl.service
+Wants=network-online.target
+# Wants, not Requires: if a corpus's server is down the app should still start and say so
+# on the page. Requires would take the whole site off the air because one league is
+# unavailable, turning a degraded demo into a 502.
+Wants=pbp-mcp@cfb.service pbp-mcp@nfl.service
+
+# StartLimit* BELONG IN [Unit], NOT [Service]. In [Service] systemd logs "Unknown key
+# name ... ignoring" and silently applies its default of 5 starts per 10s, so
+# Restart=always quietly is not always.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pbpapp
+Group=pbpapp
+WorkingDirectory=/opt/pbp-explorer
+
+Environment=PBPX_MCP_URL_CFB=http://127.0.0.1:8771/mcp
+Environment=PBPX_MCP_URL_NFL=http://127.0.0.1:8772/mcp
+Environment=PBPX_MODEL=gemini-3.8-flash
+Environment=PBPX_PORT=8504
+# The daily token ledger. Must be on disk and writable by this user: it is what survives a
+# restart, and Streamlit restarts often. StateDirectory below creates it with the right
+# ownership.
+Environment=PBPX_STATE_PATH=/var/lib/pbp-explorer/budget.json
+Environment=PYTHONUNBUFFERED=1
+
+# HOME MUST BE SET, AND IT MUST NOT BE UNDER /home.
+#
+# Streamlit probes `$HOME/.streamlit/secrets.toml` during startup, before it serves
+# anything. The service user is created --no-create-home, so $HOME defaults to
+# /home/pbpapp -- and ProtectHome=true below makes all of /home inaccessible to this unit.
+# The probe therefore fails with PermissionError rather than FileNotFoundError, which
+# Streamlit does NOT handle, and the service crash-loops until it hits StartLimitBurst.
+# The weather explorer hit exactly this; pointing HOME at the StateDirectory gives
+# Streamlit a real directory it owns.
+Environment=HOME=/var/lib/pbp-explorer
+
+# Holds only the API key and the spend caps. Mode 640 root:pbpapp. This user deliberately
+# cannot read /etc/pbp-mcp/mcp.env -- see the header.
+EnvironmentFile=/etc/pbp-explorer/app.env
+
+# --server.address=127.0.0.1 IS LOAD-BEARING. Streamlit otherwise binds 0.0.0.0, which
+# publishes 8504 on the public EIP -- past nginx, past its rate limits and past every
+# security header. provision.sh asserts it is not listening on anything else after start.
+ExecStart=/opt/pbp-explorer/.venv/bin/streamlit run app.py \
+    --server.address=127.0.0.1 \
+    --server.port=8504 \
+    --server.headless=true \
+    --server.enableCORS=false \
+    --server.enableXsrfProtection=true \
+    --browser.gatherUsageStats=false
+
+Restart=always
+RestartSec=5s
+
+# The weather explorer measures 214 MB serving real questions (pandas + langchain is
+# heavier than it looks). This one holds TWO agents and two MCP clients rather than one,
+# so the ceiling is higher. Capped so a pathological result set cannot take the box down
+# with it -- 3.8 GB of RAM across a dozen services.
+MemoryHigh=420M
+MemoryMax=560M
+
+StateDirectory=pbp-explorer
+StateDirectoryMode=0750
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
