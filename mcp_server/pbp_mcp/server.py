@@ -43,25 +43,33 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from . import db, guard, queries as q
+from . import config, db, guard, queries as q
 
 mcp = MCPServer(
-    name="pbp-warehouse",
+    name=f"pbp-{config.SCHEMA}",
     instructions=(
-        "Play-by-play warehouse: every play in FBS college football and the NFL "
-        "from 2014 to last weekend -- 2.37M plays, 13,597 games, two leagues, one "
-        "schema. Two facts: KICKS (kickoffs, punts, field goals, conversions) and "
-        "SCRIMMAGE (rushes, passes, sacks, penalties); they are disjoint.\n\n"
+        f"Play-by-play warehouse for {config.LABEL.upper()} ONLY -- every play from "
+        "2014 to last weekend. Two facts: KICKS (kickoffs, punts, field goals, "
+        "conversions) and SCRIMMAGE (rushes, passes, sacks, penalties); they are "
+        "disjoint and share one play_uid space.\n\n"
+        "THIS SERVER SERVES ONE LEAGUE. The other corpus lives behind a separate "
+        "server and is not readable from here, so no tool takes a `league` argument "
+        "and no query needs one. A question about the other league belongs to the "
+        "other server; do not try to answer it from this data.\n\n"
         "Start with data_coverage to see what seasons exist and which are still "
         "being played, and find_team / find_player to turn a name into an id -- "
-        "always query by id, because 109 athlete names are shared by more than "
-        "one person and team ids COLLIDE between leagues (team 2 is Auburn and "
-        "also the Buffalo Bills), so `league` is required wherever a team id is.\n\n"
+        "always query by id, because some athlete names are shared by more than one "
+        "person and they are different people.\n\n"
         "For anything the typed tools do not cover, use run_sql: call list_schema "
         "once, describe_table for columns and their caveats, then one read-only "
-        "SELECT. Prefer pbp.play_wide and pbp.scrimmage_wide -- they carry the "
-        "dimensions pre-joined, including the (team_id, season) conference "
-        "resolution that a hand-written join gets wrong.\n\n"
+        "SELECT. Table names are unqualified or prefixed with this corpus's schema; "
+        f"prefer {config.SCHEMA}.play_wide and {config.SCHEMA}.scrimmage_wide -- "
+        "they carry the dimensions pre-joined, including the (team_id, season) "
+        "conference resolution that a hand-written join gets wrong.\n\n"
+        "PLAYER CAREERS HERE ARE LEAGUE-SCOPED. first_season, last_season and the "
+        "play counts in dim_athlete count this league's plays only, so a player who "
+        "also played in the other league has a separate, unlinked row there. Never "
+        "present these numbers as a whole career without saying which league.\n\n"
         "NULL is meaningful here and must not be coalesced away: fg_made IS NULL "
         "is a kick negated by penalty, not a miss. Call known_limits() before "
         "quoting a number."
@@ -144,7 +152,9 @@ def data_coverage() -> dict:
     totals = db.query(q.CORPUS_TOTALS)
     live = [r for r in seasons if r.get("is_in_progress")]
     return {
-        "totals_by_league": _jsonable(totals),
+        # One row now, not one per league: this server serves one corpus.
+        "totals": _jsonable(totals)[0] if totals else {},
+        "league": config.LEAGUE,
         "seasons": _jsonable(seasons),
         "in_progress": _jsonable(live),
         "note": (
@@ -161,7 +171,6 @@ def data_coverage() -> dict:
 @mcp.tool()
 def find_team(
     query: str | None = None,
-    league: str | None = None,
     season: int | None = None,
     limit: int | None = None,
 ) -> dict:
@@ -178,7 +187,6 @@ def find_team(
     """
     rows = db.query(q.FIND_TEAM, {
         "q": query,
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "limit": _clamp(limit),
     })
@@ -193,7 +201,6 @@ def find_team(
 def find_player(
     name: str | None = None,
     position: str | None = None,
-    league: str | None = None,
     season: int | None = None,
     limit: int | None = None,
 ) -> dict:
@@ -214,7 +221,6 @@ def find_player(
     rows = db.query(q.FIND_PLAYER, {
         "name": name,
         "position": position,
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "limit": _clamp(limit),
     })
@@ -254,14 +260,14 @@ def find_venue(
 
 
 @mcp.tool()
-def list_conferences(league: str | None = None, season: int | None = None) -> dict:
+def list_conferences(season: int | None = None) -> dict:
     """Conferences, with member counts for a season.
 
     Conference ids collide between leagues exactly as team ids do -- 8 is the SEC
     and also the AFC -- so `league` is part of the key.
     """
     rows = db.query(q.LIST_CONFERENCES, {
-        "league": _one_of(league, q.LEAGUES, "league"), "season": season,
+        "season": season,
     })
     return {"count": len(rows), "conferences": _jsonable(rows)}
 
@@ -270,7 +276,6 @@ def list_conferences(league: str | None = None, season: int | None = None) -> di
 
 @mcp.tool()
 def list_games(
-    league: str | None = None,
     season: int | None = None,
     week: int | None = None,
     season_type: str | None = None,
@@ -282,7 +287,6 @@ def list_games(
     `team_id` needs `league` alongside it to be unambiguous.
     """
     rows = db.query(q.LIST_GAMES, {
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "week": week,
         "season_type": _one_of(season_type, q.SEASON_TYPES, "season_type"),
@@ -345,7 +349,6 @@ def drive_chart(game_id: int) -> dict:
 # `athlete_id` match either side, and one-sided filtering goes through run_sql. An
 # unreachable key in an allow-list reads like a supported filter and is not one.
 _KICK_FILTERS = {
-    "league":       "league = %(league)s",
     "season":       "season = %(season)s",
     "week":         "week = %(week)s",
     "season_type":  "season_type = %(season_type)s",
@@ -363,7 +366,6 @@ _KICK_FILTERS = {
 }
 
 _SCRIMMAGE_FILTERS = {
-    "league":       "league = %(league)s",
     "season":       "season = %(season)s",
     "week":         "week = %(week)s",
     "season_type":  "season_type = %(season_type)s",
@@ -385,7 +387,6 @@ _SCRIMMAGE_FILTERS = {
 @mcp.tool()
 def query_plays(
     fact: str,
-    league: str | None = None,
     season: int | None = None,
     week: int | None = None,
     season_type: str | None = None,
@@ -439,7 +440,6 @@ def query_plays(
     allowed = _KICK_FILTERS if table_key == "kicks" else _SCRIMMAGE_FILTERS
 
     params: dict[str, Any] = {
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "week": week,
         "season_type": _one_of(season_type, q.SEASON_TYPES, "season_type"),
@@ -583,7 +583,6 @@ def player_game_log(
 @mcp.tool()
 def leaderboard(
     measure: str,
-    league: str | None = None,
     season: int | None = None,
     min_attempts: int = 20,
     top_division_only: bool = False,
@@ -608,7 +607,6 @@ def leaderboard(
     """
     key = _one_of(measure, tuple(q.LEADERBOARD_SQL), "measure")
     rows = db.query(q.LEADERBOARD_SQL[key], {
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "min_attempts": max(1, int(min_attempts)),
         "top_division_only": bool(top_division_only),
@@ -625,7 +623,7 @@ def leaderboard(
 # --------------------------------------------------------------------------- teams
 
 @mcp.tool()
-def team_season(team_id: int, league: str, season: int) -> dict:
+def team_season(team_id: int, season: int) -> dict:
     """One team's offence, defence and special teams for one season.
 
     `league` is required, not optional: team ids collide between the two corpora.
@@ -634,15 +632,13 @@ def team_season(team_id: int, league: str, season: int) -> dict:
     so `off_plays` for one team and `def_plays` for its opponents count the same
     events from opposite ends. Nothing is duplicated to achieve that.
     """
-    league_ok = _one_of(league, q.LEAGUES, "league")
     rows = db.query(q.TEAM_SEASON, {
-        "team_id": team_id, "league": league_ok, "season": season,
+        "team_id": team_id, "season": season,
     })
     if not rows or rows[0].get("team") is None:
         return {
             "error": (
-                f"No team {team_id} in league {league_ok!r}. Team ids collide between "
-                "leagues -- check find_team."
+                f"No team {team_id} in this corpus. Check find_team."
             )
         }
     return {"team_season": _jsonable(rows)[0]}
@@ -652,7 +648,6 @@ def team_season(team_id: int, league: str, season: int) -> dict:
 
 @mcp.tool()
 def fg_by_distance(
-    league: str | None = None,
     season: int | None = None,
     top_division_only: bool = False,
 ) -> dict:
@@ -663,7 +658,6 @@ def fg_by_distance(
     misses; a distance the parser could not recover is excluded entirely.
     """
     rows = db.query(q.FG_BY_DISTANCE, {
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "top_division_only": bool(top_division_only),
     })
@@ -673,7 +667,6 @@ def fg_by_distance(
 @mcp.tool()
 def kick_outcomes(
     play_kind: str = "kickoff",
-    league: str | None = None,
     season: int | None = None,
     top_division_only: bool = False,
 ) -> dict:
@@ -694,7 +687,6 @@ def kick_outcomes(
     kind = _one_of(play_kind, ("kickoff", "punt"), "play_kind")
     rows = db.query(q.KICK_OUTCOMES, {
         "kinds": [kind],
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "top_division_only": bool(top_division_only),
     })
@@ -711,7 +703,7 @@ def kick_outcomes(
 
 
 @mcp.tool()
-def drive_outcomes(league: str | None = None, season: int | None = None) -> dict:
+def drive_outcomes(season: int | None = None) -> dict:
     """Drive result by starting field position.
 
     Monotonic in both leagues -- 51.9% touchdowns starting inside the opponent's
@@ -720,14 +712,13 @@ def drive_outcomes(league: str | None = None, season: int | None = None) -> dict
     excluded.
     """
     rows = db.query(q.DRIVE_OUTCOMES, {
-        "league": _one_of(league, q.LEAGUES, "league"), "season": season,
+        "season": season,
     })
     return {"count": len(rows), "zones": _jsonable(rows)}
 
 
 @mcp.tool()
 def situational_splits(
-    league: str | None = None,
     season: int | None = None,
     top_division_only: bool = False,
 ) -> dict:
@@ -741,7 +732,6 @@ def situational_splits(
     pick-six to the offence.
     """
     rows = db.query(q.SITUATIONAL_SPLITS, {
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "top_division_only": bool(top_division_only),
     })
@@ -750,7 +740,7 @@ def situational_splits(
 
 @mcp.tool()
 def league_trend(
-    measure: str, league: str | None = None, top_division_only: bool = False
+    measure: str, top_division_only: bool = False
 ) -> dict:
     """One measure by season, for trend and rule-change questions.
 
@@ -764,7 +754,6 @@ def league_trend(
     """
     key = _one_of(measure, tuple(q.TREND_SQL), "measure")
     rows = db.query(q.TREND_SQL[key], {
-        "league": _one_of(league, q.LEAGUES, "league"),
         "top_division_only": bool(top_division_only),
     })
     return {
@@ -778,11 +767,11 @@ def league_trend(
 # --------------------------------------------------------------------------- quality
 
 @mcp.tool()
-def parse_quality(league: str | None = None, season: int | None = None) -> dict:
+def parse_quality(season: int | None = None) -> dict:
     """Parser agreement and athlete-id coverage on the kicks fact, by season.
 
-    The kicks fact is the only parsed half of the warehouse: 98.04% `exact` in
-    college and 98.19% in the NFL, from two separate dialect modules. The
+    The kicks fact is the only parsed half of the warehouse -- ~98% `exact` in
+    both corpora, from two separate dialect modules. The
     scrimmage fact needs no parser at all -- its fields are structured -- so it
     has no equivalent and is absent here.
 
@@ -790,14 +779,13 @@ def parse_quality(league: str | None = None, season: int | None = None) -> dict:
     quirk. Use audit_plays to see the rows.
     """
     rows = db.query(q.PARSE_QUALITY, {
-        "league": _one_of(league, q.LEAGUES, "league"), "season": season,
+        "season": season,
     })
     return {"count": len(rows), "quality": _jsonable(rows)}
 
 
 @mcp.tool()
 def audit_plays(
-    league: str | None = None,
     season: int | None = None,
     play_kind: str | None = None,
     limit: int | None = None,
@@ -809,7 +797,6 @@ def audit_plays(
     actually said.
     """
     rows = db.query(q.AUDIT_PLAYS, {
-        "league": _one_of(league, q.LEAGUES, "league"),
         "season": season,
         "play_kind": _one_of(play_kind, q.KICK_KINDS, "play_kind"),
         "limit": _clamp(limit),
@@ -824,8 +811,11 @@ _KNOWN_LIMITS = [
     {
         "topic": "unstated outcomes",
         "applies_to": "kicks fact, punts and kickoffs",
-        "limit": "20,950 kicks state no outcome -- 9.9% of the 211,659 punts and "
-                 "kickoffs. `returned IS NULL` marks them.",
+        "limit": "Some kicks state no outcome at all; `returned IS NULL` marks them. "
+                  "THE RATE DIFFERS SHARPLY BY CORPUS and the often-quoted 9.9% is the "
+                  "COLLEGE figure, not a corpus-wide one: 21,346 of 216,657 college "
+                  "punts and kickoffs (9.9%) against 2,097 of 62,313 in the NFL (3.4%). "
+                  "The blended 8.4% describes neither.",
         "what_to_do": "Exclude them from rate denominators (kick_outcomes already "
                       "does) and report pct_unstated beside any rate.",
     },
@@ -908,19 +898,33 @@ _KNOWN_LIMITS = [
     {
         "topic": "shared names",
         "applies_to": "dim_athlete",
-        "limit": "109 names are shared by more than one athlete. They are different "
-                 "people.",
+        "limit": "Some names are shared by more than one athlete, and they are "
+                 "different people -- 109 across the combined corpus.",
         "what_to_do": "Group by athlete_id, label with known_name. Never the reverse.",
     },
     {
-        "topic": "colliding ids",
+        "topic": "no cross-league careers",
+        "applies_to": "dim_athlete",
+        "limit": "This dimension is scoped to THIS corpus. first_season, last_season, "
+                 "primary_team_id, primary_role and the play counts are computed from "
+                 "this league's plays alone. A player who appears in both corpora has "
+                 "a row in each and the two are NOT linked -- there is no career here "
+                 "that spans college and the NFL.",
+        "what_to_do": "Do not present a player's numbers here as a whole career if "
+                      "they also played in the other league. Answering that question "
+                      "needs the pbp schema, which this server cannot read.",
+    },
+    {
+        "topic": "colliding ids -- NO LONGER REACHABLE HERE",
         "applies_to": "dim_team, dim_conference",
-        "limit": "Team and conference ids mean different things in each league -- "
-                 "team 2 is Auburn and also the Buffalo Bills; conference 8 is the "
-                 "SEC and also the AFC. Venue and athlete ids are deliberately SHARED.",
-        "what_to_do": "Carry `league` with every team or conference id. Do not carry "
-                      "it on venue or athlete ids -- a league-keyed athlete join would "
-                      "split 2,779 people in half.",
+        "limit": "Upstream, team and conference ids mean different things in each "
+                 "league: team 2 is Auburn and also the Buffalo Bills, conference 8 "
+                 "is the SEC and also the AFC. THIS SERVER SERVES ONE CORPUS, so the "
+                 "collision cannot be reached from here -- the other league is a "
+                 "separate schema this connection cannot resolve.",
+        "what_to_do": "Nothing. Kept listed because the ids themselves are still "
+                      "ambiguous OUTSIDE this server: an id carried into the other "
+                      "league's server, or into the pbp schema, means something else.",
     },
     {
         "topic": "FBS vs FCS",

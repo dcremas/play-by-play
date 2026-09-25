@@ -27,6 +27,8 @@ import psycopg.conninfo
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
+from . import config
+
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 # Statement timeout applied per connection. The pbp_ro role carries its own 60s
@@ -37,7 +39,7 @@ _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 # largest table is 9.2M narrow observation rows; this one has a 2.4 GB scrimmage
 # fact on a 2-vCPU box with 640 MB of shared_buffers, so a legitimate full-corpus
 # aggregate can genuinely take longer than 30 seconds. The wide tables and the
-# indexes in wide_tables.sql are what keep the common cases far below this.
+# indexes in split_leagues.sql are what keep the common cases far below this.
 _STATEMENT_TIMEOUT_MS = 60_000
 
 _pool_singleton: ConnectionPool | None = None
@@ -88,8 +90,15 @@ def _conninfo() -> str:
         password=password,
         dbname=database(),
         connect_timeout=10,
-        application_name="pbp-mcp",
-        options=f"-c statement_timeout={_STATEMENT_TIMEOUT_MS}",
+        application_name=f"pbp-mcp-{config.SCHEMA}",
+        # search_path is what selects the corpus, and it is set to EXACTLY ONE schema.
+        # Listing both would make every unqualified name resolve to whichever comes
+        # first -- a college query silently answered from NFL tables, or the reverse,
+        # with no error anywhere. The role also carries a search_path default; this
+        # overrides it per connection so the server is correct even against a role
+        # that was set up for the other league.
+        options=(f"-c statement_timeout={_STATEMENT_TIMEOUT_MS} "
+                 f"-c search_path={config.SCHEMA}"),
     )
 
 

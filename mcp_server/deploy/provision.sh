@@ -18,13 +18,15 @@
 #
 # WHAT THIS DOES NOT DO: create the pbp_ro role. That is setup_role_pbp.sql, run
 # against the database, and scripts/sync_ec2.py already runs it after every sync
-# because wide_tables.sql drops three of the tables it grants.
+# because split_leagues.sql drops the schemas whose tables it grants.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
 HOSTNAME_APP="${HOSTNAME_APP:-pbp.dustincremascoli.com}"
 WEBLOG_SITE="${WEBLOG_SITE:-pbp}"
-MCP_PORT=8771
+# One instance per corpus. The name is both the systemd instance and the schema.
+declare -A MCP_PORTS=( [cfb]=8771 [nfl]=8772 )
+LEAGUES=(cfb nfl)
 APP_PORT=8504          # reserved for the explorer; nothing listens on it yet
 
 log()  { printf '\n== %s\n' "$*"; }
@@ -72,9 +74,16 @@ echo "   interpreter: ${PYTHON} (${PYVER})"
 
 # The port must be free, or systemd will start the unit and the bind will fail
 # five seconds later in a way that only shows up in the journal.
-if ss -ltn | grep -qE "127\.0\.0\.1:${MCP_PORT}\b" && ! systemctl is-active --quiet pbp-mcp; then
-    fail "something other than pbp-mcp is already listening on ${MCP_PORT}"
-fi
+# The superseded single-instance unit holds 8771 until step 5 retires it, so it is
+# an expected holder here, not a conflict. Anything else on either port is.
+for L in "${LEAGUES[@]}"; do
+    P=${MCP_PORTS[$L]}
+    if ss -ltn | grep -qE "127\.0\.0\.1:${P}\b" \
+       && ! systemctl is-active --quiet "pbp-mcp@${L}" \
+       && ! systemctl is-active --quiet pbp-mcp.service; then
+        fail "something other than pbp-mcp is already listening on ${P}"
+    fi
+done
 
 # --- 1. Service user ----------------------------------------------------------
 # Its own user, separate from weathermcp. Each holds one database credential and
@@ -160,11 +169,23 @@ if id weathermcp >/dev/null 2>&1; then
 fi
 
 # --- 5. systemd ---------------------------------------------------------------
-log "systemd unit"
-install -m 644 "$SRC/pbp-mcp.service" /etc/systemd/system/
+log "systemd units"
+install -m 644 "$SRC/pbp-mcp@.service" /etc/systemd/system/
+# One port file per instance; systemd cannot derive a port from %i.
+for L in "${LEAGUES[@]}"; do
+    printf 'MCP_HTTP_PORT=%s\n' "${MCP_PORTS[$L]}" > "/etc/pbp-mcp/port-${L}.env"
+    chown root:pbpmcp "/etc/pbp-mcp/port-${L}.env"; chmod 640 "/etc/pbp-mcp/port-${L}.env"
+done
+# The single-instance unit this replaced. Left running it would hold 8771 and the
+# template instance would fail to bind, with the cause five lines deep in a journal.
+if [[ -f /etc/systemd/system/pbp-mcp.service ]]; then
+    systemctl disable --now pbp-mcp.service 2>/dev/null || true
+    rm -f /etc/systemd/system/pbp-mcp.service
+    echo "   removed the superseded single-instance unit"
+fi
 systemctl daemon-reload
-systemctl enable --quiet pbp-mcp.service
-echo "   installed and enabled"
+for L in "${LEAGUES[@]}"; do systemctl enable --quiet "pbp-mcp@${L}"; done
+echo "   installed pbp-mcp@{${LEAGUES[*]}} and enabled"
 
 # --- 6. nginx -----------------------------------------------------------------
 # The vhost goes in AHEAD of the app it proxies. Until something listens on
@@ -224,76 +245,79 @@ systemctl reload nginx
 echo "   reloaded nginx"
 
 # --- 7. Start -----------------------------------------------------------------
-log "Starting pbp-mcp"
-systemctl restart pbp-mcp.service
-for _ in $(seq 1 30); do
-    ss -ltn 2>/dev/null | grep -q "127.0.0.1:${MCP_PORT}" && break
-    sleep 1
+log "Starting both instances"
+for L in "${LEAGUES[@]}"; do
+    P=${MCP_PORTS[$L]}
+    systemctl restart "pbp-mcp@${L}"
+    for _ in $(seq 1 30); do
+        ss -ltn 2>/dev/null | grep -q "127.0.0.1:${P}" && break
+        sleep 1
+    done
+    systemctl is-active --quiet "pbp-mcp@${L}" \
+        || fail "pbp-mcp@${L} did not start: journalctl -u pbp-mcp@${L} -n 40"
+    echo "   pbp-mcp@${L} on ${P}"
 done
-systemctl is-active --quiet pbp-mcp.service \
-    || fail "pbp-mcp did not start: journalctl -u pbp-mcp -n 40"
 
 # --- 8. Assert the things that fail silently ----------------------------------
 log "Verification"
 
-# The whole security model for the MCP endpoint is that it is loopback-only: it
-# has no authentication at all. This is the check that catches a wrong
-# MCP_HTTP_HOST before the internet does.
-if ss -ltn | awk '{print $4}' | grep -qE "(^|[^0-9.])0\.0\.0\.0:${MCP_PORT}|^\*:${MCP_PORT}|\[::\]:${MCP_PORT}"; then
-    fail "${MCP_PORT} is listening on a public address -- MCP_HTTP_HOST is wrong"
-fi
-echo "   ${MCP_PORT} is loopback-only"
-
-# And that nginx is not proxying it. A `location /mcp` here would publish an
-# unauthenticated SQL interface.
-if grep -rqE "proxy_pass\s+https?://127\.0\.0\.1:${MCP_PORT}" /etc/nginx/; then
-    fail "nginx proxies ${MCP_PORT} -- that endpoint has NO authentication"
-fi
-echo "   nginx does not proxy ${MCP_PORT}"
-
-# End-to-end through the MCP protocol, not just a port check: a listening socket
-# with a broken database credential looks identical from the outside.
-INIT=$(curl -s -m 15 -X POST "http://127.0.0.1:${MCP_PORT}/mcp" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"provision","version":"0"}}}' 2>&1 || true)
-grep -q '"serverInfo"' <<<"$INIT" \
-    && echo "   MCP initialize ok" \
-    || echo "   WARNING: MCP did not answer initialize -- journalctl -u pbp-mcp -n 40"
-
-# THE ENVIRONMENT IS LOAD-BEARING. The connection settings live as
-# `Environment=` lines in the unit; /etc/pbp-mcp/mcp.env holds only the password.
-# Invoked without the unit's environment, db.py falls back to its development
-# default of port 15432 -- the laptop's SSH tunnel -- so every check fails with
-# "connection refused" on a box whose database is perfectly healthy. The values
-# are read back off the unit so there is one source of truth.
-#
-# `env $UNIT_ENV` is deliberately unquoted: systemctl returns space-separated
-# KEY=VALUE pairs and they must word-split into separate arguments.
-UNIT_ENV=$(systemctl show pbp-mcp -p Environment --value)
-SELFTEST_CMD="sudo -u pbpmcp env \$(systemctl show pbp-mcp -p Environment --value) \\
-     bash -c 'set -a; . /etc/pbp-mcp/mcp.env; set +a
-       cd /opt/pbp-mcp && ./.venv/bin/python -m pbp_mcp.selftest'"
-# shellcheck disable=SC2086
-SELFTEST=$(sudo -u pbpmcp env $UNIT_ENV bash -c \
-    'set -a; . /etc/pbp-mcp/mcp.env; set +a
-     cd /opt/pbp-mcp && ./.venv/bin/python -m pbp_mcp.selftest' 2>&1 || true)
-
-if grep -q "checks passed" <<<"$SELFTEST"; then
-    grep -E "checks passed" <<<"$SELFTEST" | sed 's/^/   /'
-    # A summary line is printed even when individual checks failed, so say so
-    # rather than letting "checks passed" read as all-clear.
-    if grep -q "FAIL" <<<"$SELFTEST"; then
-        echo "   ^ some checks FAILED. To see which:"
-        echo "     $SELFTEST_CMD"
+for L in "${LEAGUES[@]}"; do
+    P=${MCP_PORTS[$L]}
+    # The whole security model for the MCP endpoint is that it is loopback-only: it
+    # has no authentication at all. This is the check that catches a wrong
+    # MCP_HTTP_HOST before the internet does.
+    if ss -ltn | awk '{print $4}' | grep -qE "(^|[^0-9.])0\.0\.0\.0:${P}|^\*:${P}|\[::\]:${P}"; then
+        fail "${P} is listening on a public address -- MCP_HTTP_HOST is wrong"
     fi
-else
-    echo "   selftest produced no summary -- the suite could not run. Try:"
-    echo "     $SELFTEST_CMD"
-fi
+    # And that nginx is not proxying it. A `location /mcp` would publish an
+    # unauthenticated SQL interface.
+    if grep -rqE "proxy_pass\s+https?://127\.0\.0\.1:${P}" /etc/nginx/; then
+        fail "nginx proxies ${P} -- that endpoint has NO authentication"
+    fi
+    echo "   ${P} (${L}) is loopback-only and not proxied"
 
-MEM=$(systemctl show pbp-mcp -p MemoryCurrent --value)
-echo "   memory in use: $(( MEM / 1024 / 1024 )) MB (MemoryMax 360M)"
+    # End-to-end through the MCP protocol, not just a port check: a listening socket
+    # with a broken database credential looks identical from the outside.
+    INIT=$(curl -s -m 15 -X POST "http://127.0.0.1:${P}/mcp" \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"provision","version":"0"}}}' 2>&1 || true)
+    grep -q '"serverInfo"' <<<"$INIT" \
+        && echo "     MCP initialize ok" \
+        || echo "     WARNING: ${L} did not answer initialize -- journalctl -u pbp-mcp@${L} -n 40"
+
+    # THE ENVIRONMENT IS LOAD-BEARING. Connection settings live as `Environment=`
+    # lines in the unit; the env files hold only the password and the port. Invoked
+    # without the unit's environment, db.py falls back to its development default of
+    # port 15432 -- the laptop's SSH tunnel -- and every check fails with
+    # "connection refused" against a perfectly healthy local database.
+    #
+    # `env $UNIT_ENV` is deliberately unquoted: systemctl returns space-separated
+    # KEY=VALUE pairs that must word-split into separate arguments.
+    UNIT_ENV=$(systemctl show "pbp-mcp@${L}" -p Environment --value)
+    SELFTEST_CMD="sudo -u pbpmcp env \$(systemctl show pbp-mcp@${L} -p Environment --value) \\
+     bash -c 'set -a; . /etc/pbp-mcp/mcp.env; . /etc/pbp-mcp/port-${L}.env; set +a
+       cd /opt/pbp-mcp && ./.venv/bin/python -m pbp_mcp.selftest'"
+    # shellcheck disable=SC2086
+    SELFTEST=$(sudo -u pbpmcp env $UNIT_ENV bash -c \
+        "set -a; . /etc/pbp-mcp/mcp.env; . /etc/pbp-mcp/port-${L}.env; set +a
+         cd /opt/pbp-mcp && ./.venv/bin/python -m pbp_mcp.selftest" 2>&1 || true)
+    if grep -q "checks passed" <<<"$SELFTEST"; then
+        grep -E "checks passed" <<<"$SELFTEST" | sed "s/^/     ${L}: /"
+        if grep -q "FAIL" <<<"$SELFTEST"; then
+            echo "     ^ some checks FAILED. To see which:"
+            echo "       $SELFTEST_CMD"
+        fi
+    else
+        echo "     selftest produced no summary -- the suite could not run. Try:"
+        echo "       $SELFTEST_CMD"
+    fi
+done
+
+for L in "${LEAGUES[@]}"; do
+    MEM=$(systemctl show "pbp-mcp@${L}" -p MemoryCurrent --value)
+    echo "   pbp-mcp@${L} memory: $(( MEM / 1024 / 1024 )) MB (MemoryMax 360M)"
+done
 
 # --- Done ---------------------------------------------------------------------
 log "Done"
@@ -304,12 +328,12 @@ log "Done"
 REMAINING=0
 note() { REMAINING=$((REMAINING + 1)); echo "  ${REMAINING}. $1"; }
 
-echo "pbp-mcp is running on 127.0.0.1:${MCP_PORT}."
+echo "pbp-mcp@cfb is on 127.0.0.1:${MCP_PORTS[cfb]}, pbp-mcp@nfl on ${MCP_PORTS[nfl]}."
 echo
 
 if ! grep -q '[^[:space:]]' <<<"$(sed -n 's/^MCP_DB_PASSWORD=//p' /etc/pbp-mcp/mcp.env)"; then
     note "Fill in MCP_DB_PASSWORD in /etc/pbp-mcp/mcp.env, then:
-       systemctl restart pbp-mcp"
+       systemctl restart pbp-mcp@cfb pbp-mcp@nfl"
 fi
 
 if ! getent hosts "${HOSTNAME_APP}" >/dev/null 2>&1; then

@@ -1,27 +1,31 @@
 # Play-by-Play Warehouse MCP Server
 
-**Read-only conversational access to 2.4M plays of college football and NFL
-play-by-play.** Twenty-five tools — twenty-two typed, plus schema introspection
-and a guarded SQL passthrough — over a `SELECT`-only Postgres role on the EC2
-box.
+**Read-only conversational access to college football and NFL play-by-play.**
+Twenty-five tools — twenty-two typed, plus schema introspection and a guarded SQL
+passthrough — over a `SELECT`-only Postgres role on the EC2 box.
+
+**One server per league.** College football and the NFL are answered separately,
+the way ESPN segregates them. Each corpus is its own schema (`cfb.*`, `nfl.*`)
+with identical table names, and each has its own server instance. **No tool takes
+a `league` argument** and no query needs one.
 
 | | |
 |---|---|
-| **Corpus** | 2,397,512 plays · 13,958 games · 13 seasons (2014–2026) · two leagues |
-| **Database** | `pbp` on the EC2 instance, PostgreSQL 16.15, schema `pbp`, 14 tables |
-| **Role** | `pbp_ro` — **this server's own role**, `SELECT` on 14 tables, bounded by `pg_hba.conf` to the `pbp` database alone |
-| **Deployment** | `pbp-mcp.service` on the box, `127.0.0.1:8771`, user `pbpmcp` |
+| **Database** | `pbp` on the EC2 instance, PostgreSQL 16.15. Two serving schemas: `cfb` (14 tables) and `nfl` (14 tables), identical in shape |
+| **Corpora** | college 321,126 kicks · 1,533,137 scrimmage · 10,631 games — NFL 91,635 · 451,614 · 3,327 |
+| **Role** | `pbp_ro` — this warehouse's own role, `SELECT` on the 14 tables of each serving schema, **no access to `pbp.*`**, bounded by `pg_hba.conf` to the `pbp` database alone |
+| **Deployment** | `pbp-mcp@cfb` on `127.0.0.1:8771`, `pbp-mcp@nfl` on `8772`, user `pbpmcp` |
 | **Route from the Mac** | SSH tunnel on `127.0.0.1:15432`; public 5432 is closed |
 | **Sibling** | `../../ec2-nginx/weather-sql-explorer/mcp_server` — this server is built on its pattern, deliberately |
 
-The two wide tables are the intended read path:
+The two wide tables are the intended read path, and they exist in **each** schema:
 
 | Table | Rows | Contents |
 |---|---|---|
-| `pbp.play_wide` | 412,761 | kicks fact — kickoffs, punts, field goals, conversions, **dimensions pre-joined** |
-| `pbp.scrimmage_wide` | 1,984,751 | scrimmage fact — rushes, passes, sacks, penalties, **dimensions pre-joined** |
-| `pbp.drive` | 336,818 | one row per drive; spans both facts |
-| `pbp.dim_athlete` | 68,389 | career grain, shared across both leagues |
+| `play_wide` | 321,126 cfb / 91,635 nfl | kicks fact — kickoffs, punts, field goals, conversions, **dimensions pre-joined** |
+| `scrimmage_wide` | 1,533,137 / 451,614 | scrimmage fact — rushes, passes, sacks, penalties, **dimensions pre-joined** |
+| `drive` | 262,593 / 74,225 | one row per drive; spans both facts |
+| `dim_athlete` | 64,840 / 6,495 | career grain **within this league**; a player in both corpora has an unlinked row in each |
 | + 10 more | | the normalised facts, bridges and dimensions |
 
 Counts are as of the 2026-09-25 sync and grow weekly while a season is in
@@ -87,25 +91,83 @@ cd ~/projects/pbp/mcp_server
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 
-# 3b. The role and its grants (idempotent). Runs on the box: it needs to own the
-#     objects, and pbp_ro's session defaults are set per-database.
+# 3b. The two serving schemas, from the system of record. Runs on the box.
+for L in cfb nfl; do
+  ssh awsvm "sudo -u postgres psql -d pbp -v root=/var/lib/pgsql/staging -v league=$L -v schema=$L \
+             -f /var/lib/pgsql/staging/sql/split_leagues.sql"
+done
+
+# 3c. The role and its grants (idempotent). Must run AFTER 3b: split_leagues.sql
+#     does DROP SCHEMA CASCADE, and privileges go with a dropped table.
 ssh awsvm 'sudo -u postgres psql -d pbp -f /var/lib/pgsql/staging/mcp_setup/setup_role_pbp.sql'
 
-# 3c. The caveats, as COMMENTs. Also on the box — COMMENT requires ownership.
-ssh awsvm 'sudo -u postgres psql -d pbp -f /var/lib/pgsql/staging/mcp_setup/comment_tables.sql'
+# 3d. The caveats, as COMMENTs — ONCE PER CORPUS. COMMENT requires ownership.
+for L in cfb nfl; do
+  ssh awsvm "sudo -u postgres psql -d pbp -v schema=$L \
+             -f /var/lib/pgsql/staging/mcp_setup/comment_tables.sql"
+done
 
-# 3d. The credential. pbp_ro is created WITHOUT a password; set one. It is this
+# 3e. The credential. pbp_ro is created WITHOUT a password; set one. It is this
 #     server's role alone, so the value is yours to choose and yours to rotate.
 ssh awsvm "sudo -u postgres psql -d pbp -c \"ALTER ROLE pbp_ro PASSWORD '<value>'\""
 cp .env.example .env && chmod 600 .env       # put the same value in MCP_DB_PASSWORD
 
-# 3e. Verify
-./.venv/bin/python -m pbp_mcp.selftest
+# 3f. Verify — once per corpus. MCP_DB_SCHEMA is required; there is no default.
+MCP_DB_SCHEMA=cfb ./.venv/bin/python -m pbp_mcp.selftest
+MCP_DB_SCHEMA=nfl ./.venv/bin/python -m pbp_mcp.selftest
 ```
 
 `scripts/sync_ec2.py` ships `setup_role_pbp.sql` and `comment_tables.sql` to
 `/var/lib/pgsql/staging/mcp_setup/` and re-runs both on every sync, so steps 3b
 and 3c are only manual on a first install.
+
+### One schema per league, and why the athlete dimension is rebuilt
+
+The two corpora were one schema with a `league` column until 2026-09-25. Splitting
+them removed the single most dangerous thing about this warehouse: **team ids
+collide between the leagues** — 14 of them, including team 2, which is Auburn in
+college and the Buffalo Bills in the NFL — so a join that forgot `league` matched
+both and doubled the answer, silently. Inside one schema there is nothing to get
+wrong, and `search_path` is what selects the corpus.
+
+`sql/split_leagues.sql` projects `pbp.*` into `cfb.*` and `nfl.*`. Every table is
+a filter — **except `dim_athlete`, which is rebuilt**, and that exception is the
+whole reason this is not a set of views:
+
+| | `primary_team_id` | In the NFL | In college |
+|---|---:|---|---|
+| Patrick Mahomes | 12 | Kansas City Chiefs ✓ | **Arizona Wildcats** ✗ — Texas Tech |
+| Josh Allen | 2 | Buffalo Bills ✓ | **Auburn Tigers** ✗ — Wyoming |
+
+`pbp.dim_athlete` is career grain across *both* corpora, so its modal team is
+chosen over a combined career — and because ids collide, resolving that id in the
+other league gives a different real team. A filtered view would state both wrong
+answers confidently. So the per-league dimensions come from the same Python that
+builds the combined one, run once per league:
+
+```bash
+python scripts/build_dims.py athlete --leagues cfb   # -> dim_athlete_cfb.csv
+python scripts/build_dims.py athlete --leagues nfl   # -> dim_athlete_nfl.csv
+```
+
+Reusing that builder rather than porting its modal vote to SQL is deliberate: the
+role canonicalisation, the name vote and the deterministic tie-break are each
+documented in `build_dims.py` as having been got wrong once already.
+
+**The arithmetic that proves the split is right:** 64,840 college + 6,495 NFL =
+71,335 against 68,389 combined. The 2,946 surplus is exactly the cfb+nfl
+population, now one row in each corpus instead of one spanning both.
+`scripts/verify_split.py` asserts that, checksums every fact against the same
+rows of `pbp.*`, and cross-validates the rebuilt dimension against the trusted
+one on the **65,442 single-league athletes where the two must agree exactly**.
+
+**What is given up:** a cross-league career as a single row. That was the
+question this warehouse was keyed to answer and it is now unanswerable from these
+servers — deliberately. It also dissolves a bug rather than fixing it: 928
+athletes had *two* ESPN ids, one per league, which made a quarter of cross-league
+careers silently split anyway.
+
+---
 
 ### Its own role, and why that changed
 
@@ -201,11 +263,11 @@ bash deploy/push.sh --tls        # …and issue the certificate, once DNS resolv
 
 | | |
 |---|---|
-| **Unit** | `pbp-mcp.service`, `Restart=always`, `MemoryMax=360M`, `CPUQuota=60%` |
+| **Units** | `pbp-mcp@cfb` and `pbp-mcp@nfl` from one template, `Restart=always`, `MemoryMax=360M`, `CPUQuota=60%` each |
 | **User** | `pbpmcp` — separate from `weathermcp`, and now holding a *different* credential, so the separation is real |
-| **Endpoint** | `http://127.0.0.1:8771/mcp`, **loopback only, no authentication** |
+| **Endpoints** | `http://127.0.0.1:8771/mcp` (college), `:8772` (NFL). **Loopback only, no authentication** |
 | **Code** | `/opt/pbp-mcp`, `ReadOnlyPaths`, no `.env` — the credential comes from `/etc/pbp-mcp/mcp.env` (mode `640 root:pbpmcp`) |
-| **Connection** | local, so `MCP_DB_HOST=127.0.0.1` and `MCP_DB_PORT=5432` — no tunnel |
+| **Connection** | local, so `MCP_DB_HOST=127.0.0.1` and `MCP_DB_PORT=5432` — no tunnel. `MCP_DB_SCHEMA=%i` picks the corpus |
 
 **`deploy/push.sh` is the code sync story `scripts/sync_ec2.py` does not have**,
 and they are deliberately separate. `sync_ec2.py` ships *data and SQL* — the CSV
@@ -380,7 +442,7 @@ select table_name, string_agg(privilege_type,',') from information_schema.table_
 where grantee='pbp_ro' and table_schema='pbp' group by 1 order by 1;"
 ```
 
-**The grants do not stay granted by themselves.** `sql/wide_tables.sql` does
+**The grants do not stay granted by themselves.** `sql/split_leagues.sql` does
 `DROP TABLE` + `CREATE TABLE AS` on `play_wide`, `scrimmage_wide` and
 `season_status`, and privileges and comments go with a dropped table.
 `scripts/sync_ec2.py` therefore re-runs `setup_role_pbp.sql` and
@@ -420,6 +482,8 @@ rather than letting the kernel's OOM killer pick the website on a box already
 
 | Symptom | Cause |
 |---|---|
+| "MCP_DB_SCHEMA is not set" | This server serves one league and has no default. Set it to `cfb` or `nfl`; on the box it comes from the systemd instance name. |
+| A question about the other league returns nothing | Correct. Each server sees one corpus; `find_team("Buffalo Bills")` returns 0 on the college server. Ask the other endpoint. |
 | "Could not reach Postgres … tunnel is almost certainly down" | Restart the tunnel (§2). The message includes the command. |
 | "Database authentication failed for role pbp_ro" | `MCP_DB_PASSWORD` does not match the role. Unlike the old shared `mcp_ro`, this role is this server's alone, so the weather MCP working tells you nothing — reset it: `sudo -u postgres psql -d pbp -c "ALTER ROLE pbp_ro PASSWORD '…'"`, then update `.env` **and** `/etc/pbp-mcp/mcp.env`. |
 | "pg_hba.conf rejects connection for … user pbp_ro" | the role is bounded to database `pbp` on loopback. Check `MCP_DB_NAME`, and that you are connecting to 127.0.0.1 — a connection arriving on another address is refused by design. |
@@ -456,7 +520,9 @@ mcp_server/
     db.py          pooled read-only connections; `query` (fixed SQL) vs
                    `query_guarded` (validated dynamic SQL) are separate on
                    purpose, so dynamic SQL has exactly one entry point
-    selftest.py    live checks -- run after any change
+    config.py      which corpus this instance serves; validates MCP_DB_SCHEMA
+                   against a fixed tuple and refuses to start on anything else
+    selftest.py    live checks -- run after any change, ONCE PER CORPUS
   deploy/                       on-box deployment; see deploy/README-deploy.md
     push.sh            FROM THE MAC: stage the code, run provision.sh
     provision.sh       ON THE BOX: user, /opt tree, venv, credential, unit,
@@ -472,9 +538,15 @@ mcp_server/
 Elsewhere in the repo, load-bearing for this server:
 
 ```
-sql/wide_tables.sql      builds play_wide / scrimmage_wide / season_status.
-                         DROPS them first, so it revokes grants and comments --
-                         which is why sync_ec2.py re-applies both afterwards.
+sql/split_leagues.sql    builds cfb.* and nfl.* from pbp.*, one league per run.
+                         DROP SCHEMA ... CASCADE first, so it revokes grants and
+                         comments -- which is why sync_ec2.py re-applies both
+                         afterwards. Replaced sql/wide_tables.sql.
+scripts/verify_split.py  proves the two schemas are a faithful, lossless split of
+                         the system of record. Run after any rebuild.
+scripts/build_dims.py    `athlete --leagues <one league>` builds the per-league
+                         dimension split_leagues.sql loads. NOT a filter of the
+                         combined one -- see section 3.
 scripts/sync_ec2.py      pushes local Postgres -> the EC2 mirror and rebuilds
                          the serving layer. The only supported way to refresh.
                          It ships DATA and SQL, never this server's code --

@@ -1,6 +1,15 @@
-# The pbp MCP server, as an HTTP service on the loopback.
+# The pbp MCP server, as an HTTP service on the loopback. ONE INSTANCE PER LEAGUE.
 #
-# Install to /etc/systemd/system/pbp-mcp.service (provision.sh does this).
+# Install to /etc/systemd/system/pbp-mcp@.service (provision.sh does this), then:
+#
+#     systemctl enable --now pbp-mcp@cfb    # 127.0.0.1:8771, schema cfb
+#     systemctl enable --now pbp-mcp@nfl    # 127.0.0.1:8772, schema nfl
+#
+# A TEMPLATE, not two units, because the two are the same program over the same
+# credential against two schemas of identical shape -- scripts/verify_split.py
+# asserts that shape is identical, which is what makes one unit file honest.
+# `%i` is the instance name and is BOTH the schema name and the key to the port
+# file, so `pbp-mcp@cfb` cannot accidentally serve the NFL corpus.
 #
 # RUNS AS ITS OWN USER, AND THAT IS NOW ACTUALLY WORTH SOMETHING.
 # `weathermcp` and `pbpmcp` are separate users so neither can read the other's
@@ -14,7 +23,7 @@
 # key and no database credential at all, exactly as sqlxapp does for weather.
 
 [Unit]
-Description=Play-by-play warehouse MCP server (read-only SQL tools over HTTP)
+Description=Play-by-play MCP server, %i corpus (read-only SQL tools over HTTP)
 Documentation=file:///opt/pbp-mcp/README.md
 After=network-online.target postgresql.service
 Wants=network-online.target
@@ -43,19 +52,28 @@ Environment=MCP_DB_PORT=5432
 Environment=MCP_DB_USER=pbp_ro
 Environment=MCP_DB_NAME=pbp
 Environment=MCP_HTTP_HOST=127.0.0.1
-Environment=MCP_HTTP_PORT=8771
 Environment=PYTHONUNBUFFERED=1
 
-# Holds only MCP_DB_PASSWORD. Mode 640 root:pbpmcp.
+# WHICH CORPUS. config.py validates this against a fixed tuple and refuses to
+# start on anything else, so a typo in the instance name is a failed start rather
+# than a server quietly answering from the wrong league.
+Environment=MCP_DB_SCHEMA=%i
+
+# Holds only MCP_DB_PASSWORD. Mode 640 root:pbpmcp, shared by both instances --
+# one role (pbp_ro) reads both schemas; see setup_role_pbp.sql for why that is
+# not two roles.
 EnvironmentFile=/etc/pbp-mcp/mcp.env
+# Holds only MCP_HTTP_PORT: 8771 for cfb, 8772 for nfl. Per instance, because
+# systemd cannot do arithmetic on %i and two services cannot share a port.
+EnvironmentFile=/etc/pbp-mcp/port-%i.env
 
 ExecStart=/opt/pbp-mcp/.venv/bin/python -m pbp_mcp.server --http
 
 Restart=always
 RestartSec=5s
 
-# Higher than weather-mcp's 160M/240M, and measured rather than guessed: this
-# corpus is 2.37M plays against weather's 9.1M narrow observations, and
+# Higher than weather-mcp's 160M/240M, and measured rather than guessed: the
+# college corpus is 1.85M plays against weather's 9.1M narrow observations, and
 # guard.MAX_LIMIT allows 2,000 rows of play_text, which is megabytes of Python
 # str per result. The ceiling is here so a runaway result set kills THIS service
 # rather than letting the kernel's OOM killer choose -- on a 3.8 GB box already

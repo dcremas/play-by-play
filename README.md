@@ -40,7 +40,7 @@ implementation notes) are kept, but nothing here depends on them.
 | **Grain** | one row per play, per league. Kicks: `kickoff` \| `punt` \| `field_goal` \| `pat` \| `two_point` \| `defensive_conversion`. Scrimmage: `rush` \| `pass` \| `sack` \| `penalty` \| `other` |
 | **Window** | 2014–2026 in both leagues. 2026 is in progress in both and flagged as such |
 | **Source** | ESPN site API (play text, venue) + ESPN core API (per-play athlete ids, athlete identity), under `college-football` and `nfl`. No API key, no other feed |
-| **Warehouse** | PostgreSQL 18.6, database `pbp`, schema `pbp`, 11 tables. Mirrored to PostgreSQL 16.15 on the EC2 box ([runbook H](#h-push-the-warehouse-to-the-ec2-mirror)), where three derived serving tables bring it to 14 and `pbp-mcp.service` reads them over the loopback |
+| **Warehouse** | PostgreSQL 18.6, database `pbp`, schema `pbp`, 11 tables — **the system of record**. Mirrored to PostgreSQL 16.15 on the EC2 box ([runbook H](#h-push-the-warehouse-to-the-ec2-mirror)), where `sql/split_leagues.sql` projects it into two per-league serving schemas, `cfb` and `nfl`, of 14 tables each. `pbp-mcp@cfb` and `pbp-mcp@nfl` read one corpus apiece over the loopback |
 | **Read path** | `data/out/pbp.duckdb` — wide `play` and `scrimmage` tables plus `drive`, 373 MB, rebuilt from Postgres in one command |
 | **Parse quality** | kicks: **98.04% `exact` college, 98.19% NFL**. Two different dialects, two parser modules. Scrimmage needs no parser in either league — `statYardage` and `down` are structured fields at 100% coverage |
 | **People** | one shared `dim_athlete` of 66,426 athletes, 100% named and positioned from ESPN; 32,582 appear in both facts and 2,779 in both leagues. 98.7% of college kicks and 99.9% of NFL kicks carry a kicker id |
@@ -124,6 +124,8 @@ pbp/
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
 │   ├── sync_ec2.py            local Postgres -> the EC2 mirror, then the serving
 │   │                          layer, the grants and the comments. Runbook H.
+│   ├── verify_split.py        proves cfb.*/nfl.* are a faithful, lossless split
+│   │                          of the system of record. Run after any rebuild.
 │   ├── verify_mirror.py       diffs both catalogs and checksums every row, local
 │   │                          vs mirror. The deep check behind runbook H.
 │   └── build_erd.py           live Postgres                -> reports/pbp_erd.pdf (2 sheets)
@@ -137,7 +139,7 @@ pbp/
 │   │                                               -v season=. Dims + both facts + bridge
 │   │                                               + drives + enrichment, one transaction
 │   ├── load_athletes_league.sql                  ★ the shared dimension + both bridges
-│   ├── wide_tables.sql                           the EC2 serving layer: play_wide,
+│   ├── split_leagues.sql                         the serving layer: cfb.* and nfl.*,
 │   │                                             scrimmage_wide, season_status. The
 │   │                                             Postgres twins of the DuckDB snapshot's
 │   │                                             tables -- change one, change the other
@@ -1649,7 +1651,7 @@ MCP server — and anything else without a tunnel to this laptop — can read th
 ```
 
 It stages the CSV extracts on the box, replays `load_league.sql` and
-`load_athletes_league.sql` there, rebuilds `sql/wide_tables.sql`, re-applies the grants and
+`load_athletes_league.sql` there, rebuilds both schemas with `sql/split_leagues.sql`, re-applies the grants and
 the comments, and finishes by **reconciling every table's row count against local Postgres
 and failing if any differ**. That last step is the one that makes it a mirror rather than an
 approximation — everything before it can succeed and still leave a silent shortfall.
@@ -1670,10 +1672,10 @@ Four things about it are worth knowing before the first run:
 3. **A full run takes about an hour**, nearly all of it in the closing enrichment `UPDATE`
    on `scrimmage_play` — 1.5M rows against ten indexes on 2 vCPU. A `--season` run is quick.
 
-4. **`wide_tables.sql` DROPs the three serving tables**, and privileges and comments go with
-   a dropped table. `sync_ec2.py` re-runs `setup_role_pbp.sql` and `comment_tables.sql`
-   immediately afterwards for exactly that reason. Reorder those steps and the next sync
-   silently revokes the MCP server's access to the tables it depends on most.
+4. **`split_leagues.sql` does `DROP SCHEMA ... CASCADE`**, and privileges and comments go
+   with a dropped table. `sync_ec2.py` re-runs `setup_role_pbp.sql` and `comment_tables.sql`
+   (once per league) immediately afterwards for exactly that reason. Reorder those steps and
+   the next sync silently revokes both MCP servers' access to everything.
 
 The schema itself was applied once, from `pg_dump --schema-only` with the single PG17+ line
 (`SET transaction_timeout`) stripped. Nothing else in the DDL was version-sensitive.
@@ -2324,7 +2326,7 @@ That half was the work. See [Runbook H](#h-push-the-warehouse-to-the-ec2-mirror)
 | "a small job" | **right for the server, wrong for the job.** The server is ~1,900 lines; getting the data reachable was the larger half |
 | *(not considered)* | **local runs PostgreSQL 18, the EC2 box runs 16.** `pg_dump` from here cannot be restored there — that is the unsupported direction. Mirroring replays the CSV extracts through the existing loaders instead, which sidesteps version skew entirely and reuses code `verify.sql` already trusts |
 | *(not considered)* | **the loaders were already remote-ready and nobody knew.** `load_league.sql` takes `-v root=`, so pointing it at a staging directory on the box needed no change to any loader. Its own header had already worked out why `\copy` cannot be used, which is the thing that would otherwise have been rediscovered the hard way |
-| *(not considered)* | **a view over the facts is too slow on a 2-vCPU box.** `sql/wide_tables.sql` materialises the two wide tables instead, ~2 GB, mirroring what `build_snapshot.py` does for DuckDB |
+| *(not considered)* | **a view over the facts is too slow on a 2-vCPU box.** `sql/split_leagues.sql` materialises the wide tables instead, mirroring what `build_snapshot.py` does for DuckDB |
 
 **The one live cost worth knowing.** `load_league.sql`'s closing enrichment `UPDATE` rewrites
 every row of `scrimmage_play` with ten indexes on it, which takes ~2 minutes locally and

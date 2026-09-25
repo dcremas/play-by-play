@@ -65,7 +65,13 @@ DIM_EXTRACTS = ["dim_venue{L}.csv", "dim_team{L}.csv", "dim_conference{L}.csv",
                 "dim_team_season{L}.csv"]
 # The athlete link spans both leagues and both facts, so it is never league-scoped.
 ATHLETE_EXTRACTS = ["dim_athlete.csv", "play_athlete.csv", "play_athlete_nfl.csv",
-                    "play_athlete_wide.csv", "play_athlete_wide_nfl.csv"]
+                    "play_athlete_wide.csv", "play_athlete_wide_nfl.csv",
+                    # The per-league dimensions sql/split_leagues.sql loads. Built by
+                    # `build_dims.py athlete --leagues <one league>`; they are NOT filters of
+                    # dim_athlete.csv and cannot be derived from it -- see that file's header
+                    # for why (primary_team_id is chosen across a combined career, and team
+                    # ids collide between the leagues).
+                    "dim_athlete_cfb.csv", "dim_athlete_nfl.csv"]
 
 
 def suffix(league: str) -> str:
@@ -136,8 +142,8 @@ def remote_psql_path(path: str, label_vars: tuple[str, ...] = ()) -> list[str]:
 def transfer_sql(dry: bool) -> None:
     """Ship both SQL trees: the loaders, and the MCP's grant/comment scripts.
 
-    The second pair matters as much as the first -- sql/wide_tables.sql drops three
-    tables, and privileges and comments go with a dropped table.
+    The second pair matters as much as the first -- sql/split_leagues.sql does
+    DROP SCHEMA ... CASCADE, and privileges and comments go with a dropped table.
     """
     run(["rsync", "-az", "--rsync-path=sudo rsync", f"{HOME}/sql/",
          f"{SSH_HOST}:{REMOTE_ROOT}/sql/"], dry, "transfer sql/")
@@ -197,8 +203,13 @@ def main() -> None:
         run(remote_psql("sql/load_athletes_league.sql"), dry, "athlete dimension")
 
     # ------------------------------------------------------------ 4. the serving layer
-    # DROPs and recreates play_wide / scrimmage_wide / season_status.
-    run(remote_psql("sql/wide_tables.sql"), dry, "wide tables")
+    # DROPs and recreates the two per-league schemas, cfb.* and nfl.*, and drops the
+    # combined wide tables they replace. Both leagues are rebuilt whichever league was
+    # loaded: `dim_venue` and the athlete dimension are shared upstream, so a college-only
+    # sync can still change what the NFL schema should contain.
+    for league in ("cfb", "nfl"):
+        run(remote_psql("sql/split_leagues.sql", f"league={league}", f"schema={league}"),
+            dry, f"build schema {league}")
 
     # ------------------------------------------------------------ 5. re-grant, re-comment
     # PRIVILEGES AND COMMENTS GO WITH A DROPPED TABLE, and step 4 drops three of
@@ -206,8 +217,12 @@ def main() -> None:
     # it depends on most, with no error until the next question.
     run(remote_psql_path(f"{REMOTE_ROOT}/mcp_setup/setup_role_pbp.sql"),
         dry, "re-grant mcp_ro")
-    run(remote_psql_path(f"{REMOTE_ROOT}/mcp_setup/comment_tables.sql"),
-        dry, "re-apply comments")
+    # Once per corpus: the comments carry the NULL semantics and the conference trap,
+    # and describe_table is where a model reads them. A schema without them is a schema
+    # whose caveats silently do not exist.
+    for league in ("cfb", "nfl"):
+        run(remote_psql_path(f"{REMOTE_ROOT}/mcp_setup/comment_tables.sql", (f"schema={league}",)),
+            dry, f"re-apply comments ({league})")
 
     # ------------------------------------------------------------ 6. reconcile
     if not dry:

@@ -68,9 +68,11 @@ $$;
 ALTER ROLE pbp_ro IN DATABASE pbp SET default_transaction_read_only = on;
 ALTER ROLE pbp_ro IN DATABASE pbp SET statement_timeout = '60s';
 ALTER ROLE pbp_ro IN DATABASE pbp SET idle_in_transaction_session_timeout = '60s';
--- So an unqualified table name in run_sql resolves the way guard.DEFAULT_SCHEMA
--- assumes it does.
-ALTER ROLE pbp_ro IN DATABASE pbp SET search_path = pbp;
+-- NO search_path DEFAULT IS SET HERE ANY MORE, and that is deliberate. One role serves two
+-- corpora, so a role-level default would silently be wrong for one of them. db.py sets
+-- `-c search_path=<schema>` per connection from MCP_DB_SCHEMA instead, which is also what
+-- makes the setting impossible to disagree with the guard's allow-list.
+ALTER ROLE pbp_ro IN DATABASE pbp RESET search_path;
 
 -- A public endpoint is where a runaway plan actually shows up. Neither of these
 -- is a security control -- they bound one honest question's blast radius on a
@@ -83,41 +85,55 @@ ALTER ROLE pbp_ro IN DATABASE pbp SET temp_file_limit = '2GB';
 ALTER ROLE pbp_ro IN DATABASE pbp SET max_parallel_workers_per_gather = 1;
 
 -- ---------------------------------------------------------------- grants
-GRANT CONNECT ON DATABASE pbp TO pbp_ro;
-GRANT USAGE   ON SCHEMA pbp   TO pbp_ro;
-
--- SELECT and nothing else, named table by table rather than with ALL TABLES.
--- Explicit is the point: a new table appearing in this schema is NOT readable
--- until someone adds it here and to guard.ALLOWED_TABLES, which is how a table
--- that was not meant to be exposed stays unexposed.
-GRANT SELECT ON
-    pbp.play_wide,
-    pbp.scrimmage_wide,
-    pbp.season_status,
-    pbp.special_teams_play,
-    pbp.scrimmage_play,
-    pbp.drive,
-    pbp.play_athlete,
-    pbp.scrimmage_athlete,
-    pbp.dim_athlete,
-    pbp.dim_team,
-    pbp.dim_team_season,
-    pbp.dim_conference,
-    pbp.dim_venue,
-    pbp.fact_game
-TO pbp_ro;
-
--- Deliberately NOT granted: any future staging table (pbp.stg_*), and default
--- privileges. A table created by a later load is unreadable until granted, which
--- is the behaviour we want -- an in-flight staging table should never be visible
--- to a question.
 --
--- NOTE: sql/wide_tables.sql DROPs and recreates play_wide, scrimmage_wide and
--- season_status on every run, and PRIVILEGES GO WITH A DROPPED TABLE. That file
--- therefore has to re-grant them, or the next rebuild silently revokes the MCP's
--- access to exactly the three tables it depends on most. scripts/sync_ec2.py runs
--- this file after wide_tables.sql for that reason, and selftest.py's
--- "all tables readable" check is what catches it if someone changes that order.
+-- GRANTED ON THE TWO PER-LEAGUE SCHEMAS, NOT ON pbp.
+--
+-- `pbp` is the system of record -- eleven normalised tables the loaders build. The MCP
+-- servers read the derived per-league serving layer instead (sql/split_leagues.sql), so
+-- pbp_ro has no reason to see pbp.* at all and its access there is revoked below. The
+-- practical effect: a question can be answered about college football or about the NFL,
+-- and there is no table reachable from either server that contains both.
+--
+-- ONE ROLE FOR BOTH SCHEMAS, deliberately. Two roles would mean two credentials, two
+-- systemd EnvironmentFiles and two rotations, and would buy isolation between two servers
+-- that are equally trusted, run as the same service user and read the same public corpus.
+-- The separation that matters -- this warehouse from the weather warehouse -- is already
+-- made by pbp_ro vs mcp_ro and enforced in pg_hba.conf. What keeps a college server out of
+-- the NFL tables is `search_path` pinned to one schema plus guard.ALLOWED_TABLES, which is
+-- built from that schema alone; a query naming the other corpus is refused by name.
+GRANT CONNECT ON DATABASE pbp TO pbp_ro;
+GRANT USAGE   ON SCHEMA cfb   TO pbp_ro;
+GRANT USAGE   ON SCHEMA nfl   TO pbp_ro;
+
+-- Named table by table rather than with ALL TABLES, in both schemas. Explicit is the
+-- point: a new table appearing in either schema is NOT readable until someone adds it here
+-- and to guard.READABLE, which is how a table that was not meant to be exposed stays
+-- unexposed. selftest.py compares the two lists and fails if they drift.
+DO $$
+DECLARE s text; t text;
+BEGIN
+    FOREACH s IN ARRAY ARRAY['cfb','nfl'] LOOP
+        FOREACH t IN ARRAY ARRAY[
+            'play_wide','scrimmage_wide','season_status',
+            'special_teams_play','scrimmage_play','drive',
+            'play_athlete','scrimmage_athlete',
+            'dim_athlete','dim_team','dim_team_season','dim_conference','dim_venue',
+            'fact_game'] LOOP
+            EXECUTE format('GRANT SELECT ON %I.%I TO pbp_ro', s, t);
+        END LOOP;
+    END LOOP;
+END $$;
+
+-- sql/split_leagues.sql does DROP SCHEMA ... CASCADE and rebuilds, and PRIVILEGES GO WITH A
+-- DROPPED TABLE. scripts/sync_ec2.py therefore runs this file after it, every time. If
+-- someone reorders those steps the next sync silently revokes both servers' access to
+-- everything, and selftest.py's "guard allow-list matches the grants" check is what catches
+-- it.
+
+-- The system of record is not for the MCP. Revoked rather than merely unused, so the
+-- servers cannot reach a `league` column even by accident.
+REVOKE ALL ON ALL TABLES IN SCHEMA pbp FROM pbp_ro;
+REVOKE ALL ON SCHEMA pbp                FROM pbp_ro;
 
 -- ---------------------------------------------------------------- retire mcp_ro here
 --
@@ -145,12 +161,11 @@ $$;
 
 -- ---------------------------------------------------------------- proof
 \echo ''
-\echo '=== pbp_ro privileges on pbp (expect SELECT on 14 tables, nothing else)'
-SELECT table_name, string_agg(privilege_type, ',' ORDER BY privilege_type) AS privs
+\echo '=== pbp_ro privileges (expect SELECT on 14 tables in EACH of cfb and nfl, and none in pbp)'
+SELECT table_schema, count(*) AS tables_readable
 FROM information_schema.table_privileges
-WHERE grantee = 'pbp_ro' AND table_schema = 'pbp'
-GROUP BY table_name
-ORDER BY table_name;
+WHERE grantee = 'pbp_ro' AND privilege_type = 'SELECT'
+GROUP BY table_schema ORDER BY table_schema;
 
 \echo '=== mcp_ro privileges on pbp (expect ZERO rows)'
 SELECT table_name, privilege_type

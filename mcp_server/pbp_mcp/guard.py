@@ -44,6 +44,8 @@ except ModuleNotFoundError as _exc:  # pragma: no cover - dependency is pinned
         "without it rather than falling back to pattern matching."
     ) from _exc
 
+from . import config
+
 DIALECT = "postgres"
 
 # Every relation run_sql may read, as schema.table. This is the same set the
@@ -60,32 +62,42 @@ DIALECT = "postgres"
 # already resolved at build time, so a query against them cannot get it wrong.
 # The normalised tables stay readable because auditing needs them, but the wide
 # tables are what the tool descriptions point at.
-ALLOWED_TABLES: frozenset[str] = frozenset(
-    {
-        # the two facts, dimensions pre-joined -- prefer these
-        "pbp.play_wide",
-        "pbp.scrimmage_wide",
-        # the normalised facts
-        "pbp.special_teams_play",
-        "pbp.scrimmage_play",
-        "pbp.drive",
-        # the people bridges
-        "pbp.play_athlete",
-        "pbp.scrimmage_athlete",
-        # dimensions
-        "pbp.dim_athlete",
-        "pbp.dim_team",
-        "pbp.dim_team_season",
-        "pbp.dim_conference",
-        "pbp.dim_venue",
-        "pbp.fact_game",
-        # derived helper
-        "pbp.season_status",
-    }
+# The fourteen relations, by bare name. Schema-qualified below against whichever
+# corpus this instance serves, so ONE list covers both cfb.* and nfl.* -- they are
+# identical in shape by construction, which scripts/verify_split.py asserts.
+READABLE: tuple[str, ...] = (
+    # the two facts, dimensions pre-joined -- prefer these
+    "play_wide",
+    "scrimmage_wide",
+    # the normalised facts
+    "special_teams_play",
+    "scrimmage_play",
+    "drive",
+    # the bridges
+    "play_athlete",
+    "scrimmage_athlete",
+    # dimensions
+    "dim_athlete",
+    "dim_team",
+    "dim_team_season",
+    "dim_conference",
+    "dim_venue",
+    "fact_game",
+    # derived helper
+    "season_status",
 )
 
-# Unqualified names resolve against pbp, matching the search_path set on the role.
-DEFAULT_SCHEMA = "pbp"
+# Qualified against THIS server's corpus only. The other league's schema is not in
+# here, so `SELECT * FROM nfl.play_wide` on the college server is refused by name
+# rather than by privilege -- the two corpora are separate and a query reaching
+# across them is a mistake worth naming as one.
+ALLOWED_TABLES: frozenset[str] = frozenset(
+    f"{config.SCHEMA}.{t}" for t in READABLE
+)
+
+# Unqualified names resolve against this instance's corpus, matching the
+# search_path db.py sets on every connection.
+DEFAULT_SCHEMA = config.SCHEMA
 
 # The database run_sql connects to. A three-part name naming this database is
 # redundant but legal; naming any other one is a cross-database reference that

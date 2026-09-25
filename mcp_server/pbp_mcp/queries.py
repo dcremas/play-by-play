@@ -49,8 +49,8 @@ LEAGUES = ("cfb", "nfl")
 
 # fact name -> the wide table it reads. Callers name a fact; they never name a table.
 FACTS = {
-    "kicks": "pbp.play_wide",
-    "scrimmage": "pbp.scrimmage_wide",
+    "kicks": "play_wide",
+    "scrimmage": "scrimmage_wide",
 }
 
 KICK_KINDS = ("kickoff", "punt", "field_goal", "pat", "two_point", "defensive_conversion")
@@ -108,6 +108,10 @@ TABLE_NOTES = {
 # why guard.py can block information_schema outright while describe_table still
 # works: the catalogs are reachable from here, never from run_sql.
 
+# current_schema() rather than a literal or a bound parameter. db.py pins
+# search_path to EXACTLY ONE schema per connection (see config.py), so
+# current_schema() is that corpus and cannot disagree with guard.ALLOWED_TABLES --
+# which is the failure mode a second source of truth would introduce here.
 LIST_SCHEMA = """
 SELECT c.relname AS table_name,
        CASE WHEN c.reltuples < 0 THEN NULL
@@ -116,7 +120,7 @@ SELECT c.relname AS table_name,
        obj_description(c.oid, 'pg_class')       AS description
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'pbp'
+WHERE n.nspname = current_schema()
   AND c.relkind IN ('r', 'v', 'm', 'p')
   AND has_table_privilege(c.oid, 'SELECT')
 ORDER BY c.relname
@@ -130,7 +134,7 @@ SELECT a.attname                                   AS column_name,
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_attribute a ON a.attrelid = c.oid
-WHERE n.nspname = 'pbp'
+WHERE n.nspname = current_schema()
   AND c.relname = %s
   AND a.attnum > 0
   AND NOT a.attisdropped
@@ -145,43 +149,39 @@ SELECT c.relname AS table_name,
        obj_description(c.oid, 'pg_class') AS description
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'pbp' AND c.relname = %s
+WHERE n.nspname = current_schema() AND c.relname = %s
   AND has_table_privilege(c.oid, 'SELECT')
 """
 
 # --------------------------------------------------------------------------- coverage
 
 DATA_COVERAGE = """
-SELECT league, season, games, plays AS kicks, last_regular_week,
+SELECT season, games, plays AS kicks, last_regular_week,
        last_kickoff, is_in_progress,
        (now()::date - last_kickoff::date) AS days_since_last_game
-FROM pbp.season_status
-ORDER BY league, season
+FROM season_status
+ORDER BY season
 """
 
 CORPUS_TOTALS = """
-SELECT league,
-       (SELECT count(*) FROM pbp.play_wide      w WHERE w.league = s.league) AS kick_plays,
-       (SELECT count(*) FROM pbp.scrimmage_wide w WHERE w.league = s.league) AS scrimmage_plays,
-       (SELECT count(*) FROM pbp.fact_game      g WHERE g.league = s.league) AS games,
-       (SELECT min(season) FROM pbp.season_status x WHERE x.league = s.league) AS first_season,
-       (SELECT max(season) FROM pbp.season_status x WHERE x.league = s.league) AS last_season
-FROM (SELECT DISTINCT league FROM pbp.season_status) s
-ORDER BY league
+SELECT (SELECT count(*)   FROM play_wide)      AS kick_plays,
+       (SELECT count(*)   FROM scrimmage_wide) AS scrimmage_plays,
+       (SELECT count(*)   FROM fact_game)      AS games,
+       (SELECT min(season) FROM season_status) AS first_season,
+       (SELECT max(season) FROM season_status) AS last_season
 """
 
 # --------------------------------------------------------------------------- discovery
 
 FIND_TEAM = """
-SELECT t.league, t.team_id, t.display_name,
+SELECT t.team_id, t.display_name,
        ts.season, ts.conference_name, ts.ncaa_division, ts.nfl_division
-FROM pbp.dim_team t
-LEFT JOIN pbp.dim_team_season ts
-       ON ts.team_id = t.team_id AND ts.league = t.league
-      AND ts.season = COALESCE(%(season)s::int, (SELECT max(season) FROM pbp.dim_team_season
-                                             WHERE team_id = t.team_id AND league = t.league))
-WHERE (%(league)s::text IS NULL OR t.league = %(league)s)
-  AND (%(q)s::text IS NULL OR t.display_name ILIKE '%%' || %(q)s || '%%')
+FROM dim_team t
+LEFT JOIN dim_team_season ts
+       ON ts.team_id = t.team_id
+      AND ts.season = COALESCE(%(season)s::int, (SELECT max(season) FROM dim_team_season
+                                             WHERE team_id = t.team_id))
+WHERE (%(q)s::text IS NULL OR t.display_name ILIKE '%%' || %(q)s || '%%')
 -- Relevance, not alphabetical, and DIVISION is the signal that matters.
 -- "Alabama" ordered by name answers with "Alabama A&M Bulldogs" -- an FCS
 -- programme with 67 plays in the corpus -- ahead of the Crimson Tide, because A
@@ -195,7 +195,7 @@ ORDER BY CASE WHEN %(q)s::text IS NOT NULL
                    THEN 0 ELSE 1 END,
          CASE WHEN %(q)s::text IS NOT NULL
                    AND t.display_name ILIKE %(q)s || '%%'   THEN 0 ELSE 1 END,
-         t.league, t.display_name
+         t.display_name
 LIMIT %(limit)s
 """
 
@@ -203,34 +203,14 @@ LIMIT %(limit)s
 # column is what makes a cross-league career visible in one row.
 FIND_PLAYER = """
 SELECT a.athlete_id, a.known_name, a.full_name, a.position, a.jersey,
-       a.primary_role, a.leagues, a.first_season, a.last_season,
-       a.st_plays, a.scrimmage_plays, a.nfl_plays,
-       t.display_name AS primary_team, t.league AS primary_team_league
-FROM pbp.dim_athlete a
-LEFT JOIN LATERAL (
-    -- Resolve primary_team_id to ONE team. dim_athlete carries no league of its own,
-    -- so prefer the league the athlete actually played in; for a cfb+nfl career, or
-    -- a tie, fall back to a deterministic order rather than returning both rows.
-    SELECT dt.display_name, dt.league
-    FROM pbp.dim_team dt
-    WHERE dt.team_id = a.primary_team_id
-    ORDER BY (dt.league = CASE
-        -- primary_team_id is the athlete's MODAL team across the whole career, so
-        -- the league it belongs to is whichever league they played more in -- not
-        -- simply 'cfb' because the career started there. Patrick Mahomes is
-        -- primary_team_id 12 with 7,156 NFL plays against 1,774 college ones: that
-        -- is Kansas City. Preferring cfb resolves 12 to the Arizona Wildcats, which
-        -- is a different real team and looks entirely plausible.
-        WHEN coalesce(a.nfl_plays, 0) * 2
-             > coalesce(a.st_plays, 0) + coalesce(a.scrimmage_plays, 0)
-        THEN 'nfl' ELSE 'cfb' END) DESC,
-             dt.league
-    LIMIT 1
-) t ON true
+       a.primary_role, a.first_season, a.last_season,
+       a.st_plays, a.scrimmage_plays,
+       t.display_name AS primary_team
+FROM dim_athlete a
+LEFT JOIN dim_team t ON t.team_id = a.primary_team_id
 WHERE (%(name)s::text     IS NULL OR a.known_name ILIKE '%%' || %(name)s || '%%'
                             OR a.full_name  ILIKE '%%' || %(name)s || '%%')
   AND (%(position)s::text IS NULL OR a.position   ILIKE %(position)s)
-  AND (%(league)s::text   IS NULL OR a.leagues     = %(league)s OR a.leagues = 'cfb+nfl')
   AND (%(season)s::int   IS NULL OR (a.first_season <= %(season)s AND a.last_season >= %(season)s))
 ORDER BY (a.st_plays + a.scrimmage_plays) DESC NULLS LAST
 LIMIT %(limit)s
@@ -239,8 +219,8 @@ LIMIT %(limit)s
 FIND_VENUE = """
 SELECT v.venue_id, v.venue_name, v.city, v.state, v.zip, v.country,
        v.surface, v.indoor,
-       (SELECT count(*) FROM pbp.fact_game g WHERE g.venue_id = v.venue_id) AS games
-FROM pbp.dim_venue v
+       (SELECT count(*) FROM fact_game g WHERE g.venue_id = v.venue_id) AS games
+FROM dim_venue v
 WHERE (%(q)s::text      IS NULL OR v.venue_name ILIKE '%%' || %(q)s || '%%'
                           OR v.city       ILIKE '%%' || %(q)s || '%%')
   AND (%(state)s::text  IS NULL OR v.state  = %(state)s)
@@ -250,30 +230,29 @@ LIMIT %(limit)s
 """
 
 LIST_CONFERENCES = """
-SELECT c.league, c.conference_id, c.conference_name, c.short_name,
+SELECT c.conference_id, c.conference_name, c.short_name,
        count(DISTINCT ts.team_id) AS teams
-FROM pbp.dim_conference c
-LEFT JOIN pbp.dim_team_season ts
-       ON ts.conference_id = c.conference_id AND ts.league = c.league
+FROM dim_conference c
+LEFT JOIN dim_team_season ts
+       ON ts.conference_id = c.conference_id
       AND (%(season)s::int IS NULL OR ts.season = %(season)s)
-WHERE (%(league)s::text IS NULL OR c.league = %(league)s)
-GROUP BY c.league, c.conference_id, c.conference_name, c.short_name
-ORDER BY c.league, c.conference_name
+GROUP BY c.conference_id, c.conference_name, c.short_name
+ORDER BY c.conference_name
 """
 
 # --------------------------------------------------------------------------- games
 
 LIST_GAMES = """
-SELECT g.game_id, g.league, g.season, g.week, g.season_type, g.kickoff_utc,
+SELECT g.game_id, g.season, g.week, g.season_type, g.kickoff_utc,
        h.display_name AS home_team, g.home_team_id,
        a.display_name AS away_team, g.away_team_id,
        v.venue_name, v.city AS venue_city, v.state AS venue_state, v.indoor AS venue_indoor,
        g.attendance, g.neutral_site, g.conference_game
-FROM pbp.fact_game g
-LEFT JOIN pbp.dim_team  h ON h.team_id = g.home_team_id AND h.league = g.league
-LEFT JOIN pbp.dim_team  a ON a.team_id = g.away_team_id AND a.league = g.league
-LEFT JOIN pbp.dim_venue v ON v.venue_id = g.venue_id
-WHERE (%(league)s::text      IS NULL OR g.league      = %(league)s)
+FROM fact_game g
+LEFT JOIN dim_team  h ON h.team_id = g.home_team_id
+LEFT JOIN dim_team  a ON a.team_id = g.away_team_id
+LEFT JOIN dim_venue v ON v.venue_id = g.venue_id
+WHERE TRUE
   AND (%(season)s::int      IS NULL OR g.season      = %(season)s)
   AND (%(week)s::int        IS NULL OR g.week        = %(week)s)
   AND (%(season_type)s::text IS NULL OR g.season_type = %(season_type)s)
@@ -283,21 +262,21 @@ LIMIT %(limit)s
 """
 
 GAME_HEADER = """
-SELECT g.game_id, g.league, g.season, g.week, g.season_type, g.kickoff_utc,
+SELECT g.game_id, g.season, g.week, g.season_type, g.kickoff_utc,
        h.display_name AS home_team, g.home_team_id,
        a.display_name AS away_team, g.away_team_id,
        hs.conference_name AS home_conference, as_.conference_name AS away_conference,
        v.venue_name, v.city AS venue_city, v.state AS venue_state,
        v.surface, v.indoor AS venue_indoor,
        g.attendance, g.neutral_site, g.conference_game
-FROM pbp.fact_game g
-LEFT JOIN pbp.dim_team  h ON h.team_id = g.home_team_id AND h.league = g.league
-LEFT JOIN pbp.dim_team  a ON a.team_id = g.away_team_id AND a.league = g.league
-LEFT JOIN pbp.dim_team_season hs
-       ON hs.team_id = g.home_team_id AND hs.season = g.season AND hs.league = g.league
-LEFT JOIN pbp.dim_team_season as_
-       ON as_.team_id = g.away_team_id AND as_.season = g.season AND as_.league = g.league
-LEFT JOIN pbp.dim_venue v ON v.venue_id = g.venue_id
+FROM fact_game g
+LEFT JOIN dim_team  h ON h.team_id = g.home_team_id
+LEFT JOIN dim_team  a ON a.team_id = g.away_team_id
+LEFT JOIN dim_team_season hs
+       ON hs.team_id = g.home_team_id AND hs.season = g.season
+LEFT JOIN dim_team_season as_
+       ON as_.team_id = g.away_team_id AND as_.season = g.season
+LEFT JOIN dim_venue v ON v.venue_id = g.venue_id
 WHERE g.game_id = %s
 """
 
@@ -312,13 +291,13 @@ WITH scrim AS (
     -- "the offence lost 6". Summing it unfiltered deducts those points from a team that
     -- simply failed to score, and the game total comes out low by 6 for every one.
     SELECT offense_team_id AS team_id, sum(points_scored) AS pts
-    FROM pbp.scrimmage_wide
+    FROM scrimmage_wide
     WHERE game_id = %(game_id)s AND points_scored > 0
     GROUP BY 1
     UNION ALL
     -- the other side of the same rows: flip the negative onto the team that did score
     SELECT defense_team_id, -sum(points_scored)
-    FROM pbp.scrimmage_wide
+    FROM scrimmage_wide
     WHERE game_id = %(game_id)s AND points_scored < 0
     GROUP BY 1
 ), kicks AS (
@@ -327,20 +306,20 @@ WITH scrim AS (
                     WHEN play_kind = 'pat'        AND converted     THEN 1
                     WHEN play_kind = 'two_point'  AND converted     THEN 2
                     ELSE 0 END) AS pts
-    FROM pbp.play_wide
+    FROM play_wide
     WHERE game_id = %(game_id)s
     GROUP BY 1
     UNION ALL
     -- a kick returned for a touchdown scores for the RECEIVING team
     SELECT receiving_team_id, 6 * count(*)
-    FROM pbp.play_wide
+    FROM play_wide
     WHERE game_id = %(game_id)s AND returned_for_td
     GROUP BY 1
 )
 SELECT t.team_id, d.display_name AS team, sum(t.pts)::int AS points
 FROM (SELECT * FROM scrim UNION ALL SELECT * FROM kicks) t
-LEFT JOIN pbp.fact_game g ON g.game_id = %(game_id)s
-LEFT JOIN pbp.dim_team  d ON d.team_id = t.team_id AND d.league = g.league
+LEFT JOIN fact_game g ON g.game_id = %(game_id)s
+LEFT JOIN dim_team  d ON d.team_id = t.team_id
 WHERE t.team_id IS NOT NULL
 GROUP BY t.team_id, d.display_name
 ORDER BY points DESC
@@ -348,10 +327,10 @@ ORDER BY points DESC
 
 GAME_PLAY_COUNTS = """
 SELECT 'kicks' AS fact, play_kind, count(*) AS plays
-FROM pbp.play_wide WHERE game_id = %(game_id)s GROUP BY 2
+FROM play_wide WHERE game_id = %(game_id)s GROUP BY 2
 UNION ALL
 SELECT 'scrimmage', play_kind, count(*)
-FROM pbp.scrimmage_wide WHERE game_id = %(game_id)s GROUP BY 2
+FROM scrimmage_wide WHERE game_id = %(game_id)s GROUP BY 2
 ORDER BY 1, 3 DESC
 """
 
@@ -361,28 +340,28 @@ SELECT d.drive_number, d.drive_id, o.display_name AS offense, d.offense_team_id,
        d.start_period, d.start_clock_secs, d.start_yards_to_goal, d.start_text,
        d.end_period, d.end_clock_secs, d.end_yards_to_goal, d.end_text,
        d.plays_total, d.plays_scrimmage, d.yards, d.time_elapsed_secs
-FROM pbp.drive d
-LEFT JOIN pbp.dim_team o ON o.team_id = d.offense_team_id AND o.league = d.league
+FROM drive d
+LEFT JOIN dim_team o ON o.team_id = d.offense_team_id
 WHERE d.game_id = %s
 ORDER BY d.drive_number
 """
 
 # --------------------------------------------------------------------------- play detail
 
-PLAY_DETAIL_KICKS = "SELECT * FROM pbp.play_wide WHERE play_uid = %s"
-PLAY_DETAIL_SCRIMMAGE = "SELECT * FROM pbp.scrimmage_wide WHERE play_uid = %s"
+PLAY_DETAIL_KICKS = "SELECT * FROM play_wide WHERE play_uid = %s"
+PLAY_DETAIL_SCRIMMAGE = "SELECT * FROM scrimmage_wide WHERE play_uid = %s"
 
 # Everyone who touched one play. Both bridges are checked because a play_uid is
 # unique across BOTH facts by construction, so exactly one of these returns rows.
 PLAY_PARTICIPANTS = """
 SELECT b.role, b.ordinal, b.athlete_id, a.known_name, a.position, a.primary_role
-FROM pbp.play_athlete b
-LEFT JOIN pbp.dim_athlete a ON a.athlete_id = b.athlete_id
+FROM play_athlete b
+LEFT JOIN dim_athlete a ON a.athlete_id = b.athlete_id
 WHERE b.play_uid = %(play_uid)s
 UNION ALL
 SELECT b.role, b.ordinal, b.athlete_id, a.known_name, a.position, a.primary_role
-FROM pbp.scrimmage_athlete b
-LEFT JOIN pbp.dim_athlete a ON a.athlete_id = b.athlete_id
+FROM scrimmage_athlete b
+LEFT JOIN dim_athlete a ON a.athlete_id = b.athlete_id
 WHERE b.play_uid = %(play_uid)s
 ORDER BY role, ordinal
 """
@@ -391,31 +370,12 @@ ORDER BY role, ordinal
 
 PLAYER_PROFILE = """
 SELECT a.athlete_id, a.known_name, a.full_name, a.position, a.jersey,
-       a.text_name, a.text_name_confidence, a.primary_role, a.leagues,
-       a.first_season, a.last_season, a.st_plays, a.scrimmage_plays, a.nfl_plays,
+       a.text_name, a.text_name_confidence, a.primary_role,
+       a.first_season, a.last_season, a.st_plays, a.scrimmage_plays,
        a.date_of_birth, a.debut_year, a.height_in, a.weight_lb,
-       t.display_name AS primary_team, t.league AS primary_team_league
-FROM pbp.dim_athlete a
-LEFT JOIN LATERAL (
-    -- Resolve primary_team_id to ONE team. dim_athlete carries no league of its own,
-    -- so prefer the league the athlete actually played in; for a cfb+nfl career, or
-    -- a tie, fall back to a deterministic order rather than returning both rows.
-    SELECT dt.display_name, dt.league
-    FROM pbp.dim_team dt
-    WHERE dt.team_id = a.primary_team_id
-    ORDER BY (dt.league = CASE
-        -- primary_team_id is the athlete's MODAL team across the whole career, so
-        -- the league it belongs to is whichever league they played more in -- not
-        -- simply 'cfb' because the career started there. Patrick Mahomes is
-        -- primary_team_id 12 with 7,156 NFL plays against 1,774 college ones: that
-        -- is Kansas City. Preferring cfb resolves 12 to the Arizona Wildcats, which
-        -- is a different real team and looks entirely plausible.
-        WHEN coalesce(a.nfl_plays, 0) * 2
-             > coalesce(a.st_plays, 0) + coalesce(a.scrimmage_plays, 0)
-        THEN 'nfl' ELSE 'cfb' END) DESC,
-             dt.league
-    LIMIT 1
-) t ON true
+       t.display_name AS primary_team
+FROM dim_athlete a
+LEFT JOIN dim_team t ON t.team_id = a.primary_team_id
 WHERE a.athlete_id = %s
 """
 
@@ -423,7 +383,7 @@ WHERE a.athlete_id = %s
 # blocks rather than one blended number. fg_made IS NULL is a negated kick and is
 # excluded from the denominator rather than counted as a miss.
 PLAYER_KICKING = """
-SELECT league, season,
+SELECT season,
        count(*) FILTER (WHERE play_kind = 'field_goal' AND fg_made IS NOT NULL) AS fg_att,
        count(*) FILTER (WHERE play_kind = 'field_goal' AND fg_made)             AS fg_made,
        round(100.0 * avg(CASE WHEN play_kind = 'field_goal' AND fg_made IS NOT NULL
@@ -437,18 +397,18 @@ SELECT league, season,
        count(*) FILTER (WHERE play_kind = 'kickoff')                            AS kickoffs,
        round(100.0 * avg(CASE WHEN play_kind = 'kickoff' AND returned IS NOT NULL
                               THEN touchback::int END), 1)                      AS kickoff_tb_pct
-FROM pbp.play_wide
+FROM play_wide
 WHERE kicker_athlete_id = %(athlete_id)s
   AND (%(season)s::int IS NULL OR season = %(season)s)
-GROUP BY league, season
-ORDER BY league, season
+GROUP BY season
+ORDER BY season
 """
 
 # Career scrimmage production. Turnovers are held out of the mean-yards measures
 # because ESPN's statYardage on a turnover is the DEFENCE's return, not the
 # offence's gain -- it credits 35 yards to the offence row of a 35-yard pick-six.
 PLAYER_SCRIMMAGE = """
-SELECT league, season,
+SELECT season,
        count(*) FILTER (WHERE rusher_athlete_id = %(athlete_id)s
                           AND play_kind = 'rush')                        AS rush_att,
        sum(yards_gained) FILTER (WHERE rusher_athlete_id = %(athlete_id)s
@@ -476,16 +436,16 @@ SELECT league, season,
                           AND is_complete AND NOT is_turnover)              AS rec_yds,
 
        count(*) FILTER (WHERE tackler_athlete_id = %(athlete_id)s)          AS tackles
-FROM pbp.scrimmage_wide
+FROM scrimmage_wide
 WHERE (%(athlete_id)s IN (passer_athlete_id, rusher_athlete_id,
                           receiver_athlete_id, tackler_athlete_id))
   AND (%(season)s::int IS NULL OR season = %(season)s)
-GROUP BY league, season
-ORDER BY league, season
+GROUP BY season
+ORDER BY season
 """
 
 PLAYER_GAME_LOG = """
-SELECT w.game_id, w.league, w.season, w.week, w.season_type, w.kickoff_utc,
+SELECT w.game_id, w.season, w.week, w.season_type, w.kickoff_utc,
        w.offense_team AS team, w.defense_team AS opponent,
        count(*) FILTER (WHERE w.rusher_athlete_id = %(athlete_id)s)   AS rush_att,
        sum(w.yards_gained) FILTER (WHERE w.rusher_athlete_id = %(athlete_id)s
@@ -503,11 +463,11 @@ SELECT w.game_id, w.league, w.season, w.week, w.season_type, w.kickoff_utc,
        count(*) FILTER (WHERE w.is_touchdown
                           AND %(athlete_id)s IN (w.rusher_athlete_id, w.receiver_athlete_id,
                                                  w.passer_athlete_id)) AS touchdowns
-FROM pbp.scrimmage_wide w
+FROM scrimmage_wide w
 WHERE %(athlete_id)s IN (w.passer_athlete_id, w.rusher_athlete_id,
                          w.receiver_athlete_id, w.tackler_athlete_id)
   AND (%(season)s::int IS NULL OR w.season = %(season)s)
-GROUP BY w.game_id, w.league, w.season, w.week, w.season_type, w.kickoff_utc,
+GROUP BY w.game_id, w.season, w.week, w.season_type, w.kickoff_utc,
          w.offense_team, w.defense_team
 ORDER BY w.kickoff_utc DESC NULLS LAST
 LIMIT %(limit)s
@@ -527,61 +487,58 @@ LIMIT %(limit)s
 LEADERBOARD_SQL: dict[str, str] = {
     "fg_pct": """
         SELECT w.kicker_athlete_id AS athlete_id, a.known_name, a.position,
-               max(w.kicking_team) AS team, w.league,
+               max(w.kicking_team) AS team,
                count(*)                                AS attempts,
                count(*) FILTER (WHERE w.fg_made)       AS made,
                round(100.0 * avg(w.fg_made::int), 1)   AS fg_pct,
                max(w.fg_distance_yds) FILTER (WHERE w.fg_made) AS longest
-        FROM pbp.play_wide w
-        JOIN pbp.dim_athlete a ON a.athlete_id = w.kicker_athlete_id
+        FROM play_wide w
+        JOIN dim_athlete a ON a.athlete_id = w.kicker_athlete_id
         WHERE w.play_kind = 'field_goal'
           AND w.fg_made IS NOT NULL          -- a negated kick is not a miss
-          AND (%(league)s::text IS NULL OR w.league = %(league)s)
           AND (%(season)s::int IS NULL OR w.season = %(season)s)
           AND (NOT %(top_division_only)s::boolean OR w.both_top_division)
-        GROUP BY w.kicker_athlete_id, a.known_name, a.position, w.league
+        GROUP BY w.kicker_athlete_id, a.known_name, a.position
         HAVING count(*) >= %(min_attempts)s
         ORDER BY fg_pct DESC, attempts DESC
         LIMIT %(limit)s
     """,
     "punt_gross": """
         SELECT w.kicker_athlete_id AS athlete_id, a.known_name, a.position,
-               max(w.kicking_team) AS team, w.league,
+               max(w.kicking_team) AS team,
                count(*)                          AS attempts,
                round(avg(w.punt_gross_yds), 2)   AS punt_gross_avg,
                round(avg(w.punt_net_yds), 2)     AS punt_net_avg
-        FROM pbp.play_wide w
-        JOIN pbp.dim_athlete a ON a.athlete_id = w.kicker_athlete_id
+        FROM play_wide w
+        JOIN dim_athlete a ON a.athlete_id = w.kicker_athlete_id
         WHERE w.play_kind = 'punt' AND w.punt_gross_yds IS NOT NULL
-          AND (%(league)s::text IS NULL OR w.league = %(league)s)
           AND (%(season)s::int IS NULL OR w.season = %(season)s)
           AND (NOT %(top_division_only)s::boolean OR w.both_top_division)
-        GROUP BY w.kicker_athlete_id, a.known_name, a.position, w.league
+        GROUP BY w.kicker_athlete_id, a.known_name, a.position
         HAVING count(*) >= %(min_attempts)s
         ORDER BY punt_gross_avg DESC
         LIMIT %(limit)s
     """,
     "rush_yards": """
         SELECT w.rusher_athlete_id AS athlete_id, a.known_name, a.position,
-               max(w.offense_team) AS team, w.league,
+               max(w.offense_team) AS team,
                count(*)                                        AS attempts,
                sum(w.yards_gained) FILTER (WHERE NOT w.is_turnover) AS yards,
                round(avg(w.yards_gained) FILTER (WHERE NOT w.is_turnover), 2) AS ypc,
                count(*) FILTER (WHERE w.is_touchdown)          AS touchdowns
-        FROM pbp.scrimmage_wide w
-        JOIN pbp.dim_athlete a ON a.athlete_id = w.rusher_athlete_id
+        FROM scrimmage_wide w
+        JOIN dim_athlete a ON a.athlete_id = w.rusher_athlete_id
         WHERE w.play_kind = 'rush'
-          AND (%(league)s::text IS NULL OR w.league = %(league)s)
           AND (%(season)s::int IS NULL OR w.season = %(season)s)
           AND (NOT %(top_division_only)s::boolean OR w.both_top_division)
-        GROUP BY w.rusher_athlete_id, a.known_name, a.position, w.league
+        GROUP BY w.rusher_athlete_id, a.known_name, a.position
         HAVING count(*) >= %(min_attempts)s
         ORDER BY yards DESC NULLS LAST
         LIMIT %(limit)s
     """,
     "pass_yards": """
         SELECT w.passer_athlete_id AS athlete_id, a.known_name, a.position,
-               max(w.offense_team) AS team, w.league,
+               max(w.offense_team) AS team,
                count(*)                                        AS attempts,
                count(*) FILTER (WHERE w.is_complete)           AS completions,
                round(100.0 * avg(w.is_complete::int), 1)       AS completion_pct,
@@ -589,50 +546,47 @@ LEADERBOARD_SQL: dict[str, str] = {
                round(avg(w.yards_gained) FILTER (WHERE NOT w.is_turnover), 2) AS ypa,
                count(*) FILTER (WHERE w.is_touchdown)          AS touchdowns,
                count(*) FILTER (WHERE w.is_turnover)           AS interceptions
-        FROM pbp.scrimmage_wide w
-        JOIN pbp.dim_athlete a ON a.athlete_id = w.passer_athlete_id
+        FROM scrimmage_wide w
+        JOIN dim_athlete a ON a.athlete_id = w.passer_athlete_id
         WHERE w.play_kind = 'pass'
-          AND (%(league)s::text IS NULL OR w.league = %(league)s)
           AND (%(season)s::int IS NULL OR w.season = %(season)s)
           AND (NOT %(top_division_only)s::boolean OR w.both_top_division)
-        GROUP BY w.passer_athlete_id, a.known_name, a.position, w.league
+        GROUP BY w.passer_athlete_id, a.known_name, a.position
         HAVING count(*) >= %(min_attempts)s
         ORDER BY yards DESC NULLS LAST
         LIMIT %(limit)s
     """,
     "receiving_yards": """
         SELECT w.receiver_athlete_id AS athlete_id, a.known_name, a.position,
-               max(w.offense_team) AS team, w.league,
+               max(w.offense_team) AS team,
                count(*)                                   AS targets,
                count(*) FILTER (WHERE w.is_complete)      AS receptions,
                sum(w.yards_gained) FILTER (WHERE w.is_complete AND NOT w.is_turnover) AS yards,
                count(*) FILTER (WHERE w.is_touchdown)     AS touchdowns
-        FROM pbp.scrimmage_wide w
-        JOIN pbp.dim_athlete a ON a.athlete_id = w.receiver_athlete_id
+        FROM scrimmage_wide w
+        JOIN dim_athlete a ON a.athlete_id = w.receiver_athlete_id
         WHERE w.receiver_athlete_id IS NOT NULL
-          AND (%(league)s::text IS NULL OR w.league = %(league)s)
           AND (%(season)s::int IS NULL OR w.season = %(season)s)
           AND (NOT %(top_division_only)s::boolean OR w.both_top_division)
-        GROUP BY w.receiver_athlete_id, a.known_name, a.position, w.league
+        GROUP BY w.receiver_athlete_id, a.known_name, a.position
         HAVING count(*) >= %(min_attempts)s
         ORDER BY yards DESC NULLS LAST
         LIMIT %(limit)s
     """,
     "tackles": """
         SELECT b.athlete_id, a.known_name, a.position,
-               max(w.defense_team) AS team, w.league,
+               max(w.defense_team) AS team,
                count(*) AS tackles,
                count(*) FILTER (WHERE b.role = 'tackler')    AS solo,
                count(*) FILTER (WHERE b.role = 'assistedBy') AS assisted,
                count(*) FILTER (WHERE b.role = 'sackedBy')   AS sacks
-        FROM pbp.scrimmage_athlete b
-        JOIN pbp.scrimmage_wide w ON w.play_uid = b.play_uid
-        JOIN pbp.dim_athlete    a ON a.athlete_id = b.athlete_id
+        FROM scrimmage_athlete b
+        JOIN scrimmage_wide w ON w.play_uid = b.play_uid
+        JOIN dim_athlete    a ON a.athlete_id = b.athlete_id
         WHERE b.role IN ('tackler', 'assistedBy', 'sackedBy')
-          AND (%(league)s::text IS NULL OR w.league = %(league)s)
           AND (%(season)s::int IS NULL OR w.season = %(season)s)
           AND (NOT %(top_division_only)s::boolean OR w.both_top_division)
-        GROUP BY b.athlete_id, a.known_name, a.position, w.league
+        GROUP BY b.athlete_id, a.known_name, a.position
         HAVING count(*) >= %(min_attempts)s
         ORDER BY tackles DESC
         LIMIT %(limit)s
@@ -644,22 +598,21 @@ LEADERBOARD_SQL: dict[str, str] = {
 # Monotonic in both leagues over 30k and 12.8k attempts -- if this comes back
 # non-monotonic, something upstream is wrong, not the football.
 FG_BY_DISTANCE = """
-SELECT league, fg_dist_bucket,
+SELECT fg_dist_bucket,
        CASE WHEN fg_dist_bucket = 15 THEN '<20'
             WHEN fg_dist_bucket = 60 THEN '60+'
             ELSE fg_dist_bucket || '-' || (fg_dist_bucket + 4) END AS distance_band,
        count(*)                              AS attempts,
        count(*) FILTER (WHERE fg_made)       AS made,
        round(100.0 * avg(fg_made::int), 1)   AS fg_pct
-FROM pbp.play_wide
+FROM play_wide
 WHERE play_kind = 'field_goal'
   AND fg_made IS NOT NULL            -- negated kicks are not misses
   AND fg_dist_bucket IS NOT NULL
-  AND (%(league)s::text IS NULL OR league = %(league)s)
   AND (%(season)s::int IS NULL OR season = %(season)s)
   AND (NOT %(top_division_only)s::boolean OR both_top_division)
-GROUP BY league, fg_dist_bucket
-ORDER BY league, fg_dist_bucket
+GROUP BY fg_dist_bucket
+ORDER BY fg_dist_bucket
 """
 
 # Rates on the denominator they belong on. `returned IS NULL` is an outcome the
@@ -667,7 +620,7 @@ ORDER BY league, fg_dist_bucket
 # pct_unstated, because averaging over it silently understates every rate.
 # `onside` is excluded from kickoff rates: it is a different play, not an outcome.
 KICK_OUTCOMES = """
-SELECT league, season, play_kind,
+SELECT season, play_kind,
        count(*)                                       AS kicks,
        count(*) FILTER (WHERE returned IS NULL)       AS unstated,
        round(100.0 * avg((returned IS NULL)::int), 1) AS pct_unstated,
@@ -678,20 +631,19 @@ SELECT league, season, play_kind,
        round(100.0 * avg(out_of_bounds::int), 1)      AS out_of_bounds_pct,
        round(avg(return_yds) FILTER (WHERE returned), 1) AS avg_return_yds,
        count(*) FILTER (WHERE returned_for_td)        AS return_tds
-FROM pbp.play_wide
+FROM play_wide
 WHERE play_kind = ANY(%(kinds)s::text[])
   AND NOT onside                      -- a different play, not an outcome
-  AND (%(league)s::text IS NULL OR league = %(league)s)
   AND (%(season)s::int IS NULL OR season = %(season)s)
   AND (NOT %(top_division_only)s::boolean OR both_top_division)
-GROUP BY league, season, play_kind
-ORDER BY league, play_kind, season
+GROUP BY season, play_kind
+ORDER BY play_kind, season
 """
 
 # Drive outcome by where the drive started. Monotonic in both leagues; a field
 # position column reversed anywhere upstream produces this curve backwards.
 DRIVE_OUTCOMES = """
-SELECT d.league,
+SELECT
        CASE WHEN d.start_yards_to_goal <= 20 THEN '01 inside opp 20'
             WHEN d.start_yards_to_goal <= 40 THEN '02 opp 20-40'
             WHEN d.start_yards_to_goal <= 60 THEN '03 midfield'
@@ -704,121 +656,112 @@ SELECT d.league,
        round(100.0 * avg(d.is_score::int), 1)            AS score_pct,
        round(avg(d.yards), 1)                            AS avg_yards,
        round(avg(d.plays_total), 1)                      AS avg_plays
-FROM pbp.drive d
+FROM drive d
 WHERE d.start_yards_to_goal IS NOT NULL
   AND d.start_yards_to_goal > 0       -- 0 is a null sentinel, not the goal line
-  AND (%(league)s::text IS NULL OR d.league = %(league)s)
   AND (%(season)s::int IS NULL OR d.season = %(season)s)
-GROUP BY d.league, start_zone
-ORDER BY d.league, start_zone
+GROUP BY start_zone
+ORDER BY start_zone
 """
 
 # Down-and-distance efficiency. Turnovers are held out of the yards mean for the
 # statYardage reason documented at the top of this file.
 SITUATIONAL_SPLITS = """
-SELECT league, down, distance_bucket, field_zone,
+SELECT down, distance_bucket, field_zone,
        count(*)                                              AS plays,
        round(100.0 * avg(first_down_gained::int), 1)         AS first_down_pct,
        round(avg(yards_gained) FILTER (WHERE NOT is_turnover), 2) AS avg_yards,
        round(100.0 * avg(is_touchdown::int), 2)              AS td_pct,
        round(100.0 * avg(is_turnover::int), 2)               AS turnover_pct,
        round(100.0 * avg((play_kind = 'pass')::int), 1)      AS pass_rate
-FROM pbp.scrimmage_wide
+FROM scrimmage_wide
 WHERE play_kind IN ('rush', 'pass', 'sack')
   AND down BETWEEN 1 AND 4
-  AND (%(league)s::text IS NULL OR league = %(league)s)
   AND (%(season)s::int IS NULL OR season = %(season)s)
   AND (NOT %(top_division_only)s::boolean OR both_top_division)
-GROUP BY league, down, distance_bucket, field_zone
-ORDER BY league, down, distance_bucket, field_zone
+GROUP BY down, distance_bucket, field_zone
+ORDER BY down, distance_bucket, field_zone
 """
 
 # One measure by season, for trend questions. Each entry states its own
 # denominator; see the note on LEADERBOARD_SQL.
 TREND_SQL: dict[str, str] = {
     "fg_pct": """
-        SELECT league, season, count(*) AS n,
+        SELECT season, count(*) AS n,
                round(100.0 * avg(fg_made::int), 2) AS value
-        FROM pbp.play_wide
+        FROM play_wide
         WHERE play_kind = 'field_goal' AND fg_made IS NOT NULL
-          AND (%(league)s::text IS NULL OR league = %(league)s)
           AND (NOT %(top_division_only)s::boolean OR both_top_division)
-        GROUP BY league, season ORDER BY league, season
+        GROUP BY season ORDER BY season
     """,
     "kickoff_touchback_pct": """
-        SELECT league, season, count(*) FILTER (WHERE returned IS NOT NULL) AS n,
+        SELECT season, count(*) FILTER (WHERE returned IS NOT NULL) AS n,
                round(100.0 * avg(touchback::int), 2) AS value
-        FROM pbp.play_wide
+        FROM play_wide
         WHERE play_kind = 'kickoff' AND NOT onside
-          AND (%(league)s::text IS NULL OR league = %(league)s)
           AND (NOT %(top_division_only)s::boolean OR both_top_division)
-        GROUP BY league, season ORDER BY league, season
+        GROUP BY season ORDER BY season
     """,
     "punt_gross_avg": """
-        SELECT league, season, count(*) AS n,
+        SELECT season, count(*) AS n,
                round(avg(punt_gross_yds), 2) AS value
-        FROM pbp.play_wide
+        FROM play_wide
         WHERE play_kind = 'punt' AND punt_gross_yds IS NOT NULL
-          AND (%(league)s::text IS NULL OR league = %(league)s)
           AND (NOT %(top_division_only)s::boolean OR both_top_division)
-        GROUP BY league, season ORDER BY league, season
+        GROUP BY season ORDER BY season
     """,
     "pat_pct": """
-        SELECT league, season, count(*) AS n,
+        SELECT season, count(*) AS n,
                round(100.0 * avg(converted::int), 2) AS value
-        FROM pbp.play_wide
+        FROM play_wide
         WHERE play_kind = 'pat' AND converted IS NOT NULL
-          AND (%(league)s::text IS NULL OR league = %(league)s)
           AND (NOT %(top_division_only)s::boolean OR both_top_division)
-        GROUP BY league, season ORDER BY league, season
+        GROUP BY season ORDER BY season
     """,
     "completion_pct": """
-        SELECT league, season, count(*) AS n,
+        SELECT season, count(*) AS n,
                round(100.0 * avg(is_complete::int), 2) AS value
-        FROM pbp.scrimmage_wide
+        FROM scrimmage_wide
         WHERE play_kind = 'pass' AND is_complete IS NOT NULL
-          AND (%(league)s::text IS NULL OR league = %(league)s)
           AND (NOT %(top_division_only)s::boolean OR both_top_division)
-        GROUP BY league, season ORDER BY league, season
+        GROUP BY season ORDER BY season
     """,
     "yards_per_carry": """
-        SELECT league, season, count(*) AS n,
+        SELECT season, count(*) AS n,
                round(avg(yards_gained), 3) AS value
-        FROM pbp.scrimmage_wide
+        FROM scrimmage_wide
         WHERE play_kind = 'rush' AND NOT is_turnover
-          AND (%(league)s::text IS NULL OR league = %(league)s)
           AND (NOT %(top_division_only)s::boolean OR both_top_division)
-        GROUP BY league, season ORDER BY league, season
+        GROUP BY season ORDER BY season
     """,
     "yards_per_pass_attempt": """
-        SELECT league, season, count(*) AS n,
+        SELECT season, count(*) AS n,
                round(avg(yards_gained), 3) AS value
-        FROM pbp.scrimmage_wide
+        FROM scrimmage_wide
         WHERE play_kind = 'pass' AND NOT is_turnover
-          AND (%(league)s::text IS NULL OR league = %(league)s)
           AND (NOT %(top_division_only)s::boolean OR both_top_division)
-        GROUP BY league, season ORDER BY league, season
+        GROUP BY season ORDER BY season
     """,
     # Named for what it measures. It is the share of drives that ended in ANY score
     # (drive.is_score), not points per drive -- there is no points column on a drive,
     # and calling it that would have been a wrong answer with a confident label.
     "drive_score_pct": """
-        SELECT league, season, count(*) AS n,
+        SELECT season, count(*) AS n,
                round(100.0 * avg(is_score::int), 2) AS value
-        FROM pbp.drive
-        WHERE (%(league)s::text IS NULL OR league = %(league)s)
-        GROUP BY league, season ORDER BY league, season
+        FROM drive
+        WHERE TRUE
+        GROUP BY season ORDER BY season
     """,
 }
 
 # --------------------------------------------------------------------------- team
 
 TEAM_SEASON = """
-SELECT %(team_id)s AS team_id, %(league)s AS league, %(season)s AS season,
-       (SELECT display_name FROM pbp.dim_team
-         WHERE team_id = %(team_id)s AND league = %(league)s)  AS team,
-       (SELECT conference_name FROM pbp.dim_team_season
-         WHERE team_id = %(team_id)s AND league = %(league)s
+SELECT %(team_id)s AS team_id, %(season)s AS season,
+       (SELECT display_name FROM dim_team
+         WHERE team_id = %(team_id)s)  AS team,
+       (SELECT conference_name FROM dim_team_season
+         WHERE team_id = %(team_id)s
            AND season = %(season)s)                            AS conference,
        o.plays AS off_plays, o.yards AS off_yards, o.ypp AS off_ypp,
        o.pass_rate, o.first_down_pct AS off_first_down_pct, o.td AS off_td,
@@ -834,8 +777,8 @@ FROM (SELECT count(*) AS plays,
              round(100.0 * avg(first_down_gained::int), 1)           AS first_down_pct,
              count(*) FILTER (WHERE is_touchdown)                    AS td,
              count(*) FILTER (WHERE is_turnover)                     AS turnovers
-      FROM pbp.scrimmage_wide
-      WHERE offense_team_id = %(team_id)s AND league = %(league)s AND season = %(season)s
+      FROM scrimmage_wide
+      WHERE offense_team_id = %(team_id)s AND season = %(season)s
         AND play_kind IN ('rush','pass','sack')) o
 CROSS JOIN
      (SELECT count(*) AS plays,
@@ -844,8 +787,8 @@ CROSS JOIN
              round(100.0 * avg(first_down_gained::int), 1)           AS first_down_pct,
              count(*) FILTER (WHERE is_touchdown)                    AS td,
              count(*) FILTER (WHERE is_turnover)                     AS turnovers
-      FROM pbp.scrimmage_wide
-      WHERE defense_team_id = %(team_id)s AND league = %(league)s AND season = %(season)s
+      FROM scrimmage_wide
+      WHERE defense_team_id = %(team_id)s AND season = %(season)s
         AND play_kind IN ('rush','pass','sack')) d
 CROSS JOIN
      (SELECT count(*) FILTER (WHERE play_kind = 'field_goal' AND fg_made IS NOT NULL) AS fg_att,
@@ -854,32 +797,31 @@ CROSS JOIN
                                     THEN fg_made::int END), 1)                        AS fg_pct,
              count(*) FILTER (WHERE play_kind = 'punt')                               AS punts,
              round(avg(punt_gross_yds) FILTER (WHERE play_kind = 'punt'), 2)          AS punt_gross_avg
-      FROM pbp.play_wide
-      WHERE kicking_team_id = %(team_id)s AND league = %(league)s AND season = %(season)s) k
+      FROM play_wide
+      WHERE kicking_team_id = %(team_id)s AND season = %(season)s) k
 """
 
 # --------------------------------------------------------------------------- quality
 
 PARSE_QUALITY = """
-SELECT league, season, play_kind,
+SELECT season, play_kind,
        count(*)                                                      AS plays,
        count(*) FILTER (WHERE parse_confidence = 'exact')            AS exact,
        round(100.0 * avg((parse_confidence = 'exact')::int), 2)      AS pct_exact,
        count(*) FILTER (WHERE parse_confidence IS DISTINCT FROM 'exact') AS not_exact,
        count(*) FILTER (WHERE kicker_athlete_id IS NULL)             AS no_kicker_id
-FROM pbp.play_wide
-WHERE (%(league)s::text IS NULL OR league = %(league)s)
+FROM play_wide
+WHERE TRUE
   AND (%(season)s::int IS NULL OR season = %(season)s)
-GROUP BY league, season, play_kind
-ORDER BY league, season, play_kind
+GROUP BY season, play_kind
+ORDER BY season, play_kind
 """
 
 AUDIT_PLAYS = """
-SELECT play_uid, league, season, play_kind, kicking_team, kicker_name,
+SELECT play_uid, season, play_kind, kicking_team, kicker_name,
        kicker_known_name, parse_confidence, play_text
-FROM pbp.play_wide
+FROM play_wide
 WHERE parse_confidence IS DISTINCT FROM 'exact'
-  AND (%(league)s::text IS NULL OR league = %(league)s)
   AND (%(season)s::int IS NULL OR season = %(season)s)
   AND (%(play_kind)s::text IS NULL OR play_kind = %(play_kind)s)
 ORDER BY season DESC, play_uid

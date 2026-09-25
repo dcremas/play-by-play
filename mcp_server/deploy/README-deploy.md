@@ -7,9 +7,14 @@ That was the blocker for building a text-to-SQL explorer, and this directory is
 what removed it.
 
 ```bash
-bash deploy/push.sh              # from the Mac. Idempotent.
+bash deploy/push.sh              # from the Mac. Idempotent. Deploys BOTH instances.
 bash deploy/push.sh --tls        # …and issue the certificate, once DNS resolves
 ```
+
+**Two instances, one template.** `pbp-mcp@cfb` on `127.0.0.1:8771` and
+`pbp-mcp@nfl` on `8772`, from a single `pbp-mcp@.service`. The instance name IS
+the schema name (`MCP_DB_SCHEMA=%i`), so `pbp-mcp@cfb` cannot serve the NFL
+corpus, and `config.py` refuses to start on any name that is not a real corpus.
 
 ---
 
@@ -18,8 +23,9 @@ bash deploy/push.sh --tls        # …and issue the certificate, once DNS resolv
 | Path | Owner | What |
 |---|---|---|
 | `/opt/pbp-mcp` | `pbpmcp` | the code and its venv. `ReadOnlyPaths` in the unit; **no `.env`** |
-| `/etc/pbp-mcp/mcp.env` | `root:pbpmcp` `640` | `MCP_DB_PASSWORD`, and nothing else |
-| `/etc/systemd/system/pbp-mcp.service` | root | the unit. `127.0.0.1:8771` |
+| `/etc/pbp-mcp/mcp.env` | `root:pbpmcp` `640` | `MCP_DB_PASSWORD`, and nothing else. Shared by both instances: one role reads both schemas |
+| `/etc/systemd/system/pbp-mcp@.service` | root | the template both instances run from |
+| `/etc/pbp-mcp/port-{cfb,nfl}.env` | `root:pbpmcp` `640` | `MCP_HTTP_PORT` per instance — systemd cannot derive a port from `%i` |
 | `/etc/nginx/conf.d/pbp.conf` | root | the vhost for the *future* app on 8504 |
 | `/etc/nginx/proxy_params_pbp.inc` | root | WebSocket-aware proxy settings |
 | `/usr/share/nginx/html/maintenance.html` | root | the 502 page, shared with `sqlx.conf` |
@@ -28,10 +34,12 @@ bash deploy/push.sh --tls        # …and issue the certificate, once DNS resolv
 
 ## The order, and why it is that order
 
-1. **`setup_role_pbp.sql`** — creates `pbp_ro`, grants it, revokes `mcp_ro`.
-   Runs against the database, not from here. `scripts/sync_ec2.py` already runs
-   it after every sync, because `wide_tables.sql` drops three of the tables it
-   grants and *privileges go with a dropped table*.
+1. **`sql/split_leagues.sql`**, once per league — builds `cfb.*` and `nfl.*` from
+   the system of record. Then **`setup_role_pbp.sql`**, which creates `pbp_ro` and
+   grants it on both schemas, and **`comment_tables.sql`**, once per league.
+   **That order is not negotiable:** `split_leagues.sql` does
+   `DROP SCHEMA ... CASCADE`, and privileges *and comments* go with a dropped
+   table. `scripts/sync_ec2.py` runs all three in that order after every sync.
 2. **`push.sh` → `provision.sh`** — user, code, venv, credential file, unit,
    nginx vhost (HTTP only), start, verify.
 3. **DNS** — a manual A record at GoDaddy. There is no Route53 zone and no API
@@ -53,13 +61,13 @@ Each of these is in `provision.sh` because the failure is invisible otherwise.
 
 | Assertion | What it catches |
 |---|---|
-| 8771 is not on a public address | a wrong `MCP_HTTP_HOST`. **The endpoint has no authentication** — loopback-only is the entire security model for it |
+| 8771 and 8772 are not on a public address | a wrong `MCP_HTTP_HOST`. **The endpoint has no authentication** — loopback-only is the entire security model for it |
 | no nginx config proxies 8771 | someone "helpfully" exposing the MCP endpoint, i.e. publishing a read-any-table SQL interface |
 | `weathermcp` cannot read `/etc/pbp-mcp/mcp.env` | the credential separation being cosmetic rather than real |
 | `/opt/pbp-mcp/.env` does not exist | a second copy of the password on the box, and a second place to rotate it |
 | `pbp.conf` does not sort first in `conf.d` | **stealing `default_server`.** nginx gives it to the first `listen` it parses, which is the alphabetically-first `.conf` holding a server block. Take it, and every unknown-Host request on the box is answered by this vhost with this certificate |
 | the venv's Python matches the chosen interpreter | a venv built by root's 3.9, which cannot install `mcp` and cannot be upgraded in place |
-| the selftest runs **with the unit's environment** | the deploy's own false negative: invoked without it, `db.py` falls back to its development default of port 15432 — the laptop's tunnel — and every check fails with "connection refused" against a perfectly healthy local database |
+| the selftest runs **per instance, with that unit's environment** | the deploy's own false negative: invoked without it, `db.py` falls back to its development default of port 15432 — the laptop's tunnel — and every check fails with "connection refused" against a perfectly healthy local database |
 
 A note on that last one. `provision.sh` reads the connection settings back off the
 unit with `systemctl show pbp-mcp -p Environment --value` rather than repeating
@@ -93,7 +101,7 @@ probably be the website.
 
 | | weather-mcp | pbp-mcp |
 |---|---|---|
-| measured | 25 MB | 62 MB at start, **98 MB** after serving queries |
+| measured | 25 MB | **63 MB each**, two instances (~126 MB total) |
 | `MemoryHigh` / `MemoryMax` | 160M / 240M | 240M / 360M |
 | `CPUQuota` | none | 60% |
 

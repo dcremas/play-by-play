@@ -17,6 +17,24 @@ checksums every row of every table. Two identical counts with different contents
 fail here and pass there. Run it after a schema change, after a full resync, or
 any time the mirror's answers stop agreeing with local.
 
+SCOPE: THE SYSTEM OF RECORD ONLY
+--------------------------------
+This compares `pbp.*` -- the eleven tables the loaders build and README.md's data
+dictionary describes. It deliberately does NOT compare `cfb.*` and `nfl.*`.
+
+Those are a DERIVED serving layer, rebuilt on each host by sql/split_leagues.sql
+rather than copied, so they legitimately differ in ways that mean nothing: the
+schemas are owned by `dustincremascoli` here and by `postgres` on the box, which
+alone produced 196 spurious GRANT differences and zero real ones. What must be
+true of them is not "identical to the other host" but "a faithful projection of
+the pbp schema on THIS host", and that is a different question, asked by
+scripts/verify_split.py -- which runs against both hosts and checksums every fact
+against the same rows of pbp.*.
+
+So: verify_mirror proves the two copies of the source agree; verify_split proves
+each host's serving layer agrees with its own source. Together they cover the
+chain. Neither subsumes the other.
+
 THE THREE DIVERGENCES THAT ARE CORRECT, AND WHY THEY ARE NOT HIDDEN
 -------------------------------------------------------------------
 A verifier that fails on expected differences gets ignored within two runs, so
@@ -27,7 +45,7 @@ dropped. If one of them stops appearing, that is itself worth knowing.
    inserted into THIS database, so it is different by construction and excluded
    from the content hash. Every other column is compared.
 2. The mirror carries the serving layer (`play_wide`, `scrimmage_wide`,
-   `season_status`, their indexes, and the `mcp_ro` grants). sql/wide_tables.sql
+   `season_status`, their indexes, and the `mcp_ro` grants). sql/split_leagues.sql
    builds it there for the MCP server and its own header calls it derived, not
    part of the system of record. Local has never built it.
 3. The bridges are compared THROUGH THEIR FACT, never raw. See the long note on
@@ -65,7 +83,11 @@ SSH_HOST = "awsvm"        # see ~/.ssh/config
 REMOTE_DB = "pbp"
 LOCAL_DB = "pbp"
 
-# Derived serving layer -- built on the mirror only, by sql/wide_tables.sql.
+# The combined serving layer sql/wide_tables.sql used to build inside `pbp`. It was
+# dropped on 2026-09-25 when sql/split_leagues.sql replaced it with per-league
+# schemas, so these names should now appear on NEITHER host. Kept listed so a
+# mirror that has not yet been resynced still verifies rather than reporting three
+# spurious tables.
 MIRROR_ONLY_TABLES = ("play_wide", "scrimmage_wide", "season_status")
 # The MCP role exists only on the box. Table owner is the same name on both.
 # `pbp_ro` replaced the shared `mcp_ro` on 2026-09-25 -- see
@@ -141,7 +163,7 @@ def both(sql: str) -> tuple[list[str], list[str]]:
 STRUCTURE_SQL = r"""
 SELECT 'REL|'||n.nspname||'|'||c.relname||'|'||c.relkind::text||'|persist='||c.relpersistence::text
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+WHERE n.nspname = 'pbp'
   AND c.relkind IN ('r','p','v','m','S','f')
 ORDER BY 1;
 
@@ -157,7 +179,7 @@ FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+WHERE n.nspname = 'pbp'
   AND c.relkind IN ('r','p','v','m','f') AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY 1;
 
@@ -165,25 +187,25 @@ SELECT 'CON|'||n.nspname||'|'||rel.relname||'|'||con.conname||'|'||pg_get_constr
 FROM pg_constraint con
 JOIN pg_class rel ON rel.oid = con.conrelid
 JOIN pg_namespace n ON n.oid = rel.relnamespace
-WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+WHERE n.nspname = 'pbp'
   AND pg_get_constraintdef(con.oid) NOT LIKE 'NOT NULL %'
 ORDER BY 1;
 
 SELECT 'IDX|'||schemaname||'|'||tablename||'|'||indexname||'|'||indexdef
 FROM pg_indexes
-WHERE schemaname NOT LIKE 'pg\_%' AND schemaname <> 'information_schema'
+WHERE schemaname = 'pbp'
 ORDER BY 1;
 
 SELECT 'VIEWDEF|'||n.nspname||'|'||c.relname||'|'||md5(pg_get_viewdef(c.oid, true))
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+WHERE n.nspname = 'pbp'
   AND c.relkind IN ('v','m')
 ORDER BY 1;
 
 SELECT 'FUNC|'||n.nspname||'|'||p.proname||'|'||pg_get_function_identity_arguments(p.oid)
        ||'|'||p.prokind::text||'|'||md5(coalesce(p.prosrc, ''))
 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+WHERE n.nspname = 'pbp'
 ORDER BY 1;
 
 SELECT 'TRG|'||n.nspname||'|'||c.relname||'|'||t.tgname||'|'||pg_get_triggerdef(t.oid)
@@ -196,24 +218,24 @@ ORDER BY 1;
 SELECT 'TYPE|'||n.nspname||'|'||t.typname||'|'||t.typtype::text||'|'||coalesce(
     (SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder) FROM pg_enum e WHERE e.enumtypid = t.oid), '-')
 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-WHERE n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+WHERE n.nspname = 'pbp'
   AND t.typtype IN ('e','c','d')
   AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = t.typrelid AND c.relkind <> 'c')
 ORDER BY 1;
 
 SELECT 'SEQ|'||schemaname||'|'||sequencename||'|'||coalesce(data_type::text, '-')
        ||'|inc='||coalesce(increment_by::text, '-')||'|cycle='||cycle::text
-FROM pg_sequences WHERE schemaname NOT LIKE 'pg\_%' ORDER BY 1;
+FROM pg_sequences WHERE schemaname = 'pbp' ORDER BY 1;
 
 SELECT 'GRANT|'||table_schema||'|'||table_name||'|'||grantee||'|'||privilege_type
 FROM information_schema.role_table_grants
-WHERE table_schema NOT LIKE 'pg\_%' AND table_schema <> 'information_schema'
+WHERE table_schema = 'pbp'
 ORDER BY 1;
 
 SELECT 'EXT|'||extname FROM pg_extension ORDER BY 1;
 
 SELECT 'SCHEMA|'||nspname FROM pg_namespace
-WHERE nspname NOT LIKE 'pg\_%' AND nspname <> 'information_schema'
+WHERE nspname IN ('pbp','cfb','nfl')
 ORDER BY 1;
 """
 

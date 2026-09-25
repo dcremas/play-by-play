@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 import traceback
 
-from . import db, guard, queries as q, server
+from . import config, db, guard, queries as q, server
 
 _passed = 0
 _failed: list[str] = []
@@ -51,110 +51,127 @@ def approx(value, low, high) -> bool:
 def test_coverage() -> None:
     section("coverage")
     cov = server.data_coverage()
-    check("data_coverage returns both leagues",
-          {t["league"] for t in cov["totals_by_league"]} == {"cfb", "nfl"},
-          str([t["league"] for t in cov["totals_by_league"]]))
+    check("data_coverage names this corpus", cov.get("league") == config.LEAGUE,
+          str(cov.get("league")))
+    totals = cov["totals"]
 
-    by_league = {t["league"]: t for t in cov["totals_by_league"]}
     # FLOORS, not exact counts. README.md's corpus table was written at a point in
-    # time and 2026 is still being played in both leagues, so these only ever grow.
-    # An exact assertion here would fail every week for the right reason, which is
-    # how a suite stops being read. The exact-match check that matters is
-    # local-vs-mirror row reconciliation, and that lives in scripts/sync_ec2.py --
-    # this server cannot see local Postgres.
-    for league, field, floor in [
-        ("cfb", "kick_plays", 316_397),
-        ("nfl", "kick_plays", 90_819),
-        ("cfb", "scrimmage_plays", 1_510_679),
-        ("nfl", "scrimmage_plays", 447_635),
-    ]:
-        got = by_league[league][field]
-        check(f"{league} {field} >= {floor:,} (README floor)", got >= floor, str(got))
-        # A corpus that has somehow tripled is a double-load, which is the other
-        # way this can go wrong and is silent.
-        check(f"{league} {field} not implausibly large", got < floor * 1.5, str(got))
-    check("window starts 2014", all(t["first_season"] == 2014 for t in cov["totals_by_league"]))
-    check("seasons present for both leagues", len(cov["seasons"]) >= 26,
-          str(len(cov["seasons"])))
+    # time and 2026 is still being played, so these only ever grow. An exact
+    # assertion here would fail every week for the right reason, which is how a
+    # suite stops being read. The exact-match check that matters is
+    # split-vs-system-of-record reconciliation, and that lives in
+    # scripts/verify_split.py -- this server cannot see the pbp schema at all.
+    FLOORS = {
+        "cfb": {"kick_plays": 316_397, "scrimmage_plays": 1_510_679},
+        "nfl": {"kick_plays":  90_819, "scrimmage_plays":   447_635},
+    }[config.LEAGUE]
+    for field, floor in FLOORS.items():
+        got = totals[field]
+        check(f"{field} >= {floor:,} (README floor)", got >= floor, str(got))
+        # A corpus that has somehow tripled is a double-load, the other way this
+        # can go wrong and be silent.
+        check(f"{field} not implausibly large", got < floor * 1.5, str(got))
+
+    check("window starts 2014", totals["first_season"] == 2014, str(totals["first_season"]))
+    check("thirteen seasons present", len(cov["seasons"]) >= 13, str(len(cov["seasons"])))
+
+    # THE SPLIT'S DEFINING PROPERTY, asserted rather than assumed: this server can
+    # see one corpus and only one. If the other league's rows were reachable the
+    # counts above would be roughly 4x (cfb) or 0.25x (nfl) off, but a direct check
+    # states the intent.
+    # One role holds SELECT on both schemas -- see setup_role_pbp.sql for why two
+    # roles would have been two credentials for no isolation between equally trusted
+    # servers. What keeps the corpora apart is (a) search_path pinned to one schema,
+    # so an unqualified name cannot resolve to the other, and (b) the guard's
+    # allow-list, built from that one schema. Assert BOTH, since (a) alone would let
+    # a fully-qualified name through.
+    other = "nfl" if config.LEAGUE == "cfb" else "cfb"
+    check("search_path names exactly this corpus",
+          db.query("SELECT current_schema() AS s")[0]["s"] == config.SCHEMA)
+    refused = server.run_sql(f"SELECT count(*) FROM {other}.play_wide")
+    check(f"run_sql refuses the {other} corpus by name",
+          refused.get("rejected") is True, str(refused)[:120])
 
 
 # --------------------------------------------------------------------------- discovery
 
 def test_discovery() -> None:
     section("discovery")
-    teams = server.find_team(query="Alabama", league="cfb")
-    check("find_team finds Alabama", teams["count"] >= 1)
+    HOME = {"cfb": ("Alabama", "Auburn Tigers"), "nfl": ("Buffalo", "Buffalo Bills")}[config.LEAGUE]
+    teams = server.find_team(query=HOME[0])
+    check(f"find_team finds {HOME[0]}", teams["count"] >= 1, str(teams["count"]))
 
-    # The collision the whole league-keying design exists for.
-    cfb2 = server.find_team(query="Auburn", league="cfb")["teams"]
-    nfl_teams = server.find_team(query="Buffalo Bills", league="nfl")["teams"]
-    check("find_team: Auburn is cfb", any(t["league"] == "cfb" for t in cfb2))
-    check("find_team: Buffalo Bills is nfl", any(t["league"] == "nfl" for t in nfl_teams))
-    # The collision itself: the same team_id means different teams per league.
-    auburn = [t for t in cfb2 if t["display_name"].startswith("Auburn")]
-    bills = [t for t in nfl_teams if t["display_name"] == "Buffalo Bills"]
-    if auburn and bills:
-        check("find_team ranks the exact NFL match first",
-              nfl_teams[0]["display_name"] == "Buffalo Bills",
-              nfl_teams[0]["display_name"])
+    # THE COLLISION, from the other side. team 2 is Auburn in the college corpus and
+    # the Buffalo Bills in the NFL one. Before the split a join that forgot `league`
+    # matched both; now the other league's name is simply absent here, which is the
+    # stronger guarantee.
+    foreign = {"cfb": "Buffalo Bills", "nfl": "Auburn Tigers"}[config.LEAGUE]
+    hits = server.find_team(query=foreign)["teams"]
+    check(f"{foreign!r} is not in this corpus",
+          not any(t["display_name"] == foreign for t in hits),
+          str([t["display_name"] for t in hits][:3]))
 
-    players = server.find_player(name="Mahomes")
-    check("find_player finds Mahomes", players["count"] >= 1)
-    mahomes = [p for p in players["players"] if "Mahomes" in (p["known_name"] or "")]
-    check("Mahomes has an athlete_id", bool(mahomes) and mahomes[0]["athlete_id"])
+    # team_id 2 exists in BOTH corpora and means different things. Assert it resolves
+    # to this corpus's team, which is the bug the split fixes at the source.
+    two = db.query("SELECT display_name FROM dim_team WHERE team_id = 2")
+    if two:
+        expect = {"cfb": "Auburn", "nfl": "Buffalo"}[config.LEAGUE]
+        check("team_id 2 resolves to this corpus",
+              two[0]["display_name"].startswith(expect), two[0]["display_name"])
 
-    # NO DUPLICATE ROWS. dim_athlete is shared across leagues and carries no league
-    # column, but dim_team is keyed (league, team_id) and the ids collide -- so a
-    # join on primary_team_id alone returns TWO rows per athlete. This suite caught
-    # exactly that.
+    if config.LEAGUE == "cfb":
+        players = server.find_player(name="Mahomes")
+        check("find_player finds Mahomes", players["count"] >= 1)
+        pm = next((p for p in players["players"] if p["athlete_id"] == 3139477), None)
+        check("Mahomes is present in the college corpus", pm is not None)
+        # THE BUG THE REBUILT DIMENSION EXISTS TO FIX. primary_team_id used to be the
+        # modal team over a COMBINED career -- id 12, Kansas City -- and resolving 12
+        # against college gave "Arizona Wildcats": a real team, a wrong answer, and
+        # entirely plausible on screen. Rebuilt per corpus, it is Texas Tech.
+        if pm:
+            check("Mahomes' college team is Texas Tech, not the colliding id",
+                  pm["primary_team"] == "Texas Tech Red Raiders", str(pm["primary_team"]))
+            check("Mahomes' college career is 2014-2016",
+                  (pm["first_season"], pm["last_season"]) == (2014, 2016),
+                  f"{pm['first_season']}-{pm['last_season']}")
+    else:
+        players = server.find_player(name="Mahomes")
+        pm = next((p for p in players["players"] if p["athlete_id"] == 3139477), None)
+        check("Mahomes is present in the NFL corpus", pm is not None)
+        if pm:
+            check("Mahomes' NFL team is Kansas City",
+                  pm["primary_team"] == "Kansas City Chiefs", str(pm["primary_team"]))
+            check("Mahomes' NFL career starts 2017", pm["first_season"] == 2017,
+                  str(pm["first_season"]))
+
+    # No duplicate rows. dim_team is keyed by team_id alone inside a corpus, so the
+    # two-rows-per-athlete failure this suite once caught cannot recur -- assert it
+    # anyway, because that is what a regression test is for.
     ids = [p["athlete_id"] for p in players["players"]]
     check("find_player returns no duplicate athletes", len(ids) == len(set(ids)), str(ids))
 
-    # ...and the team it resolves to must be from the right league. primary_team_id
-    # is the MODAL team over the whole career, so for a cfb+nfl athlete it is usually
-    # the NFL one. Resolving Mahomes' id 12 against cfb gives "Arizona Wildcats",
-    # which is a real team and a wrong answer.
-    pm = next(p for p in players["players"] if p["athlete_id"] == 3139477)
-    check("Mahomes' primary team is Kansas City, not the colliding cfb id",
-          pm["primary_team"] == "Kansas City Chiefs"
-          and pm["primary_team_league"] == "nfl",
-          f"{pm['primary_team']} ({pm['primary_team_league']})")
+    # The cross-league columns are GONE, by design. Their presence would mean a
+    # filtered dimension had been shipped in place of a rebuilt one.
+    cols = {c["column_name"] for c in server.describe_table("dim_athlete")["columns"]}
+    check("dim_athlete carries no cross-league columns",
+          not ({"leagues", "nfl_plays"} & cols), str({"leagues", "nfl_plays"} & cols))
 
-    # The same collision on a college-only career must still resolve to college.
-    dunn = [p for p in server.find_player(name="Christopher Dunn")["players"]
-            if p["leagues"] == "cfb"]
-    if dunn:
-        check("a college-only career resolves to a college team",
-              dunn[0]["primary_team_league"] == "cfb", str(dunn[0]["primary_team"]))
+    venue_q = {"cfb": "Rose Bowl", "nfl": "Lambeau"}[config.LEAGUE]
+    check(f"find_venue finds {venue_q}", server.find_venue(query=venue_q)["count"] >= 1)
 
-    # 2,779 people span both leagues; the shared athlete dimension is the reason.
-    both = db.query(
-        "SELECT count(*) AS n FROM pbp.dim_athlete WHERE leagues = 'cfb+nfl'")
-    check("cross-league athletes present", both[0]["n"] > 2_000, str(both[0]["n"]))
-
-    venues = server.find_venue(query="Rose Bowl")
-    check("find_venue finds the Rose Bowl", venues["count"] >= 1)
-
-    # A floor, not an exact count. README.md still says "18 indoor / 183 outdoor,
-    # 201 venues" from when it was written; the corpus is now 217 venues, 20 of them
-    # indoor, and it grows whenever a new stadium hosts a game. What must hold is
-    # that the flag is POPULATED -- 0 unknown was the point of adding it -- not that
-    # the total is frozen.
-    indoor = server.find_venue(indoor=True, limit=100)
-    check("indoor venues present (>=18)", indoor["count"] >= 18, str(indoor["count"]))
-    unknown = db.query(
-        "SELECT count(*) AS n FROM pbp.dim_venue WHERE indoor IS NULL")[0]["n"]
+    unknown = db.query("SELECT count(*) AS n FROM dim_venue WHERE indoor IS NULL")[0]["n"]
     check("no venue has an unknown roof", unknown == 0, str(unknown))
 
-    confs = server.list_conferences(league="cfb")
-    check("conferences listed for cfb", confs["count"] >= 10, str(confs["count"]))
+    confs = server.list_conferences()
+    floor = {"cfb": 10, "nfl": 2}[config.LEAGUE]
+    check(f"conferences listed (>={floor})", confs["count"] >= floor, str(confs["count"]))
 
 
 # --------------------------------------------------------------------------- games
 
 def test_games() -> None:
     section("games")
-    games = server.list_games(league="nfl", season=2024, limit=5)
+    games = server.list_games(season=2024, limit=5)
     check("list_games returns NFL 2024", games["count"] == 5, str(games["count"]))
 
     game_id = games["games"][0]["game_id"]
@@ -178,14 +195,14 @@ def test_games() -> None:
 
 def test_plays() -> None:
     section("plays")
-    kicks = server.query_plays(fact="kicks", league="cfb", season=2023,
+    kicks = server.query_plays(fact="kicks", season=2023,
                                play_kind="field_goal", limit=10)
     check("query_plays kicks", kicks["count"] == 10, str(kicks["count"]))
     check("query_plays returns play_text", all(p.get("play_text") for p in kicks["plays"]))
     check("query_plays resolved the conference",
           any(p.get("kicking_conference") for p in kicks["plays"]))
 
-    scrim = server.query_plays(fact="scrimmage", league="nfl", season=2024,
+    scrim = server.query_plays(fact="scrimmage", season=2024,
                                play_kind="pass", is_touchdown=True, limit=5)
     check("query_plays scrimmage + touchdown filter", scrim["count"] == 5)
     check("touchdown filter held", all(p["is_touchdown"] for p in scrim["plays"]))
@@ -225,25 +242,35 @@ def test_players() -> None:
 
     profile = server.player_profile(aid)
     check("player_profile returns identity", profile["player"]["athlete_id"] == aid)
-    check("Mahomes has scrimmage seasons", len(profile["scrimmage_by_season"]) > 3,
+    # Career grain is now WITHIN this corpus. Mahomes has three college seasons
+    # (2014-2016) and ten NFL ones; the old suite asserted >3 against a combined
+    # career, which is exactly the blending the split removed.
+    seasons_floor = {"cfb": 3, "nfl": 8}[config.LEAGUE]
+    check("Mahomes' scrimmage seasons are this corpus's only",
+          len(profile["scrimmage_by_season"]) >= seasons_floor,
           str(len(profile["scrimmage_by_season"])))
-    check("Mahomes spans both leagues",
-          profile["player"]["leagues"] == "cfb+nfl", str(profile["player"]["leagues"]))
+    check("player_profile carries no cross-league field",
+          "leagues" not in profile["player"] and "nfl_plays" not in profile["player"],
+          str(sorted(profile["player"])[:8]))
 
-    log = server.player_game_log(aid, season=2023, limit=25)
-    check("player_game_log returns games", log["count"] > 5, str(log["count"]))
+    # A season INSIDE this corpus's career for this player. 2023 is right for the NFL
+    # and empty for college, where Mahomes last played in 2016 -- asking for it there
+    # asserted a career that spans both corpora, which is what the split removed.
+    log_season = {"cfb": 2016, "nfl": 2023}[config.LEAGUE]
+    log = server.player_game_log(aid, season=log_season, limit=25)
+    check(f"player_game_log returns {log_season} games", log["count"] > 5, str(log["count"]))
 
     check("player_profile rejects a bad id", "error" in server.player_profile(-1))
 
     for measure in q.LEADERBOARD_SQL:
-        board = server.leaderboard(measure=measure, league="nfl", season=2023,
+        board = server.leaderboard(measure=measure, season=2023,
                                    min_attempts=10, limit=5)
         check(f"leaderboard {measure}", board["count"] > 0, str(board))
 
     # The min_attempts guard is the whole point of the tool.
-    loose = server.leaderboard(measure="fg_pct", league="cfb", season=2023,
+    loose = server.leaderboard(measure="fg_pct", season=2023,
                                min_attempts=1, limit=5)
-    tight = server.leaderboard(measure="fg_pct", league="cfb", season=2023,
+    tight = server.leaderboard(measure="fg_pct", season=2023,
                                min_attempts=25, limit=5)
     check("min_attempts filters", loose["count"] >= tight["count"])
     check("min_attempts is honoured",
@@ -260,9 +287,10 @@ def test_teams() -> None:
     # division and then name, so [0] is usually right -- but "Alabama" legitimately
     # matches five programmes and a test that depends on the ordering is testing
     # the ordering, not team_season.
-    teams = server.find_team(query="Alabama Crimson Tide", league="cfb")["teams"]
-    alabama = next(t for t in teams if t["display_name"] == "Alabama Crimson Tide")
-    ts = server.team_season(team_id=alabama["team_id"], league="cfb", season=2023)
+    NAME = {"cfb": "Alabama Crimson Tide", "nfl": "Kansas City Chiefs"}[config.LEAGUE]
+    teams = server.find_team(query=NAME)["teams"]
+    picked = next(t for t in teams if t["display_name"] == NAME)
+    ts = server.team_season(team_id=picked["team_id"], season=2023)
     check("team_season returns a row", "team_season" in ts, str(ts))
     if "team_season" in ts:
         row = ts["team_season"]
@@ -270,8 +298,13 @@ def test_teams() -> None:
               str(row.get("off_plays")))
         check("team_season has defence", (row.get("def_plays") or 0) > 500,
               str(row.get("def_plays")))
-    check("team_season requires a valid league",
-          _raises(lambda: server.team_season(team_id=1, league="xfl", season=2023)))
+    # team_season no longer takes a league -- inside one corpus a team_id is
+    # unambiguous. What must still hold is that an id from the OTHER corpus is not
+    # silently answered: NFL ids run 1-34 and collide with college ones, so the
+    # check is that an id absent from THIS dim_team is refused rather than blended.
+    absent = db.query("SELECT max(team_id) + 1 AS t FROM dim_team")[0]["t"]
+    check("team_season refuses a team_id not in this corpus",
+          "error" in server.team_season(team_id=absent, season=2023))
 
 
 # --------------------------------------------------------------------------- the football
@@ -282,64 +315,69 @@ def test_football() -> None:
     section("does it behave like football")
 
     fg = server.league_trend(measure="fg_pct")["series"]
-    cfb_fg = [r for r in fg if r["league"] == "cfb" and r["season"] == 2023]
-    nfl_fg = [r for r in fg if r["league"] == "nfl" and r["season"] == 2023]
-    check("college FG% 2023 in 70-80", approx(cfb_fg[0]["value"], 70, 80), str(cfb_fg))
-    check("NFL FG% 2023 in 80-90", approx(nfl_fg[0]["value"], 80, 90), str(nfl_fg))
+    row = [r for r in fg if r["season"] == 2023]
+    # The two corpora kick differently and that difference is the cheapest proof the
+    # right rows are in the right schema: a college server reading NFL kicks would
+    # land in the 80s, not the 70s.
+    lo, hi = {"cfb": (70, 80), "nfl": (80, 90)}[config.LEAGUE]
+    check(f"FG% 2023 in {lo}-{hi}", approx(row[0]["value"], lo, hi), str(row))
 
     ypc = server.league_trend(measure="yards_per_carry")["series"]
-    cfb_ypc = [r for r in ypc if r["league"] == "cfb" and r["season"] == 2023][0]["value"]
-    nfl_ypc = [r for r in ypc if r["league"] == "nfl" and r["season"] == 2023][0]["value"]
-    # The pro number is LOWER, which is correct and is the opposite of what a
-    # copied pipeline would produce.
-    check("NFL yards/carry is BELOW college", nfl_ypc < cfb_ypc, f"{nfl_ypc} vs {cfb_ypc}")
-    check("college yards/carry in 4.5-6", approx(cfb_ypc, 4.5, 6.0), str(cfb_ypc))
-    check("NFL yards/carry in 3.8-4.8", approx(nfl_ypc, 3.8, 4.8), str(nfl_ypc))
+    got = [r for r in ypc if r["season"] == 2023][0]["value"]
+    # The pro number is LOWER than the college one, which is correct football and is
+    # the opposite of what a copied pipeline produces. The comparison itself can no
+    # longer be made from one server -- so each asserts its OWN band, and the bands
+    # do not overlap. A college server reading NFL rushes fails the college band.
+    lo, hi = {"cfb": (4.5, 6.0), "nfl": (3.9, 4.6)}[config.LEAGUE]
+    check(f"yards/carry 2023 in {lo}-{hi}", approx(got, lo, hi), str(got))
 
     punts = server.league_trend(measure="punt_gross_avg")["series"]
-    cfb_p = [r for r in punts if r["league"] == "cfb" and r["season"] == 2023][0]["value"]
-    nfl_p = [r for r in punts if r["league"] == "nfl" and r["season"] == 2023][0]["value"]
-    check("college punt gross 40-44", approx(cfb_p, 40, 44), str(cfb_p))
-    check("NFL punt gross 44-49", approx(nfl_p, 44, 49), str(nfl_p))
+    gross = [r for r in punts if r["season"] == 2023][0]["value"]
+    lo, hi = {"cfb": (40, 44), "nfl": (44, 49)}[config.LEAGUE]
+    check(f"punt gross {lo}-{hi}", approx(gross, lo, hi), str(gross))
 
-    # Monotonic FG% by distance, in BOTH leagues. A silently wrong distance field
-    # does not produce this.
-    for league in ("cfb", "nfl"):
-        buckets = server.fg_by_distance(league=league)["buckets"]
-        rows = [b for b in buckets if 20 <= b["fg_dist_bucket"] <= 50]
-        pcts = [float(b["fg_pct"]) for b in sorted(rows, key=lambda b: b["fg_dist_bucket"])]
-        check(f"{league} FG% falls monotonically 20->50",
-              all(a > b for a, b in zip(pcts, pcts[1:])), str(pcts))
+    # Monotonic FG% by distance. A silently wrong distance field does not produce
+    # this, in either corpus -- which is why it is worth asserting in both, once each.
+    buckets = server.fg_by_distance()["buckets"]
+    rows = [b for b in buckets if 20 <= b["fg_dist_bucket"] <= 50]
+    pcts = [float(b["fg_pct"]) for b in sorted(rows, key=lambda b: b["fg_dist_bucket"])]
+    check("FG% falls monotonically 20->50",
+          all(a > b for a, b in zip(pcts, pcts[1:])), str(pcts))
 
     # The rule changes. College steps once in 2018; the NFL collapses in two
     # stages, 2024 and 2025. Two different shapes, in a column parsed by two
     # different modules.
+    # THE SHARPEST PROOF THE RIGHT ROWS ARE IN THE RIGHT SCHEMA. The two leagues
+    # changed the kickoff rule in different years and in different shapes: college
+    # steps once at 2018, the NFL collapses in two stages across 2024-2025. A server
+    # reading the other corpus's kickoffs fails its own assertion outright, because
+    # the step is in the wrong season.
     tb = server.league_trend(measure="kickoff_touchback_pct")["series"]
-    cfb_tb = {r["season"]: float(r["value"]) for r in tb if r["league"] == "cfb"}
-    nfl_tb = {r["season"]: float(r["value"]) for r in tb if r["league"] == "nfl"}
-    check("college touchback% steps up at 2018",
-          cfb_tb[2018] - cfb_tb[2017] > 5, f"2017={cfb_tb.get(2017)} 2018={cfb_tb.get(2018)}")
-    check("NFL touchback% collapses by 2025",
-          nfl_tb[2025] < 40 < nfl_tb[2023],
-          f"2023={nfl_tb.get(2023)} 2024={nfl_tb.get(2024)} 2025={nfl_tb.get(2025)}")
+    by_season = {r["season"]: float(r["value"]) for r in tb}
+    if config.LEAGUE == "cfb":
+        check("college touchback% steps up at 2018",
+              by_season[2018] - by_season[2017] > 5,
+              f"2017={by_season.get(2017)} 2018={by_season.get(2018)}")
+    else:
+        check("NFL touchback% collapses by 2025",
+              by_season[2025] < 40 < by_season[2023],
+              f"2023={by_season.get(2023)} 2024={by_season.get(2024)} "
+              f"2025={by_season.get(2025)}")
 
-    # Drive TD% is monotonic in starting field position, in both leagues.
-    for league in ("cfb", "nfl"):
-        zones = server.drive_outcomes(league=league)["zones"]
-        tds = [float(z["td_pct"]) for z in sorted(zones, key=lambda z: z["start_zone"])]
-        check(f"{league} drive TD% falls with field position",
-              all(a > b for a, b in zip(tds, tds[1:])), str(tds))
+    # Drive TD% is monotonic in starting field position.
+    zones = server.drive_outcomes()["zones"]
+    tds = [float(z["td_pct"]) for z in sorted(zones, key=lambda z: z["start_zone"])]
+    check("drive TD% falls with field position",
+          all(a > b for a, b in zip(tds, tds[1:])), str(tds))
 
-    # First-down rate rises with down, in both leagues.
-    for league in ("cfb", "nfl"):
-        rows = db.query(
-            "SELECT down, round(100.0*avg(first_down_gained::int),1) AS pct "
-            "FROM pbp.scrimmage_wide WHERE league = %s AND down BETWEEN 1 AND 4 "
-            "AND play_kind IN ('rush','pass','sack') GROUP BY down ORDER BY down",
-            (league,))
-        pcts = [float(r["pct"]) for r in rows]
-        check(f"{league} first-down rate rises with down",
-              all(a < b for a, b in zip(pcts, pcts[1:])), str(pcts))
+    # First-down rate rises with down.
+    rows = db.query(
+        "SELECT down, round(100.0*avg(first_down_gained::int),1) AS pct "
+        f"FROM {config.SCHEMA}.scrimmage_wide WHERE down BETWEEN 1 AND 4 "
+        "AND play_kind IN ('rush','pass','sack') GROUP BY down ORDER BY down")
+    pcts = [float(r["pct"]) for r in rows]
+    check("first-down rate rises with down",
+          all(a < b for a, b in zip(pcts, pcts[1:])), str(pcts))
 
 
 # --------------------------------------------------------------------------- NULL semantics
@@ -351,28 +389,33 @@ def test_null_semantics() -> None:
     section("NULL semantics")
     row = db.query(
         "SELECT count(*) FILTER (WHERE returned IS NULL) AS unstated, count(*) AS total "
-        "FROM pbp.play_wide WHERE play_kind IN ('punt','kickoff')")[0]
+        f"FROM {config.SCHEMA}.play_wide WHERE play_kind IN ('punt','kickoff')")[0]
     pct = 100.0 * row["unstated"] / row["total"]
     check("unstated outcomes are NULL, not false", row["unstated"] > 0, str(row))
-    check("unstated share is ~9.9%", approx(pct, 8, 12), f"{pct:.1f}%")
+    # PER CORPUS, and the split is what surfaced this: README.md and known_limits()
+    # both quote 9.9% as if it were corpus-wide. It is the COLLEGE figure. The NFL
+    # feed states an outcome far more often -- 3.4% unstated against college's 9.9%
+    # -- so the blended number (8.4%) describes neither corpus.
+    lo, hi = {"cfb": (8.0, 12.0), "nfl": (2.5, 5.0)}[config.LEAGUE]
+    check(f"unstated share in {lo}-{hi}%", approx(pct, lo, hi), f"{pct:.1f}%")
 
     negated = db.query(
-        "SELECT count(*) AS n FROM pbp.play_wide "
+        f"SELECT count(*) AS n FROM {config.SCHEMA}.play_wide "
         "WHERE play_kind = 'field_goal' AND fg_made IS NULL")[0]["n"]
     check("negated field goals are NULL", negated > 0, str(negated))
 
     sentinel = db.query(
-        "SELECT count(*) AS n FROM pbp.play_wide WHERE yards_to_goal = 0")[0]["n"]
+        f"SELECT count(*) AS n FROM {config.SCHEMA}.play_wide WHERE yards_to_goal = 0")[0]["n"]
     check("yards_to_goal = 0 sentinel present", sentinel > 0, str(sentinel))
 
     # kick_outcomes must report the unstated share rather than burying it.
-    out = server.kick_outcomes(play_kind="kickoff", league="cfb", season=2023)
+    out = server.kick_outcomes(play_kind="kickoff", season=2023)
     check("kick_outcomes reports pct_unstated",
           out["seasons"] and out["seasons"][0]["pct_unstated"] is not None)
 
     # A sack is not a pass attempt in NCAA accounting.
     sacks = db.query(
-        "SELECT count(*) AS n FROM pbp.scrimmage_wide "
+        f"SELECT count(*) AS n FROM {config.SCHEMA}.scrimmage_wide "
         "WHERE play_kind = 'sack' AND is_complete IS NOT NULL")[0]["n"]
     check("sacks carry is_complete IS NULL", sacks == 0, str(sacks))
 
@@ -383,39 +426,42 @@ def test_integrity() -> None:
     section("referential integrity")
     checks = {
         "plays with no fact_game row":
-            "SELECT count(*) AS n FROM pbp.special_teams_play p LEFT JOIN pbp.fact_game g "
-            "ON g.game_id = p.game_id AND g.league = p.league WHERE g.game_id IS NULL",
+            f"SELECT count(*) AS n FROM {config.SCHEMA}.special_teams_play p LEFT JOIN {config.SCHEMA}.fact_game g "
+            "ON g.game_id = p.game_id WHERE g.game_id IS NULL",
         "kicker_athlete_id not in dim_athlete":
-            "SELECT count(*) AS n FROM pbp.special_teams_play p LEFT JOIN pbp.dim_athlete a "
+            f"SELECT count(*) AS n FROM {config.SCHEMA}.special_teams_play p LEFT JOIN {config.SCHEMA}.dim_athlete a "
             "ON a.athlete_id = p.kicker_athlete_id "
             "WHERE p.kicker_athlete_id IS NOT NULL AND a.athlete_id IS NULL",
         "venue_id not in dim_venue":
-            "SELECT count(*) AS n FROM pbp.fact_game g LEFT JOIN pbp.dim_venue v "
+            f"SELECT count(*) AS n FROM {config.SCHEMA}.fact_game g LEFT JOIN {config.SCHEMA}.dim_venue v "
             "ON v.venue_id = g.venue_id WHERE g.venue_id IS NOT NULL AND v.venue_id IS NULL",
         "kicking team with no (team_id, season) row":
-            "SELECT count(*) AS n FROM pbp.special_teams_play p LEFT JOIN pbp.dim_team_season t "
-            "ON t.team_id = p.kicking_team_id AND t.season = p.season AND t.league = p.league "
+            f"SELECT count(*) AS n FROM {config.SCHEMA}.special_teams_play p LEFT JOIN {config.SCHEMA}.dim_team_season t "
+            "ON t.team_id = p.kicking_team_id AND t.season = p.season "
             "WHERE p.kicking_team_id IS NOT NULL AND t.team_id IS NULL",
         "play_uid collisions across the two facts":
-            "SELECT count(*) AS n FROM pbp.special_teams_play s "
-            "JOIN pbp.scrimmage_play c ON c.play_uid = s.play_uid",
+            f"SELECT count(*) AS n FROM {config.SCHEMA}.special_teams_play s "
+            f"JOIN {config.SCHEMA}.scrimmage_play c ON c.play_uid = s.play_uid",
     }
     for label, sql in checks.items():
         n = db.query(sql)[0]["n"]
         check(label + " = 0", n == 0, str(n))
 
-    # The Pro Bowl is dropped at fetch time; its all-star squads must be absent.
-    probowl = db.query(
-        "SELECT count(*) AS n FROM pbp.fact_game "
-        "WHERE league = 'nfl' AND (home_team_id IN (31,32) OR away_team_id IN (31,32))"
-    )[0]["n"]
-    check("Pro Bowl games absent", probowl == 0, str(probowl))
+    # The Pro Bowl is dropped at fetch time; its all-star squads must be absent. Only
+    # asks the question of the corpus it can be asked of -- team ids 31/32 are real
+    # college programmes, so running this against cfb would assert a falsehood.
+    if config.LEAGUE == "nfl":
+        probowl = db.query(
+            f"SELECT count(*) AS n FROM {config.SCHEMA}.fact_game "
+            "WHERE home_team_id IN (31,32) OR away_team_id IN (31,32)"
+        )[0]["n"]
+        check("Pro Bowl games absent", probowl == 0, str(probowl))
 
     # The wide tables must agree with the facts they project.
     for wide, narrow in (("play_wide", "special_teams_play"),
                          ("scrimmage_wide", "scrimmage_play")):
-        a = db.query(f"SELECT count(*) AS n FROM pbp.{wide}")[0]["n"]
-        b = db.query(f"SELECT count(*) AS n FROM pbp.{narrow}")[0]["n"]
+        a = db.query(f"SELECT count(*) AS n FROM {config.SCHEMA}.{wide}")[0]["n"]
+        b = db.query(f"SELECT count(*) AS n FROM {config.SCHEMA}.{narrow}")[0]["n"]
         check(f"{wide} row count matches {narrow}", a == b, f"{a} vs {b}")
 
 
@@ -431,7 +477,7 @@ def test_schema_tools() -> None:
 
     # The grants and the guard's allow-list are two separate lists on purpose.
     # This is the check that catches them drifting.
-    granted = {f"pbp.{t}" for t in names}
+    granted = {f"{config.SCHEMA}.{t}" for t in names}
     check("guard allow-list matches the grants",
           guard.ALLOWED_TABLES == granted,
           f"guard-only={guard.ALLOWED_TABLES - granted} grants-only={granted - guard.ALLOWED_TABLES}")
@@ -455,28 +501,28 @@ def test_schema_tools() -> None:
 # --------------------------------------------------------------------------- the guard
 
 _REJECTIONS = [
-    ("write: insert", "INSERT INTO pbp.dim_team VALUES (1)"),
-    ("write: update", "UPDATE pbp.play_wide SET fg_made = true"),
-    ("write: delete", "DELETE FROM pbp.play_wide"),
-    ("write: drop", "DROP TABLE pbp.play_wide"),
-    ("write: truncate", "TRUNCATE pbp.play_wide"),
+    ("write: insert", f"INSERT INTO {config.SCHEMA}.dim_team VALUES (1)"),
+    ("write: update", f"UPDATE {config.SCHEMA}.play_wide SET fg_made = true"),
+    ("write: delete", f"DELETE FROM {config.SCHEMA}.play_wide"),
+    ("write: drop", f"DROP TABLE {config.SCHEMA}.play_wide"),
+    ("write: truncate", f"TRUNCATE {config.SCHEMA}.play_wide"),
     ("write: create", "CREATE TABLE x (a int)"),
-    ("write: alter", "ALTER TABLE pbp.play_wide ADD COLUMN x int"),
-    ("write: grant", "GRANT SELECT ON pbp.play_wide TO public"),
-    ("stacking", "SELECT 1 FROM pbp.play_wide; DROP TABLE pbp.play_wide"),
-    ("stacking with comment", "SELECT 1 FROM pbp.play_wide;/**/DROP TABLE pbp.play_wide"),
+    ("write: alter", f"ALTER TABLE {config.SCHEMA}.play_wide ADD COLUMN x int"),
+    ("write: grant", f"GRANT SELECT ON {config.SCHEMA}.play_wide TO public"),
+    ("stacking", f"SELECT 1 FROM {config.SCHEMA}.play_wide; DROP TABLE {config.SCHEMA}.play_wide"),
+    ("stacking with comment", f"SELECT 1 FROM {config.SCHEMA}.play_wide;/**/DROP TABLE {config.SCHEMA}.play_wide"),
     ("catalog: pg_authid", "SELECT * FROM pg_authid"),
     ("catalog: pg_stat_activity", "SELECT * FROM pg_stat_activity"),
     ("catalog: pg_settings", "SELECT * FROM pg_settings"),
     ("catalog: information_schema", "SELECT * FROM information_schema.tables"),
-    ("unknown table", "SELECT * FROM pbp.secrets"),
+    ("unknown table", f"SELECT * FROM {config.SCHEMA}.secrets"),
     ("cross-database", "SELECT * FROM weatherdata.public.observations"),
     ("file read", "SELECT pg_read_file('/etc/passwd')"),
     ("dblink", "SELECT dblink('x','y')"),
     ("sleep", "SELECT pg_sleep(60)"),
-    ("lock", "SELECT * FROM pbp.play_wide FOR UPDATE"),
+    ("lock", f"SELECT * FROM {config.SCHEMA}.play_wide FOR UPDATE"),
     ("CTE hiding a write",
-     "WITH x AS (DELETE FROM pbp.play_wide RETURNING 1) SELECT * FROM x"),
+     f"WITH x AS (DELETE FROM {config.SCHEMA}.play_wide RETURNING 1) SELECT * FROM x"),
     ("set", "SET statement_timeout = 0"),
     ("empty", ""),
     ("not sql", "this is not sql at all ((("),
@@ -496,12 +542,12 @@ def test_guard() -> None:
 
     section("guard acceptances")
     ok = [
-        ("plain select", "SELECT league, count(*) FROM pbp.play_wide GROUP BY 1"),
-        ("cte", "WITH x AS (SELECT * FROM pbp.play_wide LIMIT 5) SELECT count(*) FROM x"),
+        ("plain select", f"SELECT league, count(*) FROM {config.SCHEMA}.play_wide GROUP BY 1"),
+        ("cte", f"WITH x AS (SELECT * FROM {config.SCHEMA}.play_wide LIMIT 5) SELECT count(*) FROM x"),
         ("join across facts",
-         "SELECT count(*) FROM pbp.play_wide p JOIN pbp.fact_game g USING (game_id)"),
+         f"SELECT count(*) FROM {config.SCHEMA}.play_wide p JOIN {config.SCHEMA}.fact_game g USING (game_id)"),
         ("union",
-         "SELECT league FROM pbp.play_wide UNION SELECT league FROM pbp.scrimmage_wide"),
+         f"SELECT league FROM {config.SCHEMA}.play_wide UNION SELECT league FROM {config.SCHEMA}.scrimmage_wide"),
         ("unqualified name resolves to pbp", "SELECT count(*) FROM play_wide"),
     ]
     for label, sql in ok:
@@ -512,12 +558,12 @@ def test_guard() -> None:
             check(f"accept {label}", False, f"{type(exc).__name__}: {exc}")
 
     section("limit handling")
-    _, r = guard.check("SELECT * FROM pbp.play_wide")
+    _, r = guard.check(f"SELECT * FROM {config.SCHEMA}.play_wide")
     check("missing LIMIT gets the default",
           r["limit_source"] == "default" and r["row_limit"] == guard.DEFAULT_LIMIT, str(r))
-    _, r = guard.check("SELECT * FROM pbp.play_wide LIMIT 5")
+    _, r = guard.check(f"SELECT * FROM {config.SCHEMA}.play_wide LIMIT 5")
     check("caller LIMIT is kept", r["limit_source"] == "caller" and r["row_limit"] == 5, str(r))
-    _, r = guard.check("SELECT * FROM pbp.play_wide LIMIT 999999")
+    _, r = guard.check(f"SELECT * FROM {config.SCHEMA}.play_wide LIMIT 999999")
     check("oversized LIMIT is capped",
           r["limit_source"] == "capped" and r["row_limit"] == guard.MAX_LIMIT, str(r))
 
@@ -526,19 +572,20 @@ def test_guard() -> None:
 
 def test_run_sql() -> None:
     section("run_sql")
-    res = server.run_sql("SELECT league, count(*) AS n FROM pbp.play_wide GROUP BY 1 ORDER BY 1")
-    check("run_sql returns rows", res.get("row_count") == 2, str(res)[:200])
-    check("run_sql reports its tables", res.get("tables") == ["pbp.play_wide"], str(res.get("tables")))
+    res = server.run_sql(f"SELECT season, count(*) AS n FROM {config.SCHEMA}.play_wide GROUP BY 1 ORDER BY 1")
+    # Thirteen seasons, not two leagues: the grouping column changed with the split.
+    check("run_sql returns rows", res.get("row_count") >= 13, str(res)[:200])
+    check("run_sql reports its tables", res.get("tables") == [f"{config.SCHEMA}.play_wide"], str(res.get("tables")))
 
-    explained = server.run_sql("SELECT * FROM pbp.play_wide", explain_only=True)
+    explained = server.run_sql(f"SELECT * FROM {config.SCHEMA}.play_wide", explain_only=True)
     check("explain_only returns a plan", explained.get("explain_only") is True)
     check("explain_only returns no data rows",
           all("play_uid" not in str(r) for r in explained.get("rows", [])))
 
-    rejected = server.run_sql("DROP TABLE pbp.play_wide")
+    rejected = server.run_sql(f"DROP TABLE {config.SCHEMA}.play_wide")
     check("run_sql reports a rejection", rejected.get("rejected") is True)
 
-    truncated = server.run_sql("SELECT play_uid FROM pbp.play_wide")
+    truncated = server.run_sql(f"SELECT play_uid FROM {config.SCHEMA}.play_wide")
     check("run_sql flags truncation", truncated.get("truncated") is True, str(truncated.get("row_count")))
 
 
@@ -552,9 +599,9 @@ def test_write_protection() -> None:
     import psycopg
 
     for label, sql in [
-        ("INSERT refused by the role", "INSERT INTO pbp.dim_team VALUES ('cfb', 999999, 'x')"),
-        ("UPDATE refused by the role", "UPDATE pbp.dim_team SET display_name = 'x'"),
-        ("CREATE refused by the role", "CREATE TABLE pbp.should_not_exist (a int)"),
+        ("INSERT refused by the role", "INSERT INTO {config.SCHEMA}.dim_team VALUES ('cfb', 999999, 'x')"),
+        ("UPDATE refused by the role", "UPDATE {config.SCHEMA}.dim_team SET display_name = 'x'"),
+        ("CREATE refused by the role", f"CREATE TABLE {config.SCHEMA}.should_not_exist (a int)"),
     ]:
         try:
             # db.query_guarded deliberately does NOT re-validate; that is what lets
@@ -592,17 +639,16 @@ def test_write_protection() -> None:
 
 def test_quality_tools() -> None:
     section("quality tools")
-    pq = server.parse_quality(league="cfb")
+    pq = server.parse_quality()
     check("parse_quality returns seasons", pq["count"] > 10, str(pq["count"]))
 
     overall = db.query(
-        "SELECT league, round(100.0*avg((parse_confidence='exact')::int),2) AS pct "
-        "FROM pbp.play_wide GROUP BY league ORDER BY league")
-    by_league = {r["league"]: float(r["pct"]) for r in overall}
-    check("college parse rate ~98%", approx(by_league["cfb"], 97, 99), str(by_league))
-    check("NFL parse rate ~98%", approx(by_league["nfl"], 97, 99), str(by_league))
+        "SELECT round(100.0*avg((parse_confidence='exact')::int),2) AS pct "
+        f"FROM {config.SCHEMA}.play_wide")
+    pct = float(overall[0]["pct"])
+    check("parse rate ~98%", approx(pct, 97, 99), str(pct))
 
-    audit = server.audit_plays(league="cfb", limit=5)
+    audit = server.audit_plays(limit=5)
     check("audit_plays returns rows with text",
           audit["count"] > 0 and all(p["play_text"] for p in audit["plays"]))
 
@@ -641,7 +687,7 @@ def main() -> int:
 
     latest = db.query(
         "SELECT league, max(season) AS s, max(last_kickoff) AS k "
-        "FROM pbp.season_status GROUP BY league ORDER BY league")
+        f"FROM {config.SCHEMA}.season_status GROUP BY league ORDER BY league")
     for row in latest:
         print(f"{row['league']}: through season {row['s']}, last game {row['k']}")
     return 0
