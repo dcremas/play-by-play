@@ -1,0 +1,90 @@
+# The pbp MCP server, as an HTTP service on the loopback.
+#
+# Install to /etc/systemd/system/pbp-mcp.service (provision.sh does this).
+#
+# RUNS AS ITS OWN USER, AND THAT IS NOW ACTUALLY WORTH SOMETHING.
+# `weathermcp` and `pbpmcp` are separate users so neither can read the other's
+# credential file. That separation used to be cosmetic, because both files held
+# the SAME mcp_ro password. This server connects as `pbp_ro` -- its own role,
+# its own secret, bounded by pg_hba.conf to the `pbp` database alone -- so
+# compromising this service yields a credential that cannot read the weather
+# warehouse, and vice versa. See setup_role_pbp.sql.
+#
+# A future public Streamlit app gets a THIRD user (`pbpapp`) holding the LLM API
+# key and no database credential at all, exactly as sqlxapp does for weather.
+
+[Unit]
+Description=Play-by-play warehouse MCP server (read-only SQL tools over HTTP)
+Documentation=file:///opt/pbp-mcp/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+# StartLimit* BELONG IN [Unit], NOT [Service]. Put in [Service] and systemd logs
+# "Unknown key name ... ignoring" and silently applies its default of 5 starts
+# per 10s -- so Restart=always quietly is not always. weblog-collector.service on
+# this box has exactly that bug; do not copy it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pbpmcp
+Group=pbpmcp
+WorkingDirectory=/opt/pbp-mcp
+
+# On the box Postgres is LOCAL, so there is no SSH tunnel and the port is 5432,
+# not the 15432 the laptop uses. Setting these as environment variables rather
+# than editing .env keeps one checked-out tree working in both places -- and
+# note /opt/pbp-mcp has no .env at all: provision.sh excludes it, so the only
+# credential on the box is the EnvironmentFile below.
+Environment=MCP_DB_HOST=127.0.0.1
+Environment=MCP_DB_PORT=5432
+Environment=MCP_DB_USER=pbp_ro
+Environment=MCP_DB_NAME=pbp
+Environment=MCP_HTTP_HOST=127.0.0.1
+Environment=MCP_HTTP_PORT=8771
+Environment=PYTHONUNBUFFERED=1
+
+# Holds only MCP_DB_PASSWORD. Mode 640 root:pbpmcp.
+EnvironmentFile=/etc/pbp-mcp/mcp.env
+
+ExecStart=/opt/pbp-mcp/.venv/bin/python -m pbp_mcp.server --http
+
+Restart=always
+RestartSec=5s
+
+# Higher than weather-mcp's 160M/240M, and measured rather than guessed: this
+# corpus is 2.37M plays against weather's 9.1M narrow observations, and
+# guard.MAX_LIMIT allows 2,000 rows of play_text, which is megabytes of Python
+# str per result. The ceiling is here so a runaway result set kills THIS service
+# rather than letting the kernel's OOM killer choose -- on a 3.8 GB box already
+# ~1.1 GB into swap, its choice would probably be the website.
+MemoryHigh=240M
+MemoryMax=360M
+
+# CPU is the scarcer resource. 2 vCPU shared with Postgres, nginx, two Streamlit
+# apps and the weather MCP; one pathological aggregate must not starve the
+# loaders. 60% of one core still serves the typed tools comfortably -- they read
+# the wide tables, which is a single indexed scan.
+CPUQuota=60%
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# Loopback only. It never makes an outbound connection to anything but Postgres.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# It writes nothing. ProtectSystem=strict already makes /usr and /etc read-only;
+# this closes the rest, and PrivateTmp gives it the only writable path it needs.
+ProtectProc=invisible
+ReadOnlyPaths=/opt/pbp-mcp
+
+[Install]
+WantedBy=multi-user.target

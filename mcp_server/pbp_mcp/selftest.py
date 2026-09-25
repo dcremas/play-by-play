@@ -583,8 +583,8 @@ def test_write_protection() -> None:
         "FROM pg_roles WHERE rolname = current_user")[0]
     check("connected role has no elevated attributes",
           not any(role.values()), str(role))
-    check("connected as mcp_ro",
-          db.query("SELECT current_user AS u")[0]["u"] == "mcp_ro",
+    check("connected as pbp_ro",
+          db.query("SELECT current_user AS u")[0]["u"] == "pbp_ro",
           db.query("SELECT current_user AS u")[0]["u"])
 
 

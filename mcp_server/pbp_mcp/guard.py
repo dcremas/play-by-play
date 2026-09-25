@@ -5,7 +5,7 @@ instance since 2026-08-20. The reasoning there applies unchanged and is worth
 restating, because it is the reason a passthrough tool is acceptable at all:
 
     What makes a passthrough safe is not persuading the model to behave, it is
-    that the *database* cannot do the thing you are afraid of. The `mcp_ro` role
+    that the *database* cannot do the thing you are afraid of. The `pbp_ro` role
     holds SELECT and nothing else. A DELETE arriving from a compromised prompt
     does not get refused because this file was clever; it gets refused because
     the role cannot delete.
@@ -47,7 +47,7 @@ except ModuleNotFoundError as _exc:  # pragma: no cover - dependency is pinned
 DIALECT = "postgres"
 
 # Every relation run_sql may read, as schema.table. This is the same set the
-# mcp_ro grants cover, restated here so a query naming something else is refused
+# pbp_ro grants cover, restated here so a query naming something else is refused
 # before it opens a connection instead of after Postgres denies it. The two lists
 # are separate on purpose; selftest.py compares them, because drift between them
 # is how a table becomes mysteriously unreadable.
@@ -121,7 +121,7 @@ _FORBIDDEN_NODES: tuple[type, ...] = (
 )
 
 # Functions that read the filesystem, reach the network, or run arbitrary code.
-# None are reachable by mcp_ro's privileges, but a clear rejection beats a
+# None are reachable by pbp_ro's privileges, but a clear rejection beats a
 # permission error surfacing halfway through an answer.
 _FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
     {

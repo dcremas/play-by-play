@@ -9,7 +9,8 @@ box.
 |---|---|
 | **Corpus** | 2,397,512 plays · 13,958 games · 13 seasons (2014–2026) · two leagues |
 | **Database** | `pbp` on the EC2 instance, PostgreSQL 16.15, schema `pbp`, 14 tables |
-| **Role** | `mcp_ro` — the same role the weather warehouse MCP uses, granted per database |
+| **Role** | `pbp_ro` — **this server's own role**, `SELECT` on 14 tables, bounded by `pg_hba.conf` to the `pbp` database alone |
+| **Deployment** | `pbp-mcp.service` on the box, `127.0.0.1:8771`, user `pbpmcp` |
 | **Route from the Mac** | SSH tunnel on `127.0.0.1:15432`; public 5432 is closed |
 | **Sibling** | `../../ec2-nginx/weather-sql-explorer/mcp_server` — this server is built on its pattern, deliberately |
 
@@ -86,17 +87,17 @@ cd ~/projects/pbp/mcp_server
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 
-# 3b. The read-only grants (idempotent). Runs on the box: it needs to own the
-#     objects, and mcp_ro's session defaults are set per-database.
+# 3b. The role and its grants (idempotent). Runs on the box: it needs to own the
+#     objects, and pbp_ro's session defaults are set per-database.
 ssh awsvm 'sudo -u postgres psql -d pbp -f /var/lib/pgsql/staging/mcp_setup/setup_role_pbp.sql'
 
 # 3c. The caveats, as COMMENTs. Also on the box — COMMENT requires ownership.
 ssh awsvm 'sudo -u postgres psql -d pbp -f /var/lib/pgsql/staging/mcp_setup/comment_tables.sql'
 
-# 3d. The credential. mcp_ro ALREADY HAS a password — the weather MCP uses it.
-#     Reuse it rather than rotating, or you break that server too.
-cp .env.example .env && chmod 600 .env
-grep MCP_DB_PASSWORD ../../ec2-nginx/weather-sql-explorer/mcp_server/.env   # copy this in
+# 3d. The credential. pbp_ro is created WITHOUT a password; set one. It is this
+#     server's role alone, so the value is yours to choose and yours to rotate.
+ssh awsvm "sudo -u postgres psql -d pbp -c \"ALTER ROLE pbp_ro PASSWORD '<value>'\""
+cp .env.example .env && chmod 600 .env       # put the same value in MCP_DB_PASSWORD
 
 # 3e. Verify
 ./.venv/bin/python -m pbp_mcp.selftest
@@ -106,18 +107,44 @@ grep MCP_DB_PASSWORD ../../ec2-nginx/weather-sql-explorer/mcp_server/.env   # co
 `/var/lib/pgsql/staging/mcp_setup/` and re-runs both on every sync, so steps 3b
 and 3c are only manual on a first install.
 
-### One credential, two servers
+### Its own role, and why that changed
 
-`mcp_ro` reads `weatherdata`, `apple_weatherkit` **and** `pbp`. That is the
-convention already established on this box (`setup_role.sql` and
-`setup_role_apple_weatherkit.sql` grant the same role per database), and keeping
-it means one password and a straightforward path to the cross-warehouse join that
-`README.md` "Not built" describes — plays against weather, on the same server.
+This server used to connect as `mcp_ro` — one role shared with the weather
+warehouse MCP, granted per database, which was the established convention on this
+box. **That changed on 2026-09-25**, when this server became the backend for a
+public text-to-SQL endpoint. Two things were wrong with sharing:
 
-**Rotating the password requires updating both `.env` files**, and
-`pg_user_mapping` for the weather FDW as well. Change only one and the other
-server starts failing authentication while this one keeps working, which is a
-confusing way to find out.
+1. **One password in two services.** Both servers run as separate systemd users
+   *specifically* so neither can read the other's credential file — and then both
+   files held the same secret, which makes the separation cosmetic. Verified
+   before the change: identical MD5 of the password line in each `.env`.
+2. **Rotation was coupled.** Changing this server's password broke the weather
+   server and `pg_user_mapping` for the weather FDW. A credential you cannot
+   rotate independently is one you will not rotate.
+
+So `pbp_ro` now exists and `mcp_ro` has been revoked from this database entirely.
+`mcp_ro` keeps `weatherdata` (10 tables) and `apple_weatherkit` (5); it reads
+**zero** tables in `pbp`. Rotating either password now affects exactly one server.
+
+**`pbp_ro` is bounded three ways**, not just by its grants:
+
+| Bound | Mechanism | Effect |
+|---|---|---|
+| Which database | `pg_hba.conf` | `pbp` over loopback only. Every other database is refused **at authentication**, before any privilege check |
+| How many sessions | `CONNECTION LIMIT 10` | a connection leak here cannot exhaust `max_connections` and take the other databases on this box down with it |
+| What one query may cost | `work_mem=32MB`, `temp_file_limit=2GB`, `max_parallel_workers_per_gather=1` | one honest-but-expensive question cannot evict the shared buffer cache or take both vCPUs from the loaders |
+
+`CONNECT` on a database is granted to `PUBLIC` by default in Postgres, so role
+grants alone would still have let `pbp_ro` open a session against `postgres`,
+`template1`, `recipes` or `weatherdata`. It reads no tables there, but the
+`pg_hba.conf` rules remove the reach rather than relying on there being nothing
+to find. The alternative — `REVOKE CONNECT … FROM PUBLIC` — would have hit every
+other role on the box.
+
+**The cost of the split:** a future cross-warehouse join (plays against weather,
+`../README.md` "Not built") needs a role holding both sets of grants rather than
+reusing this one. That is the right trade for a credential sitting behind a
+public endpoint.
 
 ---
 
@@ -160,26 +187,39 @@ Restart Desktop — it reads that file only at launch. **Use the absolute path t
 `.venv/bin/python`**; Desktop does not inherit your shell `PATH`, so a bare
 `python` resolves to nothing and the server appears to fail silently.
 
-### On the EC2 box — NOT DONE
+### On the EC2 box — DEPLOYED
 
-Both modes above run the server **on the Mac**, reaching the box through the
-tunnel. The database is on EC2; the server is not. Running it there, the way
-`weather-mcp.service` runs, is unbuilt and would need:
+The modes above run the server **on the Mac**, reaching the box through the
+tunnel, which needs this laptop awake and the tunnel up. Since 2026-09-25 it also
+runs **on the box**, the way `weather-mcp.service` does, which is what lets
+anything else on that host — a web app in particular — reach it without a tunnel.
 
-1. A service user (`pbpmcp`), separate from `weathermcp`, so neither can read the
-   other's credential.
-2. The code and a venv at `/opt/pbp-mcp` — the box has Python but not this package.
-3. `/etc/pbp-mcp/mcp.env`, mode `640 root:pbpmcp`, holding `MCP_DB_PASSWORD`.
-   On-box the connection is local, so `MCP_DB_HOST=127.0.0.1` and `MCP_DB_PORT=5432`
-   — no tunnel.
-4. A systemd unit running `python -m pbp_mcp.server --http`, binding
-   **`127.0.0.1:8771` only** (8770 is weather, 8000 is in use). It must not be
-   proxied by nginx: there is no authentication on that endpoint.
-5. A sync story for the code, which `scripts/sync_ec2.py` does not currently handle
-   — it ships SQL, not the server.
+```bash
+bash deploy/push.sh              # ship the code and provision; idempotent
+bash deploy/push.sh --tls        # …and issue the certificate, once DNS resolves
+```
 
-Until then, the answer to "is it usable on the box?" is no; the answer to "is it
-usable against the box?" is yes.
+| | |
+|---|---|
+| **Unit** | `pbp-mcp.service`, `Restart=always`, `MemoryMax=360M`, `CPUQuota=60%` |
+| **User** | `pbpmcp` — separate from `weathermcp`, and now holding a *different* credential, so the separation is real |
+| **Endpoint** | `http://127.0.0.1:8771/mcp`, **loopback only, no authentication** |
+| **Code** | `/opt/pbp-mcp`, `ReadOnlyPaths`, no `.env` — the credential comes from `/etc/pbp-mcp/mcp.env` (mode `640 root:pbpmcp`) |
+| **Connection** | local, so `MCP_DB_HOST=127.0.0.1` and `MCP_DB_PORT=5432` — no tunnel |
+
+**`deploy/push.sh` is the code sync story `scripts/sync_ec2.py` does not have**,
+and they are deliberately separate. `sync_ec2.py` ships *data and SQL* — the CSV
+extracts, the loaders, the grant and comment files — on a weekly cadence; a full
+run takes about an hour. The server changes when its code changes. Coupling them
+would mean an hour-long data sync to ship a one-line fix.
+
+**The endpoint has no authentication, and that is the whole reason it binds
+loopback only.** `provision.sh` asserts two things every run because both fail
+silently: that 8771 is not listening on a public address, and that nginx is not
+proxying it. Publishing it would be publishing a read-any-table SQL interface.
+
+See `deploy/README-deploy.md` for the full procedure and what to do when a step
+fails.
 
 ---
 
@@ -265,11 +305,13 @@ entire NFL corpus.
 Read-only is enforced in **four independent layers**, and the SQL guard is not the
 important one:
 
-1. **The role.** `mcp_ro` holds `SELECT` on fourteen tables and nothing else — no
-   superuser, no createdb, no createrole, `NOINHERIT`. In this database it carries
-   `default_transaction_read_only=on`, `statement_timeout=60s` and
-   `idle_in_transaction_session_timeout=60s` as role-level defaults, so they apply
-   even if a client forgets to ask. **This is the layer that matters.**
+1. **The role.** `pbp_ro` holds `SELECT` on fourteen tables and nothing else — no
+   superuser, no createdb, no createrole, `NOINHERIT`, `CONNECTION LIMIT 10`. In
+   this database it carries `default_transaction_read_only=on`,
+   `statement_timeout=60s` and `idle_in_transaction_session_timeout=60s` as
+   role-level defaults, so they apply even if a client forgets to ask. **This is
+   the layer that matters.** A fifth bound sits *below* it: `pg_hba.conf` refuses
+   this role against every database but `pbp`, before any privilege is consulted.
 2. **The connection.** Every transaction sets `read_only=True`.
 3. **The statement timeout**, set again per connection in `db.py`, so a server
    pointed at a laxer role is still bounded.
@@ -294,7 +336,9 @@ are read by *fixed* queries in `queries.py`, filtered through
 nothing else. `run_sql` cannot reach the catalogs at all.
 
 **On that point the layering above is not symmetric, and it is worth being exact.**
-Audited 2026-09-25 by bypassing the guard and querying directly as `mcp_ro`:
+Audited 2026-09-25 by bypassing the guard and querying directly as the connected
+role (then `mcp_ro`, now `pbp_ro` — both were checked, and both behave the same
+way here because the asymmetry is Postgres's, not the role's):
 
 - **Writes are refused by the role**, every one -- `CREATE TABLE`, `CREATE SCHEMA`,
   `CREATE EXTENSION` all fail on `ReadOnlySqlTransaction`, and `pg_read_file` and
@@ -302,25 +346,38 @@ Audited 2026-09-25 by bypassing the guard and querying directly as `mcp_ro`:
   here.
 - **Catalog reads are not.** `pg_stat_activity`, `pg_settings` and
   `information_schema` are readable by PUBLIC in Postgres and therefore by
-  `mcp_ro`. For those, **the guard is the only thing standing in the way, not the
+  any login role. For those, **the guard is the only thing standing in the way, not the
   role.** The exposure if it were bypassed is small -- Postgres redacts other
   sessions' query text to `<insufficient privilege>` for a non-superuser, and the
   superuser-only GUCs stay hidden (`ssl_key_file`'s *path* is visible; the key is
   not) -- but "the database cannot do the thing you are afraid of" is true of
   writes and only of writes.
 
-**Cross-database reach of the shared credential**, same audit: `mcp_ro` may
-`CONNECT` to six databases (the PUBLIC default) but can read tables in only two --
-`pbp` (14) and `weatherdata` (5), plus `apple_weatherkit`. `recipes`,
-`data_visualization_logging` and `postgres` expose **0 readable tables**. So the
-shared role grants exactly what was intended and nothing more.
+**Cross-database reach — fixed, not just audited.** The 2026-09-25 audit found
+that `mcp_ro` could `CONNECT` to six databases (the `PUBLIC` default) though it
+read tables in only three. That reach is now gone for this server: `pbp_ro`
+replaced `mcp_ro` here, and `pg_hba.conf` refuses it against anything but `pbp`.
+Verified by attempting each one:
+
+```
+pbp                          -> pbp_ro
+weatherdata                  -> FATAL: pg_hba.conf rejects connection …
+apple_weatherkit             -> FATAL: pg_hba.conf rejects connection …
+postgres                     -> FATAL: pg_hba.conf rejects connection …
+recipes                      -> FATAL: pg_hba.conf rejects connection …
+template1                    -> FATAL: pg_hba.conf rejects connection …
+data_visualization_logging   -> FATAL: pg_hba.conf rejects connection …
+```
+
+`mcp_ro` itself is untouched and keeps `weatherdata` and `apple_weatherkit`; it
+now reads **zero** tables in `pbp`.
 
 Confirm the grants are still what they should be:
 
 ```bash
 psql -h 127.0.0.1 -p 15432 -U dustincremascoli -d pbp -tA -c "
 select table_name, string_agg(privilege_type,',') from information_schema.table_privileges
-where grantee='mcp_ro' and table_schema='pbp' group by 1 order by 1;"
+where grantee='pbp_ro' and table_schema='pbp' group by 1 order by 1;"
 ```
 
 **The grants do not stay granted by themselves.** `sql/wide_tables.sql` does
@@ -331,17 +388,31 @@ where grantee='mcp_ro' and table_schema='pbp' group by 1 order by 1;"
 next sync silently revokes access to the three tables the server depends on most —
 and the selftest's "guard allow-list matches the grants" check is what catches it.
 
-**Network exposure: none added.** The server runs on the Mac and reaches Postgres
-through the existing tunnel; nothing is opened on the EC2 side.
+**Network exposure: nothing new is reachable from outside.** The service binds
+`127.0.0.1:8771` and nothing else. No firewall rule was added, no port opened;
+`provision.sh` fails the deploy if the socket appears on a public address or if
+any nginx config proxies it. The one *public* thing this work added is the
+`pbp.dustincremascoli.com` vhost, which proxies port **8504** — the future
+explorer app — and never 8771.
 
-**It is NOT deployed on the EC2 box**, unlike the weather warehouse, which runs
-there as `weather-mcp.service` on `127.0.0.1:8770`. `main_http()` is provided and
-smoke-tested -- it binds `127.0.0.1:8771`, serves `/mcp` and answers `initialize` --
-but there is no systemd unit, no service user and no `/etc/pbp-mcp/mcp.env`. What
-on-box deployment would need is in section 4.
+**The MCP endpoint has no authentication of any kind.** That is acceptable
+precisely because it is loopback-only, and it is the reason the two assertions
+above exist. If it ever needs to be reachable off-box, it needs an auth story
+first; do not reach for a proxy.
 
-**The credential** lives only in `.env` (mode 600, gitignored). It is not in any
-client config, not in the repo, and not on any command line.
+**The credential** lives in exactly one place per machine: `.env` (mode 600,
+gitignored) on the Mac, `/etc/pbp-mcp/mcp.env` (mode `640 root:pbpmcp`) on the
+box. `provision.sh` excludes `.env` from what it ships and then **asserts the file
+did not arrive**, so there is no second copy on the box to forget. It also checks
+that `weathermcp` cannot read the pbp credential file, because that separation is
+the point rather than a side effect.
+
+**Process hardening**, from `deploy/pbp-mcp.service`: `NoNewPrivileges`,
+`ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ProtectProc=invisible`,
+`ReadOnlyPaths=/opt/pbp-mcp`, `RestrictAddressFamilies` to INET/INET6/UNIX, and
+`MemoryMax=360M` / `CPUQuota=60%` so a runaway result set kills this service
+rather than letting the kernel's OOM killer pick the website on a box already
+~1.1 GB into swap.
 
 ---
 
@@ -350,7 +421,8 @@ client config, not in the repo, and not on any command line.
 | Symptom | Cause |
 |---|---|
 | "Could not reach Postgres … tunnel is almost certainly down" | Restart the tunnel (§2). The message includes the command. |
-| "Database authentication failed for role mcp_ro" | `MCP_DB_PASSWORD` does not match the role. Remember it is shared with the weather MCP — check whether that one still works. |
+| "Database authentication failed for role pbp_ro" | `MCP_DB_PASSWORD` does not match the role. Unlike the old shared `mcp_ro`, this role is this server's alone, so the weather MCP working tells you nothing — reset it: `sudo -u postgres psql -d pbp -c "ALTER ROLE pbp_ro PASSWORD '…'"`, then update `.env` **and** `/etc/pbp-mcp/mcp.env`. |
+| "pg_hba.conf rejects connection for … user pbp_ro" | the role is bounded to database `pbp` on loopback. Check `MCP_DB_NAME`, and that you are connecting to 127.0.0.1 — a connection arriving on another address is refused by design. |
 | Tools missing in Claude Desktop | `command` is not the absolute venv python path, or Desktop was not restarted. |
 | `run_sql` says a table is "not readable" that `list_schema` lists | `guard.ALLOWED_TABLES` and the grants have drifted. They are two separate lists on purpose; the selftest compares them. |
 | A query times out at 60s | Usually a join across both facts before aggregating. Aggregate each side in a CTE, then join the CTEs — 2M scrimmage rows against 400k kick rows is a large fan-out on a 2-vCPU box. |
@@ -373,7 +445,8 @@ import json; print(json.dumps(server.fg_by_distance(league='nfl'), indent=2))"
 mcp_server/
   README.md                     this file
   requirements.txt
-  setup_role_pbp.sql            mcp_ro grants + session defaults  (run on the box)
+  setup_role_pbp.sql            pbp_ro: role, grants, session defaults, and the
+                                REVOKE that retires mcp_ro here  (run on the box)
   comment_tables.sql            the NULL semantics, as COMMENTs   (needs ownership)
   .env.example                  copy to .env, chmod 600
   pbp_mcp/
@@ -384,6 +457,16 @@ mcp_server/
                    `query_guarded` (validated dynamic SQL) are separate on
                    purpose, so dynamic SQL has exactly one entry point
     selftest.py    live checks -- run after any change
+  deploy/                       on-box deployment; see deploy/README-deploy.md
+    push.sh            FROM THE MAC: stage the code, run provision.sh
+    provision.sh       ON THE BOX: user, /opt tree, venv, credential, unit,
+                       nginx vhost, then assert what fails silently
+    enable-tls.sh      ON THE BOX: certbot + swap in the TLS vhost. Self-reverting
+    pbp-mcp.service    the systemd unit
+    pbp-http.conf      bootstrap vhost (HTTP only, so certbot has a webroot)
+    pbp.conf           the post-certbot vhost, with the rate limits
+    proxy_params_pbp.inc
+    maintenance.html   the 502/503/504 page, shared with sqlx.conf
 ```
 
 Elsewhere in the repo, load-bearing for this server:
@@ -394,6 +477,11 @@ sql/wide_tables.sql      builds play_wide / scrimmage_wide / season_status.
                          which is why sync_ec2.py re-applies both afterwards.
 scripts/sync_ec2.py      pushes local Postgres -> the EC2 mirror and rebuilds
                          the serving layer. The only supported way to refresh.
+                         It ships DATA and SQL, never this server's code --
+                         deploy/push.sh does that, on its own cadence.
+scripts/verify_mirror.py diffs both catalogs and checksums every row, local vs
+                         mirror. It allow-lists the pbp_ro grants as mirror-only,
+                         because the role exists on the box and not on the Mac.
 ```
 
 ---

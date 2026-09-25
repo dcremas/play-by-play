@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<!--
+  Served for 502/503/504 by pbp.conf, and by sqlx.conf, which has referenced
+  /usr/share/nginx/html/maintenance.html since it was written while THE FILE DID
+  NOT EXIST on this box (confirmed 2026-09-25). A missing error_page target does
+  not fail nginx -t and does not log loudly; nginx simply falls back to its own
+  default error body, so the omission is invisible until someone looks at a real
+  502. Installing this file fixes both vhosts at once.
+
+  Deliberately self-contained: no external CSS, fonts or images. It is served
+  precisely when the upstream is down, so it must not depend on anything.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Temporarily unavailable</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #e4e4e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17171a; --fg: #ececea; --muted: #97978f; --line: #2c2c31; }
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    display: grid; place-items: center; padding: 24px;
+  }
+  main { max-width: 32rem; }
+  h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 .75rem; letter-spacing: -0.01em; }
+  p { margin: 0 0 .75rem; color: var(--muted); }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 1.5rem 0; }
+  .small { font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Temporarily unavailable</h1>
+  <p>This service is not responding right now. Nothing is wrong with your
+     connection &mdash; the application behind this address is restarting or has
+     not been started yet.</p>
+  <hr>
+  <p class="small">Try again in a minute.</p>
+</main>
+</body>
+</html>

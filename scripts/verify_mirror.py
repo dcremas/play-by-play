@@ -68,7 +68,11 @@ LOCAL_DB = "pbp"
 # Derived serving layer -- built on the mirror only, by sql/wide_tables.sql.
 MIRROR_ONLY_TABLES = ("play_wide", "scrimmage_wide", "season_status")
 # The MCP role exists only on the box. Table owner is the same name on both.
-MIRROR_ONLY_GRANTEES = ("mcp_ro", "postgres")
+# `pbp_ro` replaced the shared `mcp_ro` on 2026-09-25 -- see
+# mcp_server/setup_role_pbp.sql. Both names stay listed: mcp_ro so a mirror that
+# has not yet had the new role file applied still verifies, and so that the
+# grants left on an older snapshot do not read as drift.
+MIRROR_ONLY_GRANTEES = ("pbp_ro", "mcp_ro", "postgres")
 # Extensions that legitimately differ. amcheck is a local maintenance tool.
 EXPECTED_EXTENSION_DIFF = ("amcheck",)
 

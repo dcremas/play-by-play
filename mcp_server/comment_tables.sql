@@ -12,7 +12,7 @@
 -- uses for its units (see weather-sql-explorer/mcp_server/comment_tables.sql).
 --
 -- COMMENT REQUIRES OWNERSHIP of the object. Run as the role that owns the pbp
--- schema (dustincremascoli), not as mcp_ro.
+-- schema (dustincremascoli), not as pbp_ro.
 --
 -- Re-run after sql/wide_tables.sql: that file DROPs and recreates play_wide,
 -- scrimmage_wide and season_status, and comments go with the dropped table.

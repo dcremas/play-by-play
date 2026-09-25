@@ -29,9 +29,9 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
-# Statement timeout applied per connection. The mcp_ro role carries its own 30s
-# default; this is here so the server stays bounded even if it is ever pointed at
-# a role that does not.
+# Statement timeout applied per connection. The pbp_ro role carries its own 60s
+# default in this database; this is here so the server stays bounded even if it
+# is ever pointed at a role that does not.
 #
 # It is deliberately higher than the weather server's 30s. That warehouse's
 # largest table is 9.2M narrow observation rows; this one has a 2.4 GB scrimmage
@@ -76,14 +76,15 @@ def _conninfo() -> str:
         raise ConfigError(
             "MCP_DB_PASSWORD is not set. Put it in mcp_server/.env (see "
             ".env.example), or export it before starting the server. It is the "
-            f"password for the {os.environ.get('MCP_DB_USER', 'mcp_ro')} role -- "
-            "the same role the weather warehouse MCP uses, so the password is "
-            "probably already in that server's .env."
+            f"password for the {os.environ.get('MCP_DB_USER', 'pbp_ro')} role, "
+            "which belongs to THIS server alone -- it is not the shared mcp_ro "
+            "the weather MCP uses, so there is no copy of it in that server's "
+            ".env. On the box the value comes from /etc/pbp-mcp/mcp.env instead."
         )
     return psycopg.conninfo.make_conninfo(
         host=os.environ.get("MCP_DB_HOST", "127.0.0.1"),
         port=int(os.environ.get("MCP_DB_PORT", "15432")),
-        user=os.environ.get("MCP_DB_USER", "mcp_ro"),
+        user=os.environ.get("MCP_DB_USER", "pbp_ro"),
         password=password,
         dbname=database(),
         connect_timeout=10,
@@ -212,7 +213,7 @@ def _operational_hint(exc: Exception) -> str:
     if "authentication" in lowered or "password" in lowered:
         return (
             f"Database authentication failed for role "
-            f"{os.environ.get('MCP_DB_USER', 'mcp_ro')}. Check MCP_DB_PASSWORD in "
+            f"{os.environ.get('MCP_DB_USER', 'pbp_ro')}. Check MCP_DB_PASSWORD in "
             "mcp_server/.env matches the password the role actually has. That "
             "role is shared with the weather warehouse MCP, so if this server "
             "started failing after a rotation, both .env files need the new "
