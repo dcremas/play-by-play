@@ -17,9 +17,9 @@
 -- would load a corrected CSV and change nothing.
 --
 --   .venv/bin/python scripts/build_table.py         -- regenerate data/out/st_plays.csv
---   psql -d cfb -f sql/load_1_stage.sql
---   psql -d cfb -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
---   psql -d cfb -f sql/reparse.sql
+--   psql -d pbp -f sql/load_1_stage.sql
+--   psql -d pbp -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d pbp -f sql/reparse.sql
 
 BEGIN;
 

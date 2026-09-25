@@ -1,6 +1,6 @@
 """Render the cfb / pbp schema as a two-sheet Crow's Foot ERD (tabloid landscape PDF).
 
-    .venv/bin/python scripts/build_erd.py   -> reports/cfb_pbp_erd.pdf, 2 pages
+    .venv/bin/python scripts/build_erd.py   -> reports/pbp_erd.pdf, 2 pages
                                                + a .png proof of each sheet
 
 ONE SHEET PER FACT FAMILY. Eleven tables and two forty-column facts do not fit on one page
@@ -33,7 +33,7 @@ import os, re, subprocess, datetime, html, tempfile
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(HOME, "reports")
-DB = "cfb"
+DB = "pbp"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 # Tabloid landscape, 17x11in. The design space keeps the same 612 vertical units the layout
@@ -121,8 +121,8 @@ def load_schema():
 # special_teams_play carries 47 columns; grouping them keeps the hub readable and lets it
 # flow into three internal columns instead of one 47-row tower.
 PLAY_GROUPS = [
-    ("IDENTITY & GRAIN", ["play_uid", "source", "game_id", "season", "week", "season_type",
-                          "play_kind"]),
+    ("IDENTITY & GRAIN", ["play_uid", "league", "source", "game_id", "season", "week",
+                          "season_type", "play_kind"]),
     ("GAME SITUATION", ["period", "clock_secs_period", "wallclock_utc", "down", "distance",
                         "yards_to_goal", "kicking_team_id", "receiving_team_id",
                         "is_home_kicking", "score_diff_kicking"]),
@@ -132,15 +132,15 @@ PLAY_GROUPS = [
                        "out_of_bounds", "kick_blocked", "returned_for_td", "converted",
                        "two_point_type", "miss_reason"]),
     ("PARSE & TEXT", ["negated_by_penalty", "kicker_name", "returner_name", "blocker_name",
-                      "play_text", "parse_confidence"]),
+                      "snapper_name", "holder_name", "play_text", "parse_confidence"]),
     ("LINKS & AUDIT", ["kicker_athlete_id", "returner_athlete_id", "tackler_athlete_id",
                        "venue_id", "conference_game", "neutral_site", "loaded_at"]),
 ]
 PLAY_FLOW = [[0, 1, 2], [3, 4, 5]]               # which groups sit in which internal column
 
 SCRIM_GROUPS = [
-    ("IDENTITY & GRAIN", ["play_uid", "source", "game_id", "season", "week", "season_type",
-                          "play_kind", "play_type_espn"]),
+    ("IDENTITY & GRAIN", ["play_uid", "league", "source", "game_id", "season", "week",
+                          "season_type", "play_kind", "play_type_espn"]),
     ("DRIVE", ["drive_id", "drive_number"]),
     ("GAME SITUATION", ["period", "clock_secs_period", "wallclock_utc", "down", "distance",
                         "yards_to_goal", "offense_team_id", "defense_team_id",
@@ -156,8 +156,8 @@ SCRIM_GROUPS = [
 SCRIM_FLOW = [[0, 1, 2], [3, 4, 5]]
 
 DRIVE_GROUPS = [
-    ("IDENTITY", ["drive_uid", "drive_id", "game_id", "season", "week", "season_type",
-                  "drive_number"]),
+    ("IDENTITY", ["drive_uid", "league", "drive_id", "game_id", "season", "week",
+                  "season_type", "drive_number"]),
     ("TEAMS", ["offense_team_id", "defense_team_id"]),
     ("RESULT", ["result", "display_result", "description", "is_score"]),
     ("COUNTS", ["offensive_plays", "plays_total", "plays_scrimmage", "yards",
@@ -211,11 +211,11 @@ SUBTITLE = {
     "special_teams_play": "grain: one special-teams play",
     "fact_game":          "grain: one game",
     "play_athlete":       "bridge: play x role x athlete",
-    "dim_team_season":    "slowly changing (team, season)",
-    "dim_team":           "teams appearing on a play",
+    "dim_team_season":    "slowly changing (league, team, season)",
+    "dim_team":           "teams appearing on a play, keyed (league, team_id)",
     "dim_athlete":        "ESPN athlete identity",
     "dim_venue":          "stadium & surface",
-    "dim_conference":     "conference lookup",
+    "dim_conference":     "conference lookup, keyed (league, conference_id)",
 }
 
 # parent, child, key text, waypoints, child-optional, declared-FK, note
@@ -224,19 +224,19 @@ ST_RELS = [
     ("dim_venue", "fact_game", "venue_id", [("R", 0.516), ("L", 0.370)], True, True, ""),
     ("dim_venue", "special_teams_play", "venue_id",
      [("R", 0.839), ("V", 165), ("Y", 192), ("L", None)], True, False, ""),
-    ("dim_conference", "dim_team_season", "conference_id",
+    ("dim_conference", "dim_team_season", "(league, conference_id)",
      [("B", 0.30), ("T", 0.30)], False, False, ""),
-    ("dim_team", "dim_team_season", "team_id",
+    ("dim_team", "dim_team_season", "(league, team_id)",
      [("T", 0.72), ("B", 0.72)], False, False, "201 orphan rows"),
-    ("dim_team_season", "special_teams_play", "(kicking_team_id, season)",
+    ("dim_team_season", "special_teams_play", "(league, kicking_team_id, season)",
      [("R", 0.805), ("V", 356), ("Y", 290), ("L", None)], False, False, ""),
-    ("dim_team", "special_teams_play", "kicking_team_id",
+    ("dim_team", "special_teams_play", "(league, kicking_team_id)",
      [("R", 0.639), ("L", 0.917)], False, False, ""),
-    ("dim_team", "special_teams_play", "receiving_team_id",
+    ("dim_team", "special_teams_play", "(league, receiving_team_id)",
      [("R", 0.895), ("L", 0.952)], False, False, ""),
-    ("dim_team", "fact_game", "home_team_id",
+    ("dim_team", "fact_game", "(league, home_team_id)",
      [("R", 0.128), ("L", 0.80)], False, False, ""),
-    ("dim_team", "fact_game", "away_team_id",
+    ("dim_team", "fact_game", "(league, away_team_id)",
      [("R", 0.384), ("L", 0.92)], False, False, ""),
     ("fact_game", "special_teams_play", "game_id",
      [("R", 0.524), ("L", 0.199)], False, False, ""),
@@ -258,19 +258,19 @@ SCRIM_RELS = [
     ("dim_venue", "fact_game", "venue_id", [("R", 0.516), ("L", 0.370)], True, True, ""),
     ("dim_venue", "scrimmage_play", "venue_id",
      [("R", 0.839), ("V", 165), ("Y", 192), ("L", None)], True, False, ""),
-    ("dim_conference", "dim_team_season", "conference_id",
+    ("dim_conference", "dim_team_season", "(league, conference_id)",
      [("B", 0.30), ("T", 0.30)], False, False, ""),
-    ("dim_team", "dim_team_season", "team_id",
+    ("dim_team", "dim_team_season", "(league, team_id)",
      [("T", 0.72), ("B", 0.72)], False, False, ""),
-    ("dim_team_season", "scrimmage_play", "(offense_team_id, season)",
+    ("dim_team_season", "scrimmage_play", "(league, offense_team_id, season)",
      [("R", 0.805), ("V", 362), ("Y", 296), ("L", None)], False, False, ""),
-    ("dim_team", "scrimmage_play", "offense_team_id",
+    ("dim_team", "scrimmage_play", "(league, offense_team_id)",
      [("R", 0.639), ("V", 368), ("Y", 268), ("L", None)], False, False, ""),
-    ("dim_team", "scrimmage_play", "defense_team_id",
+    ("dim_team", "scrimmage_play", "(league, defense_team_id)",
      [("R", 0.895), ("V", 370), ("Y", 282), ("L", None)], False, False, ""),
-    ("dim_team", "fact_game", "home_team_id",
+    ("dim_team", "fact_game", "(league, home_team_id)",
      [("R", 0.128), ("L", 0.80)], False, False, ""),
-    ("dim_team", "fact_game", "away_team_id",
+    ("dim_team", "fact_game", "(league, away_team_id)",
      [("R", 0.384), ("L", 0.92)], False, False, ""),
     ("fact_game", "scrimmage_play", "game_id",
      [("R", 0.524), ("L", 0.199)], False, False, ""),
@@ -301,13 +301,13 @@ SCRIM_RELS = [
 REL_NOTES = {
     ("fact_game", "venue_id"): "the only constraint Postgres enforces",
     ("special_teams_play", "venue_id"): "denormalised off fact_game so venue filters need no join",
-    ("dim_team_season", "conference_id"): "conference membership as of that season",
-    ("dim_team_season", "team_id"): "dim_team holds only teams seen on a play; this also carries FCS opponents",
-    ("special_teams_play", "(kicking_team_id, season)"): "composite: joining on team alone backdates realignment across all 12 seasons",
-    ("special_teams_play", "kicking_team_id"): "team executing the kick",
-    ("special_teams_play", "receiving_team_id"): "team receiving it",
-    ("fact_game", "home_team_id"): "home side",
-    ("fact_game", "away_team_id"): "away side",
+    ("dim_team_season", "(league, conference_id)"): "conference membership as of that season",
+    ("dim_team_season", "(league, team_id)"): "dim_team holds only teams seen on a play; this also carries FCS opponents",
+    ("special_teams_play", "(league, kicking_team_id, season)"): "composite: joining on team alone backdates realignment across all 13 seasons AND mixes the two leagues, whose team ids collide",
+    ("special_teams_play", "(league, kicking_team_id)"): "team executing the kick",
+    ("special_teams_play", "(league, receiving_team_id)"): "team receiving it",
+    ("fact_game", "(league, home_team_id)"): "home side",
+    ("fact_game", "(league, away_team_id)"): "away side",
     ("special_teams_play", "game_id"): "every play belongs to exactly one game",
     ("special_teams_play", "kicker_athlete_id"): "null on 4,097 plays (1.3%) where ESPN names no kicker",
     ("special_teams_play", "returner_athlete_id"): "null on 212,796 plays: most kicks are not returned",
@@ -336,13 +336,13 @@ INTEGRITY = {}          # filled by load_integrity()
 JOINS = {
     ("fact_game", "venue_id"):                       ("dim_venue", ["venue_id"], ["venue_id"]),
     ("special_teams_play", "venue_id"):              ("dim_venue", ["venue_id"], ["venue_id"]),
-    ("dim_team_season", "conference_id"):            ("dim_conference", ["conference_id"], ["conference_id"]),
-    ("dim_team_season", "team_id"):                  ("dim_team", ["team_id"], ["team_id"]),
-    ("special_teams_play", "(kicking_team_id, season)"): ("dim_team_season", ["kicking_team_id", "season"], ["team_id", "season"]),
-    ("special_teams_play", "kicking_team_id"):       ("dim_team", ["kicking_team_id"], ["team_id"]),
-    ("special_teams_play", "receiving_team_id"):     ("dim_team", ["receiving_team_id"], ["team_id"]),
-    ("fact_game", "home_team_id"):                   ("dim_team", ["home_team_id"], ["team_id"]),
-    ("fact_game", "away_team_id"):                   ("dim_team", ["away_team_id"], ["team_id"]),
+    ("dim_team_season", "(league, conference_id)"):            ("dim_conference", ["conference_id"], ["conference_id"]),
+    ("dim_team_season", "(league, team_id)"):                  ("dim_team", ["team_id"], ["team_id"]),
+    ("special_teams_play", "(league, kicking_team_id, season)"): ("dim_team_season", ["kicking_team_id", "season"], ["team_id", "season"]),
+    ("special_teams_play", "(league, kicking_team_id)"):       ("dim_team", ["kicking_team_id"], ["team_id"]),
+    ("special_teams_play", "(league, receiving_team_id)"):     ("dim_team", ["receiving_team_id"], ["team_id"]),
+    ("fact_game", "(league, home_team_id)"):                   ("dim_team", ["home_team_id"], ["team_id"]),
+    ("fact_game", "(league, away_team_id)"):                   ("dim_team", ["away_team_id"], ["team_id"]),
     ("special_teams_play", "game_id"):               ("fact_game", ["game_id"], ["game_id"]),
     ("special_teams_play", "kicker_athlete_id"):     ("dim_athlete", ["kicker_athlete_id"], ["athlete_id"]),
     ("special_teams_play", "returner_athlete_id"):   ("dim_athlete", ["returner_athlete_id"], ["athlete_id"]),
@@ -351,9 +351,9 @@ JOINS = {
     ("play_athlete", "play_uid"):                    ("special_teams_play", ["play_uid"], ["play_uid"]),
     ("dim_athlete", "primary_team_id"):              ("dim_team", ["primary_team_id"], ["team_id"]),
     ("scrimmage_play", "venue_id"):                  ("dim_venue", ["venue_id"], ["venue_id"]),
-    ("scrimmage_play", "(offense_team_id, season)"): ("dim_team_season", ["offense_team_id", "season"], ["team_id", "season"]),
-    ("scrimmage_play", "offense_team_id"):           ("dim_team", ["offense_team_id"], ["team_id"]),
-    ("scrimmage_play", "defense_team_id"):           ("dim_team", ["defense_team_id"], ["team_id"]),
+    ("scrimmage_play", "(league, offense_team_id, season)"): ("dim_team_season", ["offense_team_id", "season"], ["team_id", "season"]),
+    ("scrimmage_play", "(league, offense_team_id)"):           ("dim_team", ["offense_team_id"], ["team_id"]),
+    ("scrimmage_play", "(league, defense_team_id)"):           ("dim_team", ["defense_team_id"], ["team_id"]),
     ("scrimmage_play", "game_id"):                   ("fact_game", ["game_id"], ["game_id"]),
     ("scrimmage_play", "drive_id"):                  ("drive", ["drive_id"], ["drive_id"]),
     ("scrimmage_play", "passer_athlete_id"):         ("dim_athlete", ["passer_athlete_id"], ["athlete_id"]),
@@ -732,17 +732,18 @@ def render_sheet(sheet, cols, pk, fk, counts, sizes, page_no, n_pages, unplaced)
     svg.rect(0, 0, W, H, fill="#ffffff")
 
     # ---- title band
-    svg.text(18, 22, f"College Football Play-by-Play Warehouse — {sheet['title']}",
+    svg.text(18, 22, f"Play-by-Play Warehouse — {sheet['title']}",
              size=13.5, fill=INK, weight="700")
     svg.text(18, 32, f"Entity Relationship Diagram — Crow's Foot notation · "
-                     f"PostgreSQL database  cfb  ·  schema  pbp  ·  {sheet['blurb']}",
+                     f"PostgreSQL database  pbp  ·  schema  pbp  ·  {sheet['blurb']}",
              size=6.2, fill=MUTED)
     stamp = datetime.date.today().isoformat()
     shown = sum(counts[t] for t in entities)
     svg.text(W - 18, 18, f"sheet {page_no} of {n_pages} · {len(entities)} tables · "
                          f"{sum(len(cols[t]) for t in entities)} columns · {shown:,} rows",
              size=6.2, fill=INK, anchor="end", weight="700")
-    svg.text(W - 18, 27, f"seasons 2014–2026 · generated {stamp} from live schema",
+    svg.text(W - 18, 27, f"college football + NFL · seasons 2014–2026 · "
+                         f"generated {stamp} from live schema",
              size=5.6, fill=MUTED, anchor="end")
     svg.line(18, 38, W - 18, 38, RULE, 0.7)
 
@@ -752,7 +753,9 @@ def render_sheet(sheet, cols, pk, fk, counts, sizes, page_no, n_pages, unplaced)
         draw_entity(svg, name, cols, pk, fk, counts, geos[name])
 
     if sheet["key"] == "st":
-        table_inventory(svg, 704, 216, 196, 190, cols, counts, sizes)
+        # y=262, not 216: dim_athlete gained `leagues`, `nfl_plays` and the four identity
+        # fields the NFL endpoint carries, and grew into where this panel used to start.
+        table_inventory(svg, 704, 262, 196, 190, cols, counts, sizes)
         legend(svg, 18, 414, 250, 184)
         rel_table(svg, 284, 414, W - 302, 184, integrity)
         foot = ("Every relationship above is 1:N. The only constraint Postgres actually "
@@ -760,7 +763,9 @@ def render_sheet(sheet, cols, pk, fk, counts, sizes, page_no, n_pages, unplaced)
                 "build scripts, which is why they are dashed. Sheet 2 carries the scrimmage "
                 "fact, which hangs off the same four dimensions.")
     else:
-        table_inventory(svg, 704, 216, 196, 190, cols, counts, sizes)
+        # y=262, not 216: dim_athlete gained `leagues`, `nfl_plays` and the four identity
+        # fields the NFL endpoint carries, and grew into where this panel used to start.
+        table_inventory(svg, 704, 262, 196, 190, cols, counts, sizes)
         # drive takes the width sheet 1 gives the legend, so the relationship panel loses its
         # WHAT IT MEANS column rather than clipping it; sheet 1 carries those explanations.
         rel_table(svg, 280, 414, 372, 184, integrity, notes=False)
@@ -794,10 +799,10 @@ def build():
     tmp = tempfile.gettempdir()
 
     # one PDF, one page per sheet
-    both = os.path.join(tmp, "cfb_pbp_erd.html")
+    both = os.path.join(tmp, "pbp_erd.html")
     with open(both, "w") as f:
         f.write(style + "".join(f'<div class="pg">{p}</div>' for p in pages))
-    pdf = os.path.join(OUT, "cfb_pbp_erd.pdf")
+    pdf = os.path.join(OUT, "pbp_erd.pdf")
     subprocess.run([CHROME, "--headless", "--disable-gpu", "--no-sandbox",
                     "--no-pdf-header-footer", f"--print-to-pdf={pdf}",
                     "--virtual-time-budget=6000", f"file://{both}"],
@@ -806,10 +811,10 @@ def build():
     # and one PNG proof per sheet, because a 2-page PDF is awkward to eyeball
     pngs = []
     for sheet, page in zip(SHEETS, pages):
-        hp = os.path.join(tmp, f"cfb_pbp_erd_{sheet['key']}.html")
+        hp = os.path.join(tmp, f"pbp_erd_{sheet['key']}.html")
         with open(hp, "w") as f:
             f.write(style + page)
-        png = os.path.join(OUT, f"cfb_pbp_erd_{sheet['key']}.png")
+        png = os.path.join(OUT, f"pbp_erd_{sheet['key']}.png")
         subprocess.run([CHROME, "--headless", "--disable-gpu", "--no-sandbox",
                         "--screenshot=" + png, "--window-size=1632,1056",
                         "--force-device-scale-factor=2", "--hide-scrollbars",

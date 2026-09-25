@@ -28,7 +28,7 @@ athlete attached drop out of it.
 """
 import os, sys, gzip, json, csv, argparse
 
-HOME = os.path.expanduser("~/projects/cfb-pbp")
+HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ESPN = f"{HOME}/data/espn"
 
 COLUMNS = ["play_uid", "game_id", "drive_number", "drive_id", "drive_team_id",

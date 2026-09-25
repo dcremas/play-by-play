@@ -1,4 +1,35 @@
 -- Step 2 of 2. Casts staging text into the typed fact table and drops staging.
+
+-- ---------------------------------------------------------------------------------------
+-- SUPERSEDED 2026-09-11, and it REFUSES TO RUN once a second league is loaded.
+--
+-- This script is single-league by construction: it TRUNCATEs (or deletes without a league
+-- predicate), which was exactly right when the warehouse held one corpus and is destructive
+-- now that it holds two -- running it would delete the NFL to make room for college, or the
+-- reverse, and report success.
+--
+-- Use sql/load_league.sql instead:
+--     psql -d pbp -v league=nfl -f sql/load_league.sql               a whole league
+--     psql -d pbp -v league=nfl -v season=2026 -f sql/load_league.sql  one season of it
+--
+-- Kept rather than deleted because the comments in it explain decisions the replacement
+-- inherited. The guard below is what makes keeping it safe -- but a RAISE only stops psql
+-- when ON_ERROR_STOP is set, and several of these files never set it. Without the line
+-- below the exception is printed and the very next statement TRUNCATEs anyway, which is
+-- not a hypothetical: it is how this guard was found to be insufficient.
+\set ON_ERROR_STOP on
+DO $guard$
+BEGIN
+  IF (SELECT count(DISTINCT league) FROM pbp.special_teams_play) > 1
+     OR (SELECT count(DISTINCT league) FROM pbp.scrimmage_play) > 1 THEN
+    RAISE EXCEPTION
+      'This is a single-league loader and the warehouse holds more than one league. '
+      'It would delete the other one. Use sql/load_league.sql -v league=<cfb|nfl>.';
+  END IF;
+END
+$guard$;
+-- ---------------------------------------------------------------------------------------
+
 TRUNCATE pbp.special_teams_play;
 INSERT INTO pbp.special_teams_play (
   play_uid, source, game_id, season, week, season_type, play_kind, period,

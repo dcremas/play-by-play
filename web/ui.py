@@ -48,6 +48,13 @@ def note(children, tone: str = "neutral"):
 
 
 def graph(gid: str, height: int = 300):
+    """A Plotly panel.
+
+    `responsive` is doing less than it sounds like: plotly re-measures its container on
+    a **window resize event** and on nothing else, so a chart whose container changes
+    size any other way keeps a stale width. Every reveal and re-layout in this app is
+    an "other way" -- see assets/resize.js, which is what actually keeps these honest.
+    """
     return dcc.Graph(
         id=gid, config={"displayModeBar": False, "responsive": True},
         style={"height": f"{height}px"}, className="viz",

@@ -34,12 +34,23 @@ METRICS = """
     avg(kickoff_yds) AS ko_dist,
     count(*) FILTER (play_kind = 'kickoff' AND NOT COALESCE(onside, FALSE)) AS ko_denom,
     sum(CASE WHEN outcome = 'Touchback' THEN 1 ELSE 0 END) AS touchbacks,
+    count(*) FILTER (play_kind = 'pat') AS pat_att,
+    count(*) FILTER (play_kind = 'pat' AND outcome = 'Converted') AS pat_made,
+    count(*) FILTER (play_kind = 'pat' AND outcome = 'Blocked') AS pat_blocked,
+    count(*) FILTER (play_kind = 'two_point') AS two_att,
+    count(*) FILTER (play_kind = 'two_point' AND outcome = 'Converted') AS two_made,
+    count(*) FILTER (play_kind = 'defensive_conversion') AS def_conv,
     sum(CASE WHEN outcome = 'Unknown' THEN 1 ELSE 0 END) AS unknowns
 """
 
+# The two conversion rates are kept apart rather than pooled. An extra point converts
+# at 97.4% and a two-point try at 42.6%, so one rate over both would move with how
+# often a team went for two and read as kicking form.
 DERIVED = """
     fg_made::DOUBLE / nullif(fg_att, 0)      AS fg_rate,
     touchbacks::DOUBLE / nullif(ko_denom, 0) AS tb_rate,
+    pat_made::DOUBLE / nullif(pat_att, 0)    AS pat_rate,
+    two_made::DOUBLE / nullif(two_att, 0)    AS two_rate,
     unknowns::DOUBLE / nullif(kicks, 0)      AS unk_share
 """
 
@@ -125,9 +136,12 @@ def agg_frame(key: str, grain: str, where: str) -> list[dict]:
             count(DISTINCT player_id) AS kickers,
             arg_max(conference, season) AS conference"""
         guard = "team_id IS NOT NULL"
+    # `league` rides along so a row can link to the right profile. Every row in the frame
+    # is already one league -- `where` carries the predicate -- so any_value is exact here
+    # rather than a pick among differing values.
     df = data.q(f"""
         WITH agg AS (
-            SELECT {col}, {name_expr}, {METRICS} {extra}
+            SELECT {col}, {name_expr}, any_value(league) AS league, {METRICS} {extra}
             FROM st_play WHERE {where} AND {guard} GROUP BY {col}
         )
         SELECT *, {DERIVED} FROM agg ORDER BY kicks DESC
@@ -143,7 +157,8 @@ def _scrim_agg_frame(key: str, grain: str, where: str) -> list[dict]:
         return []
     df = data.q(f"""
         WITH agg AS (
-            SELECT team_id, any_value(team) AS team, {SCRIM_METRICS},
+            SELECT team_id, any_value(team) AS team, any_value(league) AS league,
+                   {SCRIM_METRICS},
                    arg_max(conference, season) AS conference
             FROM {lens.VIEW[key]} WHERE {where} AND team_id IS NOT NULL
             GROUP BY team_id
@@ -187,6 +202,17 @@ def agg_cols(key: str, grain: str, chips, mode: str = "dark") -> list[dict]:
     if "kickoff" in ps:
         cols += [num("kickoffs", "KOs", 82, COM), num("ko_dist", "KO dist", 92, ONE),
                  num("tb_rate", "TB rate", 92, PCT)]
+    if "conversion" in ps:
+        cols += [num("pat_att", "XP att", 84, COM), num("pat_made", "XP made", 94, COM),
+                 num("pat_rate", "XP rate", 92, PCT),
+                 num("pat_blocked", "XP blkd", 92, COM),
+                 num("two_att", "2pt att", 90, COM), num("two_made", "2pt conv", 98, COM),
+                 num("two_rate", "2pt rate", 96, PCT)]
+        # Team grain only. All 75 defensive conversions carry a NULL kicker id -- the
+        # defence returning a blocked PAT is not a kick and ESPN names no kicker on
+        # it -- so on a player leaderboard the column is zero on every row.
+        if grain != "player":
+            cols.append(num("def_conv", "Def conv", 96, COM))
     cols.append(num("unk_share", "Unknown", 100, PCT))
     return cols
 
@@ -249,14 +275,50 @@ _SEASON_SQL = {
     """, "touchback::DOUBLE / nullif(denom,0) AS tb_rate, "
          "returned::DOUBLE / nullif(denom,0) AS ret_rate, "
          "unknown::DOUBLE / nullif(kickoffs,0) AS unk_share"),
+
+    # Three populations in one grid, as columns rather than rows: they share a season
+    # and nothing else. The extra point is a placekick from one spot; the two-point
+    # try is a snap, a pass on 68% of the ones that say; the defensive conversion is
+    # not an attempt at all -- it is the other side returning a blocked PAT -- so it
+    # is a count with no denominator and never enters a rate. `two_point_type` is
+    # stated on 2,435 of 3,707 tries, so Pass and Rush do not add to 2pt att and are
+    # not meant to.
+    "conversion": ("""
+        SELECT season,
+               count(*) FILTER (play_kind = 'pat')                   AS pat_att,
+               count(*) FILTER (play_kind = 'pat'
+                                AND outcome = 'Converted')           AS pat_made,
+               count(*) FILTER (play_kind = 'pat'
+                                AND outcome = 'Blocked')             AS pat_blocked,
+               count(*) FILTER (play_kind = 'two_point')             AS two_att,
+               count(*) FILTER (play_kind = 'two_point'
+                                AND outcome = 'Converted')           AS two_made,
+               count(*) FILTER (play_kind = 'two_point'
+                                AND two_point_type = 'pass')         AS two_pass,
+               count(*) FILTER (play_kind = 'two_point'
+                                AND two_point_type = 'rush')         AS two_rush,
+               count(*) FILTER (play_kind = 'defensive_conversion')  AS def_conv,
+               count(*)                                              AS attempts,
+               count(*) FILTER (outcome = 'Unknown')                 AS unknown
+        FROM st_play WHERE {w}
+          AND play_kind IN ('pat', 'two_point', 'defensive_conversion')
+        GROUP BY 1 ORDER BY 1 DESC
+    """, "pat_made::DOUBLE / nullif(pat_att,0) AS pat_rate, "
+         "two_made::DOUBLE / nullif(two_att,0) AS two_rate, "
+         "unknown::DOUBLE / nullif(attempts,0) AS unk_share"),
 }
 
 
-# The kick kinds that have a season table above. The conversion chip added to the
-# kicks lens has no such table -- a PAT has no distance, no return and no outcome mix
-# worth a per-season grid -- so the profile pages iterate this rather than the chip
-# list, and a tab can never open onto a missing query.
-SEASON_KINDS = ["field_goal", "punt", "kickoff"]
+# The kick phases that have a season table above -- now all four. Conversions were
+# left out until 2026-09-09 on the argument that a PAT has no distance, no return and
+# no outcome mix worth a grid. Two of those are true and the conclusion did not
+# follow: an extra point has a make rate, a block count and a two-point sibling that
+# splits pass from rush, and none of those needs a distance. The profile pages
+# iterate this rather than the chip list, so a tab can never open onto a missing
+# query.
+# The play_kind predicate behind each tab is lens.kind_sql, not this list: lens.KINDS
+# is where a chip maps to kinds, and one copy of that mapping is the point.
+SEASON_KINDS = ["field_goal", "punt", "kickoff", "conversion"]
 
 
 def season_rows(kind: str, where: str) -> list[dict]:
@@ -265,7 +327,27 @@ def season_rows(kind: str, where: str) -> list[dict]:
     return data.records(df)
 
 
-def season_cols(kind: str) -> list[dict]:
+# The 2014 conversion numbers are the feed's, and the feed is short. Any surface that
+# shows a per-season extra-point rate has to say so, because 98.5% against 96.6% either
+# side reads as a great kicking year rather than as ~90 missing failures.
+CONV_SHORT_SEASON = 2014
+
+
+def conversion_caveat(rows: list[dict]):
+    """The 2014 warning, if 2014 is in the rows. See README Known limits section 3."""
+    if not any(r.get("season") == CONV_SHORT_SEASON for r in rows):
+        return None
+    return ui.note(
+        f"{CONV_SHORT_SEASON}'s extra-point rate is not a trend point. ESPN's "
+        f"{CONV_SHORT_SEASON} play text carries about half the failed extra points "
+        "the neighbouring seasons do against an essentially identical number of "
+        "touchdowns, so the denominator is right and the numerator is too high — "
+        "the league rate reads 98.5% against 96.6–96.9% for 2015–2018. It is the "
+        "feed, not the parser: counting the outcome words in the raw text "
+        "independently gives the same figure.", "warn")
+
+
+def season_cols(kind: str, grain: str | None = None) -> list[dict]:
     season = num("season", "Season", 86)
     if kind == "field_goal":
         return [season, num("att", "Att", 72, COM), num("made", "Made", 78, COM),
@@ -285,6 +367,18 @@ def season_cols(kind: str) -> list[dict]:
                 num("blocked", "Blkd", 74, COM),
                 num("unknown", "Unknown", 96, COM),
                 num("unk_share", "Unk %", 84, PCT)]
+    if kind == "conversion":
+        return [season,
+                num("pat_att", "XP att", 84, COM), num("pat_made", "XP made", 94, COM),
+                num("pat_rate", "XP rate", 92, PCT),
+                num("pat_blocked", "XP blkd", 92, COM),
+                num("two_att", "2pt att", 90, COM), num("two_made", "2pt conv", 98, COM),
+                num("two_rate", "2pt rate", 96, PCT),
+                num("two_pass", "2pt pass", 96, COM), num("two_rush", "2pt rush", 96, COM),
+                # Dropped on a player: all 75 defensive conversions carry a NULL
+                # kicker id, so the column is zero on every row of every player.
+                *([] if grain == "player" else [num("def_conv", "Def conv", 96, COM)]),
+                num("attempts", "All conv", 94, COM)]
     return [season, num("kickoffs", "KOs", 78, COM), num("avg_dist", "Avg dist", 96, ONE),
             num("tb_rate", "TB rate", 90, PCT), num("ret_rate", "Ret rate", 94, PCT),
             num("ret_allowed", "Ret allowed", 110, ONE),
@@ -301,9 +395,19 @@ def entity_where(ent: dict, flt: dict | None) -> str:
     The lens is forced to the kicks: these pages profile placekickers, punters and
     kickoff specialists, so reading them through the offense lens would apply
     scrimmage-only facets to a view that has no such columns.
+
+    The league is forced the same way and for the same reason -- it is the page's
+    identity, not a filter the reader chose. The header's league selector keeps its
+    own value while a profile is open, and taking the league from there instead of
+    from the page would answer about the wrong team entirely: team ids collide, so
+    /team/2 with the header on NFL would put the Buffalo Bills' kicks under Auburn's
+    name. `ent` carries the league the URL resolved to; that is the one that counts.
     """
     ignore = ("players",) if ent.get("kind") == "player" else ("teams",)
-    base = data.where_from_filters(dict(flt or {}, lens="st"), ignore=ignore)
+    scope = {"lens": "st"}
+    if ent.get("league"):
+        scope["league"] = ent["league"]
+    base = data.where_from_filters(dict(flt or {}, **scope), ignore=ignore)
     col = "player_id" if ent.get("kind") == "player" else "team_id"
     return f"({base}) AND {col} = {int(ent['id'])}"
 
@@ -316,6 +420,27 @@ def st_chips(flt: dict | None) -> list[str]:
     dropped by data.chip_set, which falls back to that lens's defaults.
     """
     return data.chip_set(dict(flt or {}, lens="st"))
+
+
+def empty_panel(kind: str, flt: dict | None):
+    """What a profile tab says when the selection holds none of its rows.
+
+    Two different things read as "no data" and they are not the same thing: the phase
+    chip is switched off in the sidebar, or it is on and this entity genuinely has
+    none. The tabs are built from an athlete's whole career, the panels from the
+    current filter, so the two can disagree for any phase -- but the conversions are
+    what made saying which one worth doing. Theirs is the chip that starts off, so an
+    unqualified "no conversion plays under these filters" would be the default state
+    of every profile page in the app and would read as a hole in the data.
+    """
+    noun = lens.PHASE_NOUN["st"][kind]
+    if kind not in st_chips(flt):
+        return dmc.Alert(
+            f"The Phase filter has {noun} switched off, so this tab is empty by "
+            f"filter and not by fact. Switch the chip on in the sidebar to fill it.",
+            color="gray", variant="light")
+    return dmc.Alert(f"No {noun} under these filters.", color="gray",
+                     variant="light")
 
 
 def play_grid(mode: str, phases, extra=None, height: str = "480px"):

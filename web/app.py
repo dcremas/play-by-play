@@ -19,7 +19,7 @@ import dash
 import dash_mantine_components as dmc
 from dash import Input, Output, State, ctx, dcc, html, no_update
 
-from . import data, detail, lens, theme, ui
+from . import data, detail, league, lens, theme, ui
 from .pages import explorer, player, team
 
 app = dash.Dash(
@@ -34,7 +34,7 @@ server = app.server
 S0, S1 = data.season_bounds()
 D0, D1 = data.dist_bounds()
 META = data.snapshot_meta()
-LIVE = data.in_progress_seasons()
+
 
 
 # --------------------------------------------------------------------------- sidebar
@@ -98,9 +98,14 @@ def sidebar() -> list:
                                         data=["regular", "postseason"], value=[],
                                         size="xs", clearable=True, placeholder="Both"),
                         dmc.Space(h=8),
-                        dmc.Switch(id="f-fbs", label="FBS vs FBS only", size="xs",
-                                   checked=False),
-                        dmc.Space(h=6),
+                        # College-only. The NFL has no second division, so the control
+                        # would be a checkbox that never changes the answer -- worse than
+                        # absent, because it implies it might.
+                        html.Div(id="f-fbs-wrap", children=[
+                            dmc.Switch(id="f-fbs", label="FBS vs FBS only", size="xs",
+                                       checked=False),
+                            dmc.Space(h=6),
+                        ]),
                         dmc.Select(id="f-conf-game", size="xs", value="any",
                                    allowDeselect=False, label="Conference games",
                                    data=[{"value": "any", "label": "Either"},
@@ -175,12 +180,12 @@ def sidebar() -> list:
                         ui.note("Indoor is the stadium, not the day: 5 of the 18 indoor "
                                 "venues have a retractable roof and read indoor whether "
                                 "or not it was open.", "info"),
-                        _label("Division"),
+                        _label("Division", "lbl-divisions"),
+                        # Chips are built per league: FBS/FCS for college, the eight NFL
+                        # divisions for the NFL. Two different columns upstream, one facet
+                        # here -- see web/league.py.
                         dmc.ChipGroup(id="f-divisions", multiple=True, value=[],
-                                      children=dmc.Group(gap=4, children=[
-                                          dmc.Chip(d, value=d, size="xs", variant="light")
-                                          for d in ("FBS", "FCS")
-                                      ])),
+                                      children=html.Div(id="f-division-chips")),
                         dmc.Space(h=8),
                         dmc.Select(id="f-neutral", size="xs", value="any",
                                    allowDeselect=False, label="Neutral site",
@@ -208,25 +213,25 @@ def header():
     stamp = built.strftime("%d %b %Y %H:%M") if built else "unknown"
     return dmc.Group(justify="space-between", w="100%", children=[
         dmc.Group(gap="sm", children=[
-            dmc.Anchor(dmc.Text("CFB Play-by-Play", className="st-brand", size="sm"),
+            dmc.Anchor(dmc.Text("Play-by-Play", className="st-brand", size="sm"),
                        href="/", underline="never", c="inherit"),
-            # The first choice, and the most prominent control in the app.
+            # WHICH corpus, then which perspective on it. Two selectors rather than one
+            # combined list of six, because the two choices are independent: every lens
+            # works in both leagues. League comes first because it is the outer scope --
+            # changing it changes what every number on the page counts.
+            dmc.SegmentedControl(id="league-pick", value=league.DEFAULT,
+                                 data=league.segmented(), size="xs",
+                                 persistence=True, persistence_type="local"),
             dmc.SegmentedControl(id="lens-pick", value=lens.DEFAULT,
                                  data=lens.segmented(), size="xs",
                                  persistence=True, persistence_type="local"),
             dmc.Divider(orientation="vertical"),
-            dmc.Text(f"{META['total']:,} plays · {S0}–{S1}", size="xs", c="dimmed"),
+            dmc.Text(id="corpus-count", size="xs", c="dimmed"),
             # A season still being played is in the corpus like any other, and its rows
             # look like any other. This is the only thing that says it is three weeks deep.
-            *[dmc.Tooltip(
-                label=(f"{r['season']} is still being played — {r['games']:,} games, "
-                       f"{r['plays']:,} plays, through week {r['week']}. Counts and rates "
-                       f"for it are partial. Refresh with scripts/update_season.py "
-                       f"{r['season']}."),
-                multiline=True, w=320,
-                children=dmc.Badge(f"{r['season']} partial", variant="light", size="sm",
-                                   radius="sm", color="yellow"))
-              for r in LIVE],
+            # Per league: both corpora happen to have a live 2026, but they are different
+            # numbers of games and only one of them is on screen.
+            html.Div(id="partial-badges", style={"display": "flex", "gap": "8px"}),
             html.Div(id="crumb"),
         ]),
         dmc.Group(gap="sm", children=[
@@ -248,6 +253,7 @@ app.layout = dmc.MantineProvider(
         dcc.Location(id="url", refresh=False),
         dcc.Store(id="flt"),
         dcc.Store(id="lens", data=lens.DEFAULT, storage_type="local"),
+        dcc.Store(id="league", data=league.DEFAULT, storage_type="local"),
         dcc.Store(id="mode", data="dark", storage_type="local"),
         dcc.Store(id="detail-uid"),
         dmc.AppShell(
@@ -281,6 +287,36 @@ def _apply_mode(mode):
     return mode or "dark"
 
 
+# --------------------------------------------------------------------------- league
+@app.callback(Output("league", "data"), Input("league-pick", "value"))
+def _set_league(value):
+    return league.resolve(value)
+
+
+@app.callback(Output("partial-badges", "children"), Input("league", "data"))
+def _partial_badges(lg):
+    return [
+        dmc.Tooltip(
+            label=(f"{r['season']} is still being played — {r['games']:,} games, "
+                   f"{r['plays']:,} plays, through week {r['week']}. Counts and rates "
+                   f"for it are partial. Refresh with scripts/update_season.py "
+                   f"{r['season']} --league {league.resolve(lg)}."),
+            multiline=True, w=320,
+            children=dmc.Badge(f"{r['season']} partial", variant="light", size="sm",
+                               radius="sm", color="yellow"))
+        for r in data.in_progress_seasons(league.resolve(lg))
+    ]
+
+
+@app.callback(Output("corpus-count", "children"), Input("league", "data"))
+def _corpus_line(lg):
+    """The header's corpus line. Per league, because the two are different sizes and a
+    single hardcoded total would be wrong for whichever one is not on screen."""
+    k = league.resolve(lg)
+    n = league.corpus(k, "plays") + league.corpus(k, "kicks")
+    return f"{n:,} plays · {league.corpus(k, 'games'):,} games · {league.corpus(k, 'seasons')}"
+
+
 # --------------------------------------------------------------------------- lens
 @app.callback(Output("lens", "data"), Input("lens-pick", "value"))
 def _set_lens(value):
@@ -308,9 +344,12 @@ def _phase_chips(key, _n_reset):
     if key == "st":
         note = ui.note(
             "Conversions — extra points, two-point tries and the 75 defensive "
-            "conversions — are in the corpus and off by default: 67,678 of them are "
-            "extra points from one spot, and leaving them on puts a spike at one "
-            "distance in every distance view.", "neutral")
+            "conversions — are off by default and nothing else about them is: they "
+            "carry their own measures, leaderboard columns and profile tab. Off is "
+            "only about distance — 67,678 of them are extra points from one spot, "
+            "and leaving them on puts a spike at one distance in every distance "
+            "view. Switch the chip on and the charts, columns and rates follow.",
+            "neutral")
     return chips, lens.default_chips(key), note
 
 
@@ -331,27 +370,48 @@ def _relabel(key):
     Output("f-teams", "data"), Output("f-opponents", "data"),
     Output("f-conferences", "data"), Output("f-surfaces", "data"),
     Output("f-outcomes", "data"), Output("f-zones", "data"),
+    Output("f-division-chips", "children"),
+    Output("f-divisions", "value"),
+    Output("lbl-divisions", "children"),
+    Output("f-fbs-wrap", "style"),
     Input("lens", "data"),
+    Input("league", "data"),
+    Input("f-reset", "n_clicks"),
 )
-def _option_lists(key):
-    key = lens.resolve(key)
-    teams = data.team_options(key)
-    return (teams, teams, data.conference_options(key), data.surface_options(key),
-            data.outcome_options(key), data.zone_options(key))
+def _option_lists(key, lg, _n_reset):
+    """Every picker is scoped to BOTH axes. A team list that ignored the league would
+    offer 281 teams from two leagues, and the ids collide -- team 2 is Auburn and the
+    Buffalo Bills -- so the picked value would be ambiguous, not merely long."""
+    key, lg = lens.resolve(key), league.resolve(lg)
+    teams = data.team_options(key, lg)
+    divs = data.division_options(key, lg)
+    chips = dmc.Group(gap=4, children=[
+        dmc.Chip(d, value=d, size="xs", variant="light") for d in divs])
+    return (teams, teams, data.conference_options(key, lg), data.surface_options(key, lg),
+            data.outcome_options(key, lg), data.zone_options(key, lg),
+            # Cleared with the league: 'FBS' is not a value the NFL column can hold, so a
+            # selection carried across leagues would match nothing and look like an empty
+            # corpus rather than a stale filter.
+            chips, [], league.division_label(lg),
+            {} if league.has_fbs_filter(lg) else {"display": "none"})
 
 
 @app.callback(
     Output("f-players", "value"),
     Output("f-outcomes", "value"),
     Input("lens", "data"),
+    Input("league", "data"),
     Input("f-reset", "n_clicks"),
     State("f-outcomes", "value"),
 )
-def _lens_scoped_values(key, _n_reset, outcomes):
+def _lens_scoped_values(key, lg, _n_reset, outcomes):
     """The two facets whose *values* only mean something within one lens.
 
     An athlete id picked on one side rarely means anything on another -- a
-    quarterback is not a tackler -- so the player picker empties with the side.
+    quarterback is not a tackler -- so the player picker empties with the side. It
+    empties with the LEAGUE too, and for a harder reason: athlete ids are shared
+    across the two corpora, so a college id left selected after a switch to the NFL
+    silently matches that same man's pro plays rather than nothing.
     Outcomes survive where the new vocabulary still contains them: `Sack` and
     `Penalty` are in all three, `Touchback` is in none of the scrimmage ones, and a
     value the new lens cannot produce is dropped rather than left there silently
@@ -362,7 +422,7 @@ def _lens_scoped_values(key, _n_reset, outcomes):
     """
     if ctx.triggered_id == "f-reset":
         return [], []
-    valid = set(data.outcome_options(lens.resolve(key)))
+    valid = set(data.outcome_options(lens.resolve(key), league.resolve(lg)))
     return [], [o for o in (outcomes or []) if o in valid]
 
 
@@ -379,8 +439,9 @@ def _toggle_facets(key):
 @app.callback(
     Output("f-player-note", "children"), Output("f-linked-note", "children"),
     Input("lens", "data"),
+    Input("league", "data"),
 )
-def _player_notes(key):
+def _player_notes(key, lg):
     key = lens.resolve(key)
     linked = {
         "off": "Switching this on keeps only plays where ESPN named a passer or a "
@@ -391,7 +452,7 @@ def _player_notes(key):
         "st": "Athlete linking is thinnest in 2025 — switching this on drops unlinked "
               "kicks from every count.",
     }[key]
-    return ui.note(lens.PLAYER_HINT[key], "neutral"), ui.note(linked, "info")
+    return ui.note(lens.player_hint(key, lg), "neutral"), ui.note(linked, "info")
 
 
 # --------------------------------------------------------------------------- filters
@@ -429,22 +490,29 @@ _RESET = {
     "roof": "any", "linked_only": False,
 }
 
-# phases, players and outcomes are reset by the two lens-scoped callbacks above,
-# which already own those outputs. Dash allows one writer per output, so they are
-# not in the list the Reset button writes.
+# phases, players, outcomes and divisions are reset by the lens/league-scoped
+# callbacks above, which already own those outputs -- divisions joined them when the
+# league axis arrived, because 'FBS' is not a value the NFL column can hold. Dash
+# allows one writer per output, so they are not in the list the Reset button writes;
+# each of those callbacks takes f-reset as an Input instead.
 _RESET_TARGETS = [t for t in _FILTER_INPUTS
-                  if t[0] not in ("phases", "players", "outcomes")]
+                  if t[0] not in ("phases", "players", "outcomes", "divisions")]
 
 
 @app.callback(
     Output("flt", "data"),
     [Input(cid, prop) for _, cid, prop in _FILTER_INPUTS],
     Input("lens", "data"),
+    Input("league", "data"),
 )
 def _collect(*vals):
-    *facets, key = vals
+    *facets, key, lg = vals
+    facets = facets[:len(_FILTER_INPUTS)]
     f = {name: v for (name, _, _), v in zip(_FILTER_INPUTS, facets)}
     f["lens"] = lens.resolve(key)
+    # Every query in web/data.py filters on this; see where_from_filters, where it is the
+    # one predicate that is never optional.
+    f["league"] = league.resolve(lg)
     # A phase chip group emptied to nothing means "all", not "none" -- an empty
     # explorer is never what the click meant.
     if not f.get("phases"):
@@ -456,13 +524,15 @@ def _collect(*vals):
     Output("f-players", "data"),
     Input("f-phases", "value"),
     Input("lens", "data"),
+    Input("league", "data"),
 )
-def _player_options(phases, key):
+def _player_options(phases, key, lg):
     """Scope the player picker to the lens and the selected phases -- a punter is not
     a candidate when only field goals are on screen, and neither is a quarterback."""
     key = lens.resolve(key)
     chips = [c for c in (phases or []) if c in lens.PHASES[key]]
-    return data.player_options(key, tuple(sorted(chips or lens.default_chips(key))))
+    return data.player_options(key, tuple(sorted(chips or lens.default_chips(key))),
+                               league.resolve(lg))
 
 
 @app.callback(
@@ -475,6 +545,26 @@ def _reset(_n):
 
 
 # --------------------------------------------------------------------------- routing
+def _split_profile(parts):
+    """('team'|'player', league, id) from a profile path, or None.
+
+    Two shapes, both supported on purpose:
+
+        /team/nfl/2      league-qualified, and what every link in the app now emits
+        /team/2          the pre-NFL shape, read as college
+
+    The qualified form exists because a bare id is genuinely ambiguous once there are
+    two leagues -- team 2 is Auburn AND the Buffalo Bills -- so a shared or bookmarked
+    link has to say which. The bare form keeps resolving to college rather than 404ing,
+    because every link that existed before 2026-09-11 meant college.
+    """
+    if len(parts) == 3 and parts[0] in ("team", "player"):
+        return parts[0], league.resolve(parts[1]), parts[2]
+    if len(parts) == 2 and parts[0] in ("team", "player"):
+        return parts[0], league.DEFAULT, parts[1]
+    return None
+
+
 @app.callback(
     Output("page", "children"),
     Output("crumb", "children"),
@@ -486,14 +576,12 @@ def _route(path, mode):
     path = (path or "/").rstrip("/") or "/"
     parts = [p for p in path.split("/") if p]
 
-    if len(parts) == 2 and parts[0] == "player":
+    hit = _split_profile(parts)
+    if hit:
+        kind, lg, raw = hit
+        page = player if kind == "player" else team
         try:
-            return player.layout(int(parts[1]), mode), player.crumb(int(parts[1]))
-        except (ValueError, LookupError):
-            return _not_found(path), None
-    if len(parts) == 2 and parts[0] == "team":
-        try:
-            return team.layout(int(parts[1]), mode), team.crumb(int(parts[1]))
+            return page.layout(int(raw), lg, mode), page.crumb(int(raw), lg)
         except (ValueError, LookupError):
             return _not_found(path), None
     if parts:

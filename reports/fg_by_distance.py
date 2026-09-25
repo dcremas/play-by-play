@@ -15,7 +15,7 @@ Scope decisions, all of them restated on the Notes sheet:
     and would drown the under-20 band.
   * `fg_made IS NULL` is excluded -- those are kicks wiped out by penalty, so they are
     neither a make nor a miss.
-  * FBS means the KICKING team was FBS in that season (`kicking_division`), which is a
+  * FBS means the KICKING team was FBS in that season (`kicking_ncaa_division`), which is a
     per-season fact, not a per-team one, so a team that moved up mid-window is blank
     before it arrived rather than zero.
   * Attempts whose distance did not parse land in an `Unknown` row rather than being
@@ -23,6 +23,11 @@ Scope decisions, all of them restated on the Notes sheet:
 
     .venv/bin/python -m reports.fg_by_distance
     .venv/bin/python -m reports.fg_by_distance --team "Ohio State Buckeyes"
+    .venv/bin/python -m reports.fg_by_distance --league nfl --team "Baltimore Ravens"
+
+The snapshot has held two leagues since 2026-09-11, so `--league` is a real scope and not a
+label: without it the totals would blend 31,460 college field goals with 12,967 NFL ones.
+The FBS/FCS exclusions above are college-only, because the NFL has no second division.
 """
 from __future__ import annotations
 
@@ -51,22 +56,26 @@ CASE WHEN fg_distance_yds IS NULL OR fg_distance_yds < 10 THEN 999
      ELSE least((fg_distance_yds // 10) * 10, 60) END
 """
 
+# `{league}` is not optional. The snapshot has held two leagues since 2026-09-11, and
+# although `kicking_ncaa_division = 'FBS'` happens to exclude the NFL here (that column is NULL
+# for every NFL row), relying on that would be relying on an accident -- and EXCLUDED_SQL
+# below has no such filter, so its counts really would have blended the two corpora.
 FACTS_SQL = f"""
 SELECT kicking_team AS team, season, {BAND_EXPR} AS band,
        count(*) AS att, sum(fg_made::int) AS made
 FROM play
-WHERE play_kind = 'field_goal' AND kicking_division = 'FBS' AND fg_made IS NOT NULL
+WHERE play_kind = 'field_goal' AND fg_made IS NOT NULL
+  AND league = '{{league}}' {{div}}
 {{extra}}
 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
 """
 
 EXCLUDED_SQL = f"""
 SELECT count(*) FILTER (WHERE fg_made IS NULL)                                AS negated,
-       count(*) FILTER (WHERE fg_made IS NOT NULL AND kicking_division = 'FBS'
+       count(*) FILTER (WHERE fg_made IS NOT NULL {{div}}
                           AND ({BAND_EXPR}) = 999)                            AS unparsed,
-       count(*) FILTER (WHERE fg_made IS NOT NULL
-                          AND coalesce(kicking_division, 'FCS') <> 'FBS')     AS non_fbs
-FROM play WHERE play_kind = 'field_goal' {{extra}}
+       count(*) FILTER (WHERE fg_made IS NOT NULL AND {{non_top}})            AS non_fbs
+FROM play WHERE play_kind = 'field_goal' AND league = '{{league}}' {{extra}}
 """
 
 HID = "_data"          # hidden sheet holding the team x season x band facts
@@ -74,10 +83,15 @@ C_TEAM, C_SEASON, C_BAND, C_ATT, C_MADE, C_LIST = 0, 1, 2, 3, 4, 6
 PICKER = "$B$4"
 
 
-def load(con, seasons: tuple[int, int] | None):
+def load(con, seasons: tuple[int, int] | None, league: str = "cfb"):
     extra = "" if seasons is None else f"AND season BETWEEN {seasons[0]} AND {seasons[1]}"
-    facts = con.execute(FACTS_SQL.format(extra=extra)).fetchall()
-    excluded = con.execute(EXCLUDED_SQL.format(extra=extra)).fetchone()
+    # The FBS/FCS split is a college concept. The NFL has no second division, so there is
+    # nothing to filter to and nothing to exclude -- see README "Known limits" §13.
+    div = "AND kicking_ncaa_division = 'FBS'" if league == "cfb" else ""
+    non_top = ("coalesce(kicking_ncaa_division, 'FCS') <> 'FBS'" if league == "cfb" else "FALSE")
+    fmt = dict(extra=extra, league=league, div=div, non_top=non_top)
+    facts = con.execute(FACTS_SQL.format(**fmt)).fetchall()
+    excluded = con.execute(EXCLUDED_SQL.format(**fmt)).fetchone()
     return facts, excluded
 
 
@@ -85,21 +99,32 @@ def rollup(facts, team):
     """Sum the facts into every (season, band) combination the grid asks for.
 
     `None` stands for 'all', so one dict answers the body, the totals row, the totals
-    column and the grand total. Returned twice: league-wide, and for one team.
+    column and the grand total. Returned twice: every team, and for one team.
+
+    Neither sink is named `league`: in this file `league` means which corpus, cfb or nfl,
+    and one name for both would shadow the parameter `build()` passes in.
     """
-    league: dict[tuple, list[int]] = {}
+    all_teams: dict[tuple, list[int]] = {}
     mine: dict[tuple, list[int]] = {}
     for t, s, b, a, m in facts:
         for k in ((s, b), (s, None), (None, b), (None, None)):
-            for sink in (league,) if t != team else (league, mine):
+            for sink in (all_teams,) if t != team else (all_teams, mine):
                 cur = sink.setdefault(k, [0, 0])
                 cur[0] += a
                 cur[1] += m
-    return league, mine
+    return all_teams, mine
 
 
-def build(con, out_path: str, default_team: str | None, seasons) -> str:
-    facts, excluded = load(con, seasons)
+# What to call the population on the sheets. "FBS" is a college word, and the NFL workbook
+# was printing "FBS field goals by distance" over NFL kicks until 2026-09-11 -- the queries
+# were scoped by league from the start, the prose was not.
+TIER = {"cfb": "FBS", "nfl": "NFL"}
+
+
+def build(con, out_path: str, default_team: str | None, seasons,
+          league: str = "cfb") -> str:
+    tier = TIER[league]
+    facts, excluded = load(con, seasons, league)
     if not facts:
         raise SystemExit("no field goal rows matched -- check --seasons")
 
@@ -108,10 +133,10 @@ def build(con, out_path: str, default_team: str | None, seasons) -> str:
     team = default_team or teams[0]
     if team not in teams:
         raise SystemExit(f"unknown team {team!r}; e.g. {', '.join(teams[:3])}, ...")
-    league, mine = rollup(facts, team)
+    all_teams, mine = rollup(facts, team)
 
     wb = xlsxwriter.Workbook(out_path, {"nan_inf_to_errors": True})
-    wb.set_properties({"title": "FBS field goals by distance",
+    wb.set_properties({"title": f"{tier} field goals by distance",
                        "comments": "Generated by reports/fg_by_distance.py"})
     style = Style(wb)
     ws_tot = wb.add_worksheet("Totals")
@@ -123,9 +148,9 @@ def build(con, out_path: str, default_team: str | None, seasons) -> str:
     span = 1 + (len(years) + 1) * len(MEASURES)
     sub = stamp(os.path.relpath(DB, HOME), os.path.getmtime(DB))
 
-    totals_sheet(ws_tot, style, years, league, span, sub)
-    team_sheet(ws_team, style, years, mine, span, sub, teams, team, len(facts))
-    notes_sheet(ws_notes, style, years, league, excluded, team, sub)
+    totals_sheet(ws_tot, style, years, all_teams, span, sub, tier)
+    team_sheet(ws_team, style, years, mine, span, sub, teams, team, len(facts), tier)
+    notes_sheet(ws_notes, style, years, all_teams, excluded, team, sub, tier, league)
 
     ws_hid.hide()
     ws_tot.activate()
@@ -147,12 +172,12 @@ def write_hidden(ws, facts, teams) -> None:
         ws.write_string(i, C_LIST, t)
 
 
-def totals_sheet(ws, style, years, league, span, sub) -> None:
-    heading(ws, style, "FBS field goals by distance -- all teams",
+def totals_sheet(ws, style, years, all_teams, span, sub, tier) -> None:
+    heading(ws, style, f"{tier} field goals by distance -- all teams",
             "Attempts, makes and make rate. " + sub, span)
 
     def cell(band, season, measure, r, c):
-        att, made = league.get((season, band), (0, 0))
+        att, made = all_teams.get((season, band), (0, 0))
         if measure == "Att":
             return att or None
         if measure == "Made":
@@ -164,8 +189,8 @@ def totals_sheet(ws, style, years, league, span, sub) -> None:
     ws.hide_gridlines(2)
 
 
-def team_sheet(ws, style, years, mine, span, sub, teams, team, n_facts) -> None:
-    heading(ws, style, "FBS field goals by distance -- one team",
+def team_sheet(ws, style, years, mine, span, sub, teams, team, n_facts, tier) -> None:
+    heading(ws, style, f"{tier} field goals by distance -- one team",
             "Pick a team in B4; every number below recalculates. " + sub, span)
 
     ws.write(3, 0, "Team", style.picker_label)
@@ -206,15 +231,15 @@ def team_sheet(ws, style, years, mine, span, sub, teams, team, n_facts) -> None:
     ws.hide_gridlines(2)
 
 
-def notes_sheet(ws, style, years, league, excluded, team, sub) -> None:
+def notes_sheet(ws, style, years, all_teams, excluded, team, sub, tier, league) -> None:
     negated, unparsed, non_fbs = excluded
-    grand_a, grand_m = league[(None, None)]
-    unk_a = league.get((None, 999), [0, 0])[0]
-    coverage = ", ".join(f"{y}: {league[(y, None)][0]:,}" for y in years)
+    grand_a, grand_m = all_teams[(None, None)]
+    unk_a = all_teams.get((None, 999), [0, 0])[0]
+    coverage = ", ".join(f"{y}: {all_teams[(y, None)][0]:,}" for y in years)
 
-    write_notes(ws, style, "Notes -- FBS field goals by distance", [
+    write_notes(ws, style, f"Notes -- {tier} field goals by distance", [
         ("What is counted", [
-            f"One row per field goal attempt by an FBS team, {years[0]}-{years[-1]}: "
+            f"One row per field goal attempt by an {tier} team, {years[0]}-{years[-1]}: "
             f"{grand_a:,} attempts, {grand_m:,} made ({grand_m / grand_a:.1%}).",
             "Place kicks here means field goals only. PATs are place kicks as well, but "
             "there are about 55,000 of them at a single distance and they would drown the "
@@ -227,16 +252,19 @@ def notes_sheet(ws, style, years, league, excluded, team, sub) -> None:
             f"{negated:,} attempts have no make or miss recorded. Those are kicks wiped out "
             "by penalty: neither a make nor a miss, so they are out of the numerator and "
             "the denominator both.",
-            f"{non_fbs:,} attempts were kicked by a non-FBS team. FBS is read per season "
-            "from dim_team_season, never per team, so a programme that moved up mid-window "
-            "is blank before it arrived rather than zero.",
-            f"{unparsed:,} FBS attempts have no readable distance in the play text and sit "
+            (f"{non_fbs:,} attempts were kicked by a non-FBS team. FBS is read per season "
+             "from dim_team_season, never per team, so a programme that moved up mid-window "
+             "is blank before it arrived rather than zero."
+             if league == "cfb" else
+             "Nothing is excluded for division: the NFL has no second division, so every "
+             "attempt in the corpus is by a top-flight team."),
+            f"{unparsed:,} {tier} attempts have no readable distance in the play text and sit "
             f"in the Unknown row ({unk_a:,} of them within this report's seasons). They are "
             "kept rather than dropped so All distances still reconciles to the team's real "
             "attempt count.",
         ]),
         ("How the By Team sheet works", [
-            "B4 is a dropdown over every FBS team in the data. Each cell is a SUMIFS "
+            f"B4 is a dropdown over every {tier} team in the data. Each cell is a SUMIFS "
             "against the hidden _data sheet, so the whole grid recalculates the moment you "
             f"change the team. It opens on {team}.",
             "No macros, so it survives email and SharePoint, and Google Sheets imports it "
@@ -246,7 +274,7 @@ def notes_sheet(ws, style, years, league, excluded, team, sub) -> None:
             "does not read as a team that missed everything.",
         ]),
         ("Coverage -- worth a glance before quoting a number", [
-            f"FBS attempts by season. {coverage}.",
+            f"{tier} attempts by season. {coverage}.",
             "2020 is short by design: the COVID season had roughly a third fewer games. "
             "Any other season that looks light, or a single team-season that looks light "
             "next to its neighbours, is worth checking against the schedule before the "
@@ -262,6 +290,8 @@ def main() -> None:
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--team", default=None, help="team the By Team sheet opens on")
     ap.add_argument("--seasons", default=None, help="e.g. 2019-2025")
+    ap.add_argument("--league", default="cfb", choices=["cfb", "nfl"],
+                    help="which corpus (default college). The snapshot holds both.")
     a = ap.parse_args()
 
     seasons = None
@@ -270,7 +300,11 @@ def main() -> None:
         seasons = (int(lo), int(hi or lo))
 
     con = duckdb.connect(a.db, read_only=True)
-    print("wrote " + build(con, a.out, a.team, seasons))
+    out = a.out
+    if a.league != "cfb" and out == OUT:
+        root, ext = os.path.splitext(out)
+        out = f"{root}_{a.league}{ext}"      # never overwrite the other league's workbook
+    print("wrote " + build(con, out, a.team, seasons, a.league))
 
 
 if __name__ == "__main__":

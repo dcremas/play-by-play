@@ -12,7 +12,7 @@ import dash_mantine_components as dmc
 import pandas as pd
 from dash import dcc, html
 
-from . import columns, data, lens, theme, ui
+from . import columns, data, league, lens, theme, ui
 
 _ROLE = {"field_goal": "Placekicker", "punt": "Punter", "kickoff": "Kickoff",
          "pat": "Placekicker", "two_point": "Passer / rusher",
@@ -98,12 +98,16 @@ def _prior_line(row) -> str | None:
             f"{int(r.tb)} touchbacks ({r.tb / r.n:.0%})")
 
 
-def _person(role, name, *, athlete_id=None, conf=None, sub=None, mode="dark"):
+def _person(role, name, *, athlete_id=None, conf=None, sub=None, mode="dark",
+            lg=None):
     if not name:
         return None
     heading = html.Div(name, className="person-name")
     if not _na(athlete_id):
-        heading = dcc.Link(heading, href=f"/player/{int(athlete_id)}",
+        # League-qualified, because the same athlete id names a college career and a pro
+        # one and the drawer knows which row it came from.
+        heading = dcc.Link(heading,
+                           href=f"/player/{league.resolve(lg)}/{int(athlete_id)}",
                            className="st-link")
     badges = [b for b in [_conf_badge(conf)] if b is not None]
     return dmc.Paper(withBorder=True, radius="md", p="sm", className="person-card",
@@ -167,13 +171,19 @@ def _render_kick(uid: str, mode: str = "dark"):
     # ---------------------------------------------------------------- people
     people = [
         _person(_ROLE[row["play_kind"]], v("player"), athlete_id=v("player_id"),
-                conf=v("player_conf"), sub=_prior_line(row), mode=mode),
+                conf=v("player_conf"), sub=_prior_line(row), mode=mode,
+                lg=row.get("league")),
         _person("Returner", v("returner_name"), athlete_id=v("returner_athlete_id"),
                 sub="No profile page — this app profiles the kicking side only",
-                mode=mode),
+                mode=mode, lg=row.get("league")),
         _person("Tackler", v("tackler_name"), athlete_id=v("tackler_athlete_id"),
-                mode=mode),
-        _person("Got a hand on it", v("blocker_name"), mode=mode),
+                mode=mode, lg=row.get("league")),
+        _person("Got a hand on it", v("blocker_name"), mode=mode, lg=row.get("league")),
+        # NFL only. The gamebook names the long snapper on every snapped kick and the
+        # holder on every place kick; the college feed names neither, so these two cards
+        # simply do not appear on a college row -- _person returns None on an empty name.
+        _person("Long snapper", v("snapper_name"), mode=mode, lg=row.get("league")),
+        _person("Holder", v("holder_name"), mode=mode, lg=row.get("league")),
     ]
     people = [p for p in people if p is not None]
     assists = _assists(uid)
@@ -258,10 +268,12 @@ def _render_kick(uid: str, mode: str = "dark"):
         ]),
         dmc.Group(gap=8, children=[
             dcc.Link(dmc.Button(f"{row['team']} profile", variant="light", size="compact-xs"),
-                     href=f"/team/{int(row['team_id'])}") if not _na(row["team_id"]) else None,
+                     href=f"/team/{league.resolve(row.get('league'))}/{int(row['team_id'])}")
+            if not _na(row["team_id"]) else None,
             dcc.Link(dmc.Button(f"{row['opponent']} profile", variant="subtle",
                                 size="compact-xs"),
-                     href=f"/team/{int(row['opp_id'])}") if not _na(row["opp_id"]) else None,
+                     href=f"/team/{league.resolve(row.get('league'))}/{int(row['opp_id'])}")
+            if not _na(row["opp_id"]) else None,
         ]),
         unknown_note,
         dmc.Divider(label="Who was involved", labelPosition="left", mt=4),
@@ -280,7 +292,7 @@ def _render_kick(uid: str, mode: str = "dark"):
                          className="playtext"),
                 _kv_block(provenance),
                 ui.note("Every field above except the ESPN-native ones (teams, clock, "
-                        "down, score) was derived from that line by scripts/st_parser.py.",
+                        "down, score) was derived from that line by scripts/st_parser_cfb.py.",
                         "neutral"),
             ])),
         ]),

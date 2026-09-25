@@ -6,11 +6,11 @@
 -- now, so the athlete link is reproducible from the same command list as everything else.
 --
 --   .venv/bin/python scripts/build_dims.py athlete
---   psql -d cfb -f sql/load_athletes_1_stage.sql
---   psql -d cfb -c "\copy pbp.stg_dim_athlete FROM 'data/out/dim_athlete.csv' WITH (FORMAT csv, HEADER true)"
---   psql -d cfb -c "\copy pbp.stg_play_athlete FROM 'data/out/play_athlete.csv' WITH (FORMAT csv, HEADER true)"
---   psql -d cfb -c "\copy pbp.stg_play_athlete_wide FROM 'data/out/play_athlete_wide.csv' WITH (FORMAT csv, HEADER true)"
---   psql -d cfb -f sql/load_athletes_2_apply.sql
+--   psql -d pbp -f sql/load_athletes_1_stage.sql
+--   psql -d pbp -c "\copy pbp.stg_dim_athlete FROM 'data/out/dim_athlete.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d pbp -c "\copy pbp.stg_play_athlete FROM 'data/out/play_athlete.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d pbp -c "\copy pbp.stg_play_athlete_wide FROM 'data/out/play_athlete_wide.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d pbp -f sql/load_athletes_2_apply.sql
 --
 -- All-text for the same reason as load_1_stage.sql: the CSVs render a missing integer as an
 -- empty field, which a direct \copy into bigint rejects. NULLIF + numeric absorbs it.

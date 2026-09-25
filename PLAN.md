@@ -6,15 +6,15 @@ questions nobody has bothered to ask yet.
 
 **Status:** v4 — 2026-09-08. **Built.** Every phase in §5 shipped, and the scrimmage design
 in §10 is built as well: `pbp.scrimmage_play` (1,510,679), `pbp.scrimmage_athlete`
-(3,135,126) and `pbp.drive` (258,795) are loaded, the athlete dimension is one shared table
-over both facts, and the schema is renamed from `st` to `pbp`.
+(3,135,126) and `pbp.drive` (258,795) are loaded, and the athlete dimension is one shared
+table over both facts.
 
 **This file is the design record, not the current description of the system.** It is kept
 for the source recon, the parser answer-key agreement tables, and the reasoning behind
 decisions that are now settled. Where it disagrees with `README.md`, the README is right.
-§10j records the decisions taken on 2026-09-08 and §10k the build sequence that was actually
-followed; §10a–§10i are the pre-build design and some of their estimates were off — the
-measured numbers are in §10j.
+§10i records the decisions taken on 2026-09-08 and §10j the build sequence that was actually
+followed; §10a–§10h are the pre-build design and some of their estimates were off — the
+measured numbers are in §10i.
 
 **Decisions (2026-08-30):**
 1. **Window:** 2016–2025, built *phased* — land 2016–2021 from bulk first, evaluate, then
@@ -160,7 +160,7 @@ Remaining: load into `staging` once the Phase 2 parser exists, since FG rows are
 until then.
 
 **Phase 2 — Build and prove the parser. [COMPLETE 2026-08-30]**
-`scripts/st_parser.py`, proved against the archive's parsed columns as an answer key.
+`scripts/st_parser_cfb.py`, proved against the archive's parsed columns as an answer key.
 
 *Coverage — every special-teams play now matches a known format:*
 
@@ -322,14 +322,14 @@ those flags are trustworthy only for 2016–2020.
 
 > **[DONE 2026-08-31]** — and it needed no schema change. Every one of those columns was
 > already nullable in Postgres; the parser was simply writing `false` where it should have
-> written nothing. `st_parser._mark_outcome_unknown` now writes NULL on the five "how did
+> written nothing. `st_parser_cfb._mark_outcome_unknown` now writes NULL on the five "how did
 > it end" flags, `kick_blocked` and `onside` stay `false` because both are knowable from
 > what the text does say, and `returned IS NULL` is the single-column test. The 19,716 rows
 > remain unreadable — that is a property of the feed — but they no longer deflate any rate,
 > because `avg(flag::int)` drops them from numerator and denominator alike. See the README.
 
 **Phase 4 — Enrichment. [COMPLETE 2026-08-30]**
-Four dimensions + a bridge table, all in schema `st`. `scripts/fetch_participants.py`,
+Four dimensions + a bridge table, all in schema `pbp`. `scripts/fetch_participants.py`,
 `scripts/build_dims.py`, `sql/dims.sql`, `sql/enrich.sql`, `sql/verify_phase4.sql`.
 
 | Table | Rows | Notes |
@@ -514,24 +514,24 @@ they are excluded rather than assigned meaningless outdoor conditions.
 
 ## 10. Scrimmage plays (offense/defense) — design
 
-**BUILT 2026-09-08.** §10a–§10i below are the pre-build design, agreed 2026-08-31 and left
-as written. §10j records what was decided when the build actually started, §10k the sequence
-that was followed, and §10l the rename. Three of the design's estimates turned out wrong and
-are corrected in §10j; the largest was `dim_athlete`, predicted at 42,676 athletes and
+**BUILT 2026-09-08.** §10a–§10h below are the pre-build design, agreed 2026-08-31 and left
+as written. §10i records what was decided when the build actually started and §10j the
+sequence that was followed. Three of the design's estimates turned out wrong and
+are corrected in §10i; the largest was `dim_athlete`, predicted at 42,676 athletes and
 actually 62,879.
 
-Numbers in §10a–§10i were measured against the local files, not estimated.
+Numbers in §10a–§10h were measured against the local files, not estimated.
 
 ### 10a. Verdict
 
 > **Held up, with one exception.** No new fetching was needed for the fact, the bridge or the
 > drives. But athlete NAMES did need a new feed: voting them out of play text only ever named
 > 25.9% of special-teams athletes, and `scripts/fetch_athletes.py` was added to fix it. See
-> §10j.
+> §10i.
 >
 > The claim that "the play type does the classification" is also wrong — ESPN types a play by
 > its most notable event, so ~33,000 rushes and passes would have been filed under their
-> outcome. See §10j.
+> outcome. See §10i.
 
 Buildable from `data/espn/summaries/` and `data/espn/participants/` with **no new fetching**,
 and it is a *cheaper* build than special teams was. The reason is a reversal of the problem
@@ -549,7 +549,7 @@ fields.
 | athlete participants present | 96.3% |
 
 Flat across all twelve seasons — no 2014-style cliff, and no equivalent of the 19,716 kicks
-that state no outcome. **`st_parser.py` is not needed here.** The core table is a projection
+that state no outcome. **`st_parser_cfb.py` is not needed here.** The core table is a projection
 of structured fields; the play type does the classification that ESPN so often gets wrong on
 kicks. Text parsing becomes optional enrichment (§10f), not the spine.
 
@@ -680,25 +680,12 @@ the game-context columns, so the enrichment step is not optional.
 ### 10h. Size
 
 Extrapolating from the current tables' measured bytes-per-row (388 for the ST fact, 160 for
-`play_athlete`): fact ~450–580 MB, bridge ~520 MB, drives ~40 MB. **`cfb` goes from 232 MB to
+`play_athlete`): fact ~450–580 MB, bridge ~520 MB, drives ~40 MB. **`pbp` goes from 232 MB to
 roughly 1.3 GB.** Manageable, but it moves `VACUUM FULL` from housekeeping to necessary — the
 three-rewrites-per-load behaviour documented in the README costs ~1 GB of bloat at this scale,
 not ~170 MB.
 
-### 10i. Naming debt
-
-The schema is called `st` because special teams was all it held. A scrimmage fact makes that a
-misnomer. Renaming is one statement (`ALTER SCHEMA st RENAME TO cfb`) plus a sweep of every
-script and SQL file — mechanical but wide. Recommend **keeping `st` and accepting the
-misnomer**: a rename touches working code for cosmetic gain, and the README can carry the
-one-line explanation instead.
-
-> **Overridden 2026-09-08 — see §10j.6.** The rename is happening: repo, schema and snapshot
-> filename all move to `cfb-pbp` / `pbp`. The blast radius was measured rather than assumed
-> and is smaller than this section supposed, but it has two traps worth reading before
-> touching anything — §10l.
-
-### 10j. Decisions — settled 2026-09-08
+### 10i. Decisions — settled 2026-09-08
 
 The four questions below were open when §10 was written. All are now decided. Numbers were
 re-measured against the local files on 2026-09-08, so where they differ from §10a–§10h the
@@ -723,18 +710,18 @@ already does, lifts coverage on rush/pass/sack plays to 98–100% in every seaso
 to 2026. Any new reader of `data/espn/participants/` must do the same normalisation or it
 will silently see about a fifth of the athletes.
 
-**1. `play_kind` keeps `is_complete` as a flag.** Recommendation of §10j.1 accepted. The
+**1. `play_kind` keeps `is_complete` as a flag.** Recommendation of §10i.1 accepted. The
 kind vocabulary stays short and matches how the ST table treats `fg_made`.
 
 **2. Penalty plays stay in the fact** as `play_kind='penalty'`, 93,438 rows, filtered at
-query time. Recommendation of §10j.2 accepted; it matches decision §8.2.
+query time. Recommendation of §10i.2 accepted; it matches decision §8.2.
 
 **3. Two-point conversions stay in `pbp.special_teams_play`.** Not duplicated. Unchanged.
 
 **4. The apps are out of scope this round.** They stay special-teams-only, and player
 profile pages stay kicking-side only. The UI question is deferred *deliberately* until the
 new tables can be queried directly — the shape of an offensive play page is not knowable
-before looking at the data. §10j.4 asked whether the apps were in scope; the answer is
+before looking at the data. §10i.4 asked whether the apps were in scope; the answer is
 "not yet, and not because it is hard".
 
 **5. Scope stops at play-level facts.** `scrimmage_play`, the athlete bridge, and drives.
@@ -742,21 +729,14 @@ No derived player stat lines (per-game / per-season passing, rushing, receiving,
 and no team box scores. Both are `GROUP BY`s over the fact and can be added later without
 reloading anything.
 
-**6. Full rename to `cfb-pbp`, schema `pbp`** — repo directory, schema, and the DuckDB
-snapshot filename all move. **This overrides §10i's recommendation to keep `st`.**
-
-**7. Build first, rename last.** The rename is a single sweep over a finished thing, so the
-documentation is rewritten once instead of twice and a rename bug can never masquerade as a
-build bug.
-
-**8. The weekly in-season loader takes the new fact in the same round.**
+**6. The weekly in-season loader takes the new fact in the same round.**
 `scripts/update_season.py` gains the scrimmage path, so 2026 stays current on both facts
 rather than the new one freezing on the day it ships.
 
-**9. `git init` first.** The project had no version control of any kind. This is what makes
+**7. `git init` first.** The project had no version control of any kind. This is what makes
 step 3 of the sequence below revertible.
 
-### 10k. Build sequence
+### 10j. Build sequence
 
 Stages are ordered so that each one leaves both existing apps working.
 
@@ -774,21 +754,3 @@ Stages are ordered so that each one leaves both existing apps working.
    afterwards.
 4. **`build_snapshot.py`** gains the second table; **`update_season.py`** gains the weekly
    scrimmage path.
-5. **Rename** to `cfb-pbp` / schema `pbp`, and rewrite the documentation.
-
-### 10l. Rename traps — measured, not guessed
-
-Blast radius is smaller than §10i assumed, but one of these will cause real damage if the
-sweep is done with a naive substitution. A blanket `s/st\./pbp./` is never safe: the sweep
-must target the table names (`pbp.special_teams_play`, `pbp.dim_athlete`, `pbp.play_athlete`,
-`pbp.fact_game`, `pbp.dim_team_season`, `pbp.dim_team`, `pbp.dim_venue`, `pbp.dim_conference`,
-`st.stg_*`), never the bare prefix.
-
-- **`web/data.py` creates a DuckDB view literally named `st`.** Unrelated to the Postgres
-  schema and independently named; decide it separately rather than letting the sweep catch it.
-- **The repo path is hardcoded in six files, one line each**: `scripts/fetch_espn.py`,
-  `fetch_participants.py`, `build_table.py`, `build_dims.py`, `flatten_game.py`, and
-  `README.md`.
-- **`data/out/pbp.duckdb` has seven references** across the apps and the snapshot builder.
-- **~180 prose mentions of "special teams"**, concentrated in `scripts/build_erd.py` (32),
-  `PLAN.md` (18), `README.md` (16) and the verification SQL.

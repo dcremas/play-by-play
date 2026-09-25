@@ -3,7 +3,7 @@
 The mirror image of build_table.py. That script had to parse prose because a kick's outcome
 exists nowhere else; this one barely parses at all, because a scrimmage play's outcome is
 structured. Measured over the whole corpus: statYardage 100.00%, start.down 100.00%,
-isTurnover/scoringPlay 100.00%, offense/defense team ids 99.78%. st_parser.py is not
+isTurnover/scoringPlay 100.00%, offense/defense team ids 99.78%. st_parser_cfb.py is not
 imported here and is not needed.
 
 Scope, and how it stays disjoint from the special-teams fact:
@@ -26,22 +26,46 @@ duplicates: a touchdown play itself is never claimed by classify().
 
     python build_scrimmage.py                             -> data/out/scrimmage_plays.csv
     python build_scrimmage.py --seasons 2026 --out x.csv  one season, for the in-season update
+    python build_scrimmage.py --league nfl                -> data/out/scrimmage_plays_nfl.csv
+
+This is the half of the pipeline that ports to the NFL for free. Nothing here parses prose,
+and every structured field it reads -- statYardage, start/end down and distance,
+yardsToEndzone, isTurnover, scoringPlay, teamParticipants -- is present and populated in the
+NFL feed. The league selects a raw directory and stamps a column; no rule below changes.
 """
 import sys, os, gzip, json, csv, argparse, collections, time
 from concurrent.futures import ProcessPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import league as lg
 from build_table import classify, as_team, same_team, clock_secs, advance_score
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ESPN, OUT = f"{HOME}/data/espn", f"{HOME}/data/out"
+LEAGUE = lg.CFB
+ESPN, OUT = lg.data_dir(LEAGUE), f"{HOME}/data/out"
 SEASONS = [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 WORKERS = 8
+
+
+def use(name):
+    """Point the module at one league's raw directory.
+
+    rows_for_game() does NOT read this. It runs in a worker process, and on macOS a
+    ProcessPoolExecutor SPAWNS rather than forks -- the child re-imports this module fresh
+    and would come up as college no matter what the parent set. The league travels in the
+    job tuple instead, which is explicit and correct on both start methods.
+    """
+    global LEAGUE, ESPN
+    LEAGUE, ESPN = name, lg.data_dir(name)
 
 # Not plays. They carry no down, no yardage and no participants, and counting them would
 # deflate every per-play rate in the table.
 ADMIN = {"Timeout", "End Period", "End of Half", "End of Game", "Coin Toss",
-         "End of Regulation", "Official Timeout"}
+         "End of Regulation", "Official Timeout",
+         # NFL-only. 6,631 rows corpus-wide -- a clock stoppage with no down, no yardage
+         # and no participants. Left in, it would sit in `other` and deflate every
+         # per-play rate in the table by about 1%.
+         "Two-minute warning"}
 
 # Conversion attempts, not scrimmage downs -- no down, no distance, and one fixed yard line.
 # PLAN.md §10j.3 puts the conversion family in pbp.special_teams_play and says not to
@@ -75,12 +99,19 @@ KIND_BY_TYPE = {
     "Pass Completion": "pass",
     "Sack": "sack",
     "Penalty": "penalty",
+    # NFL spellings for the same three things. 'Pass' is the bare label the NFL feed uses
+    # on 61 plays where college always qualifies it; 'Sack Opp Fumble Recovery' is a sack
+    # whose most notable event was the fumble, and it is a sack at the snap either way.
+    "Pass": "pass",
+    "Sack Opp Fumble Recovery": "sack",
 }
 # Typed by outcome; the snap is recovered from participant roles instead.
 BY_PARTICIPANT = {
     "Interception", "Pass Interception Return", "Interception Return Touchdown",
     "Fumble", "Fumble Recovery (Own)", "Fumble Recovery (Opponent)",
     "Fumble Return Touchdown", "Safety", "Defensive 2pt Conversion", "",
+    # NFL-only, and typed by outcome exactly like the college entries above.
+    "Muffed Punt Recovery (Opponent)", "Fumble Recovery (Opponent) Touchdown",
 }
 # Completion state, for pass plays only. An interception is a pass attempt that was not
 # completed, which is how NCAA completion percentage treats it (att = comp + inc + int).
@@ -104,15 +135,15 @@ BRIDGE_COLUMNS = ["play_uid", "role", "athlete_id", "ordinal"]
 # One row per drive. Drives span BOTH facts -- a drive that ends in a punt contains the punt
 # -- so this table is deliberately not scrimmage-only, and play counts here cover every play
 # in the drive, not just the ones in pbp.scrimmage_play.
-DRIVE_COLUMNS = ["drive_uid", "drive_id", "game_id", "season", "week", "season_type",
+DRIVE_COLUMNS = ["drive_uid", "league", "drive_id", "game_id", "season", "week", "season_type",
                  "drive_number", "offense_team_id", "defense_team_id", "result",
                  "display_result", "description", "is_score", "offensive_plays",
                  "plays_total", "plays_scrimmage", "yards", "time_elapsed_secs",
                  "start_period", "start_clock_secs", "start_yards_to_goal", "start_text",
                  "end_period", "end_clock_secs", "end_yards_to_goal", "end_text"]
 
-COLUMNS = ["play_uid", "source", "game_id", "season", "week", "season_type", "play_kind",
-           "play_type_espn", "drive_id", "drive_number", "period", "clock_secs_period",
+COLUMNS = ["play_uid", "league", "source", "game_id", "season", "week", "season_type",
+           "play_kind", "play_type_espn", "drive_id", "drive_number", "period", "clock_secs_period",
            "wallclock_utc", "down", "distance", "yards_to_goal", "offense_team_id",
            "defense_team_id", "is_home_offense", "score_diff_offense", "yards_gained",
            "end_down", "end_distance", "end_yards_to_goal", "end_team_id",
@@ -147,7 +178,7 @@ def bounded(field, v, stats):
     return None
 
 
-def participants_for(gid):
+def participants_for(gid, espn=None):
     """Load one game's participants, normalising the two key shapes that exist on disk.
 
     fetch_participants.one() documents the split: files written before the 2025 core-API
@@ -155,7 +186,7 @@ def participants_for(gid):
     after key on the bare sequence number. build_dims.py already strips the prefix; anything
     that does not sees roughly a fifth of the athletes vanish.
     """
-    path = f"{ESPN}/participants/{gid}.json.gz"
+    path = f"{espn or ESPN}/participants/{gid}.json.gz"
     if not os.path.exists(path):
         return {}
     with gzip.open(path, "rt") as f:
@@ -216,8 +247,9 @@ def rows_for_game(job):
     Splitting them into separate scripts would triple the I/O over 10,470 gzipped games for
     no gain, and drive_id has to be stamped on the fact rows anyway.
     """
-    gid, g, season = job
-    spath = f"{ESPN}/summaries/{gid}.json.gz"
+    gid, g, season, league = job
+    espn = lg.data_dir(league)
+    spath = f"{espn}/summaries/{gid}.json.gz"
     if not os.path.exists(spath):
         return gid, [], [], collections.Counter()
     try:
@@ -226,7 +258,7 @@ def rows_for_game(job):
     except Exception:
         return gid, [], [], collections.Counter({"unreadable": 1})
 
-    parts = participants_for(gid)
+    parts = participants_for(gid, espn)
     home = as_team(next((t["id"] for t in g["teams"] if t["home_away"] == "home"), None))
     away = as_team(next((t["id"] for t in g["teams"] if t["home_away"] == "away"), None))
     season_type = "postseason" if g["season_type"] == 3 else "regular"
@@ -256,7 +288,7 @@ def rows_for_game(job):
             pt = (p.get("type") or {}).get("text") or ""
             if pt in ADMIN:
                 continue
-            if pt in CONVERSION or classify(pt, p.get("text")):
+            if pt in CONVERSION or classify(pt, p.get("text"), league):
                 st_seq_counts[str(p.get("sequenceNumber") or p.get("id"))] += 1
 
     out, drives, stats = [], [], collections.Counter()
@@ -295,7 +327,7 @@ def rows_for_game(job):
                 stats["admin"] += 1
             elif ptype in CONVERSION:
                 stats["conversion"] += 1
-            elif classify(ptype, text):
+            elif classify(ptype, text, league):
                 stats["special_teams"] += 1
             else:
                 seq = p.get("sequenceNumber") or p.get("id")
@@ -358,7 +390,8 @@ def rows_for_game(job):
                           else "unresolved_outcome_type"] += 1
 
                 out.append({
-                    "play_uid": f"espn:{gid}:{seq}", "source": "espn", "game_id": gid,
+                    "play_uid": f"espn:{gid}:{seq}", "league": league,
+                    "source": "espn", "game_id": gid,
                     "season": season, "week": g["week"], "season_type": season_type,
                     "play_kind": kind, "play_type_espn": ptype,
                     "drive_id": dr.get("id"), "drive_number": dnum,
@@ -398,7 +431,8 @@ def rows_for_game(job):
 
         dstart, dend = dr.get("start") or {}, dr.get("end") or {}
         drives.append({
-            "drive_uid": f"espn:{gid}:d{dnum}", "drive_id": dr.get("id"), "game_id": gid,
+            "drive_uid": f"espn:{gid}:d{dnum}", "league": league,
+            "drive_id": dr.get("id"), "game_id": gid,
             "season": season, "week": g["week"], "season_type": season_type,
             "drive_number": dnum,
             "offense_team_id": as_team((dr.get("team") or {}).get("id")),
@@ -422,9 +456,11 @@ def rows_for_game(job):
 def main(path=None, seasons=None, workers=WORKERS, bridge_path=None, drives_path=None):
     os.makedirs(OUT, exist_ok=True)
     seasons = seasons or SEASONS
-    path = path or f"{OUT}/scrimmage_plays.csv"
-    bridge_path = bridge_path or f"{OUT}/scrimmage_athlete.csv"
-    drives_path = drives_path or f"{OUT}/drives.csv"
+    # Per-league defaults, so an NFL run cannot silently overwrite the college extracts.
+    sfx = "" if LEAGUE == lg.CFB else f"_{LEAGUE}"
+    path = path or f"{OUT}/scrimmage_plays{sfx}.csv"
+    bridge_path = bridge_path or f"{OUT}/scrimmage_athlete{sfx}.csv"
+    drives_path = drives_path or f"{OUT}/drives{sfx}.csv"
     stats = collections.Counter()
     per_season = collections.Counter()
     seen = set()
@@ -447,7 +483,7 @@ def main(path=None, seasons=None, workers=WORKERS, bridge_path=None, drives_path
                 print(f"  {season}: NO GAME LIST", flush=True)
                 continue
             games = json.load(open(gpath))
-            jobs = [(gid, g, season) for gid, g in games.items()]
+            jobs = [(gid, g, season, LEAGUE) for gid, g in games.items()]
             ngames = 0
             with ProcessPoolExecutor(max_workers=workers) as ex:
                 for gid, rows, dvs, s in ex.map(rows_for_game, jobs, chunksize=25):
@@ -556,6 +592,8 @@ if __name__ == "__main__":
     ap.add_argument("--out-drives", help="default data/out/drives.csv")
     ap.add_argument("--seasons", help="comma-separated, e.g. 2026")
     ap.add_argument("--workers", type=int, default=WORKERS)
+    ap.add_argument("--league", default=lg.CFB, choices=sorted(lg.SPEC))
     a = ap.parse_args()
+    use(a.league)
     main(a.out, [int(x) for x in a.seasons.split(",")] if a.seasons else None, a.workers,
          a.out_bridge, a.out_drives)

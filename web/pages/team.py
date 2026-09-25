@@ -10,11 +10,19 @@ import dash_mantine_components as dmc
 from dash import Input, Output, callback, dcc, html
 from dash.exceptions import PreventUpdate
 
-from .. import charts, data, lens, ui
+from .. import charts, data, league, lens, ui
 from . import common
 
 
-def _profile(team_id: int) -> dict:
+def _profile(team_id: int, lg: str) -> dict:
+    """One team in one league.
+
+    The league is not optional and is not a filter the reader chose. Team ids collide
+    across the two corpora -- 2 is Auburn and also the Buffalo Bills -- so a profile that
+    queried on team_id alone would union two franchises into one page and report their
+    combined kick count under whichever name won the any_value().
+    """
+    lg = league.resolve(lg)
     df = data.q(f"""
         SELECT any_value(team) AS name,
                min(season) AS s0, max(season) AS s1,
@@ -22,36 +30,37 @@ def _profile(team_id: int) -> dict:
                count(DISTINCT game_id) AS games,
                count(DISTINCT player_id) AS kickers,
                arg_max(conference, season) AS conference,
-               arg_max(division, season) AS division
-        FROM st_play WHERE team_id = {team_id}
+               arg_max(COALESCE(nfl_division, ncaa_division), season) AS division
+        FROM st_play WHERE team_id = {team_id} AND league = {data.lit(lg)}
     """)
     if df.empty or not int(df.iloc[0]["kicks"] or 0):
         raise LookupError(team_id)
     r = df.iloc[0]
-    return {"name": r["name"], "s0": int(r["s0"]), "s1": int(r["s1"]),
+    return {"name": r["name"], "league": lg, "s0": int(r["s0"]), "s1": int(r["s1"]),
             "kicks": int(r["kicks"]), "games": int(r["games"]),
             "kickers": int(r["kickers"]), "conference": r["conference"],
             "division": r["division"]}
 
 
-def crumb(team_id: int):
-    p = _profile(team_id)
+def crumb(team_id: int, lg: str = league.DEFAULT):
+    p = _profile(team_id, lg)
     return dmc.Group(gap=6, children=[
         dmc.Text("/", size="xs", c="dimmed"),
         dmc.Text(p["name"], size="xs", fw=600),
     ])
 
 
-def layout(team_id: int, mode: str = "dark"):
-    p = _profile(team_id)
+def layout(team_id: int, lg: str = league.DEFAULT, mode: str = "dark"):
+    lg = league.resolve(lg)
+    p = _profile(team_id, lg)
     conf_hist = data.q(f"""
         SELECT DISTINCT season, conference FROM st_play
-        WHERE team_id = {team_id} ORDER BY season
+        WHERE team_id = {team_id} AND league = {data.lit(lg)} ORDER BY season
     """)
     moved = conf_hist["conference"].nunique() > 1
 
     return dmc.Stack(gap="md", children=[
-        dcc.Store(id="ent", data={"kind": "team", "id": int(team_id)}),
+        dcc.Store(id="ent", data={"kind": "team", "id": int(team_id), "league": lg}),
         common.header_block(
             p["name"],
             [dmc.Badge(p["conference"] or "—", variant="light", size="sm", radius="sm"),
@@ -116,6 +125,14 @@ def _kpis(ent, flt, mode):
         ui.tile("Touchback rate",
                 f"{r['tb_rate']:.1%}" if r.get("tb_rate") is not None else "—",
                 "onside excluded"),
+        # Two rates, never one. A programme that goes for two often would otherwise
+        # look like it cannot kick.
+        ui.tile("XP / 2pt rate",
+                " / ".join(
+                    f"{r[k]:.0%}" if r.get(k) is not None else "—"
+                    for k in ("pat_rate", "two_rate")),
+                f"{int(r.get('pat_att') or 0):,} XP · "
+                f"{int(r.get('two_att') or 0):,} two-point"),
     ]
     # The Unknown-outcome tile was dropped here on 2026-09-09 alongside the explorer's.
     # The Unknown COLUMN stays in the by-season grids below, and so does the note that
@@ -157,9 +174,7 @@ def _register_panel(kind: str):
             raise PreventUpdate
         rows = common.season_rows(_kind, common.entity_where(ent, flt))
         if not rows:
-            return dmc.Alert(
-                f"No {lens.PHASES['st'][_kind].lower()} plays under these filters.",
-                color="gray", variant="light")
+            return common.empty_panel(_kind, flt)
         caveats = []
         live = {r["season"] for r in data.in_progress_seasons()}
         hit = sorted(live.intersection(r["season"] for r in rows))
@@ -169,6 +184,8 @@ def _register_panel(kind: str):
                 f"part-season sitting next to full ones. Totals are not comparable; rates "
                 f"are, on a much smaller sample.", "info"))
         caveat = None
+        if _kind == "conversion":
+            caveat = common.conversion_caveat(rows)
         if _kind in ("punt", "kickoff"):
             worst = max((r.get("unk_share") or 0) for r in rows)
             if worst > 0:
@@ -179,7 +196,7 @@ def _register_panel(kind: str):
         return dmc.Stack(gap="sm", mt="sm", children=[
             *caveats, caveat,
             ui.grid(f"tm-seasons-{_kind}", mode or "dark", rows=rows,
-                    columns=common.season_cols(_kind), height="320px",
+                    columns=common.season_cols(_kind, "team"), height="320px",
                     row_id="season"),
         ])
 
@@ -215,4 +232,7 @@ def _people(ent, flt, mode):
 def _goto_player(rows):
     if not rows or rows[0].get("player_id") is None:
         raise PreventUpdate
-    return f"/player/{int(rows[0]['player_id'])}"
+    # League-qualified: an athlete id alone is not enough to name a career, because the
+    # same id is one man's college AND pro plays.
+    lg = league.resolve(rows[0].get("league"))
+    return f"/player/{lg}/{int(rows[0]['player_id'])}"

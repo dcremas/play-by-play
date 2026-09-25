@@ -25,7 +25,8 @@ before any load:
     data/out/play_athlete*.csv        special teams
     data/out/scrimmage_athlete.csv    scrimmage
 
-    python fetch_athletes.py                 fetch whatever is missing
+    python fetch_athletes.py                 fetch whatever is missing (college)
+    python fetch_athletes.py --league nfl    the NFL, into data/espn_nfl/athletes.json.gz
     python fetch_athletes.py --refresh       re-fetch everything, e.g. after a transfer window
     python fetch_athletes.py --workers 4    slower still, if 6 gets throttled
 """
@@ -33,10 +34,29 @@ import os, sys, csv, gzip, json, time, random, argparse, threading
 import urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/college-football"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import league as lg
+
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(HOME, "data", "out")
-STORE = os.path.join(HOME, "data", "espn", "athletes.json.gz")
+LEAGUE = lg.CFB
+CORE = lg.core_base(LEAGUE)
+STORE = os.path.join(lg.data_dir(LEAGUE), "athletes.json.gz")
+
+
+def use(name):
+    """Point the module at one league's athlete endpoint and its own store.
+
+    A SEPARATE store per league even though the id space is shared, because the endpoints
+    are not: a college-only athlete id 404s against /leagues/nfl/athletes/<id> and vice
+    versa. build_dims.load_identity() merges the two stores when it builds the dimension,
+    which is where the shared id space is actually exploited.
+    """
+    global LEAGUE, CORE, STORE
+    LEAGUE, CORE = name, lg.core_base(name)
+    STORE = os.path.join(lg.data_dir(name), "athletes.json.gz")
+
+
 # 24 workers got this endpoint to 403 the whole IP after ~20,000 athletes, and the block
 # outlasted the run -- an id fetched successfully minutes earlier started 403ing too. 403 is
 # ESPN's throttle signal here, not a missing record (fetch_espn.py notes the same endpoint
@@ -70,10 +90,15 @@ def _wait_out_cooldown():
 # store is a few MB gzipped and loads in one read. participants/ is per-game because games
 # arrive one at a time; athletes do not.
 SOURCES = ["play_athlete.csv", "play_athlete_2026.csv", "scrimmage_athlete.csv"]
+SOURCES_NFL = ["play_athlete_nfl.csv", "scrimmage_athlete_nfl.csv"]
 
 # Everything else the endpoint returns -- headshots, links, birth place, draft, statistics
 # refs -- is noise for a dimension table and would multiply the store by twenty.
-KEEP = ("displayName", "fullName", "shortName", "jersey", "weight", "height")
+# dateOfBirth and debutYear are carried by the NFL athlete records and not the college
+# ones; keeping them costs nothing where they are absent and gives dim_athlete two columns
+# it has never had.
+KEEP = ("displayName", "fullName", "shortName", "jersey", "weight", "height",
+        "dateOfBirth", "debutYear")
 
 
 def load_store():
@@ -144,8 +169,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--refresh", action="store_true", help="re-fetch ids already stored")
     ap.add_argument("--workers", type=int, default=WORKERS)
-    ap.add_argument("--sources", nargs="*", default=SOURCES)
+    ap.add_argument("--sources", nargs="*", default=None)
+    ap.add_argument("--league", default=lg.CFB, choices=sorted(lg.SPEC))
     a = ap.parse_args()
+    use(a.league)
+    if a.sources is None:
+        a.sources = SOURCES_NFL if a.league == lg.NFL else SOURCES
 
     store = load_store()
     print(f"store holds {len(store):,} athletes", flush=True)

@@ -1,8 +1,14 @@
-"""Fetch 2022-2025 FBS play-by-play from ESPN.
+"""Fetch play-by-play from ESPN, for either league.
+
+    python fetch_espn.py games                  college football (the default, unchanged)
+    python fetch_espn.py games --league nfl     the NFL, into data/espn_nfl/
+
+The league changes the ESPN slug, the output directory, the week sweep and the division
+filter, and nothing else; all four live in scripts/league.py.
 
 The bulk archive this project started from was parsed ESPN data (verified: identical
 column shapes and identical play-text dialect), so pulling ESPN directly for the seasons
-it never covered means st_parser.py works unchanged -- no CFBD key, no new dialect.
+it never covered means st_parser_cfb.py works unchanged -- no CFBD key, no new dialect.
 
 Stages (each resumable; already-downloaded files are skipped):
     python fetch_espn.py games       -> data/espn/games_<season>.json
@@ -24,14 +30,26 @@ import sys, os, json, gzip, time, random, urllib.request, urllib.error
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-BASE = "https://site.api.espn.com/apis/site/v2/sports/football/college-football"
-OUT = os.path.expanduser("~/projects/cfb-pbp/data/espn")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import league as lg
+
+# Set by main() from `--league`; college unless asked otherwise, because every existing
+# invocation of this script predates the flag. See scripts/league.py.
+LEAGUE = lg.CFB
+BASE = lg.site_base(LEAGUE)
+OUT = lg.data_dir(LEAGUE)
 SUMS = f"{OUT}/summaries"
 SEASONS = [int(x) for x in os.environ.get("SEASONS", "2022,2023,2024,2025").split(",")]
-WEEKS = [(2, w) for w in range(1, 18)] + [(3, w) for w in range(1, 6)]
 WORKERS = 6
 # ESPN 403s browser-like User-Agent strings on this endpoint but serves urllib's default.
 # Counterintuitive, but do not "fix" this by adding a realistic UA -- it breaks the fetch.
+
+
+def use(league):
+    """Point every module-level path and URL at one league."""
+    global LEAGUE, BASE, OUT, SUMS
+    LEAGUE, BASE, OUT = league, lg.site_base(league), lg.data_dir(league)
+    SUMS = f"{OUT}/summaries"
 
 
 def get(url, tries=4):
@@ -66,8 +84,11 @@ def stage_games(refresh=False):
             print(f"{season}: cached ({len(json.load(open(path))):,} games)", flush=True); continue
         before = len(json.load(open(path))) if os.path.exists(path) else 0
         games = {}
-        for stype, wk in WEEKS:
-            url = f"{BASE}/scoreboard?dates={season}&seasontype={stype}&week={wk}&groups=80&limit=400"
+        # Season-dependent: the NFL added an 18th regular-season week in 2021, and `groups`
+        # restricts college to FBS with no NFL equivalent. Both live in scripts/league.py.
+        for stype, wk in lg.weeks(LEAGUE, season):
+            url = (f"{BASE}/scoreboard?dates={season}&seasontype={stype}&week={wk}"
+                   f"{lg.spec(LEAGUE)['groups']}&limit=400")
             try:
                 d = get(url)
             except Exception as e:
@@ -79,6 +100,12 @@ def stage_games(refresh=False):
                 if not (e.get("status") or {}).get("type", {}).get("completed"):
                     continue
                 c = e["competitions"][0]
+                # The Pro Bowl, and anything else played by a squad that is not a real
+                # franchise. See `exclude_teams` in scripts/league.py.
+                drop = lg.spec(LEAGUE)["exclude_teams"]
+                if drop and any(str(t.get("team", {}).get("id")) in drop
+                                for t in c.get("competitors", [])):
+                    continue
                 games[e["id"]] = {
                     "game_id": e["id"], "season": season, "season_type": stype, "week": wk,
                     "date": e.get("date"), "name": e.get("name"),
@@ -157,6 +184,7 @@ def stage_summaries(refresh_days=0):
 
 if __name__ == "__main__":
     a = sys.argv[1:]
+    use(lg.from_argv(a))
     days = int(a[a.index("--refresh-days") + 1]) if "--refresh-days" in a else 0
     if a[0] == "games":
         stage_games(refresh="--refresh" in a)

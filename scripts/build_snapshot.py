@@ -11,7 +11,7 @@ the error drifts with the present day: the same wrong query returned 108 Pac-12 
 the corpus ended in 2025 and the conference was down to two members.
 
     python scripts/build_snapshot.py            -> data/out/pbp.duckdb
-    python scripts/build_snapshot.py --db cfb   -> different source database
+    python scripts/build_snapshot.py --db pbp   -> different source database
 
 Two facts since 2026-09-08: `play` is special teams, `scrimmage` is everything else, and the
 two are disjoint with play_uid unique across both. `drive` spans them.
@@ -31,7 +31,7 @@ OUT = os.path.join(HOME, "data", "out", "pbp.duckdb")
 PLAY_SQL = """
 CREATE OR REPLACE TABLE play AS
 SELECT
-    p.play_uid, p.source, p.game_id, p.season, p.week, p.season_type, p.play_kind,
+    p.play_uid, p.league, p.source, p.game_id, p.season, p.week, p.season_type, p.play_kind,
 
     -- situation
     p.period, p.clock_secs_period, p.wallclock_utc, p.down, p.distance, p.yards_to_goal,
@@ -46,6 +46,7 @@ SELECT
     -- people
     p.kicker_athlete_id, p.returner_athlete_id, p.tackler_athlete_id,
     p.kicker_name, p.returner_name, p.blocker_name,
+    p.snapper_name, p.holder_name,
     ka.known_name           AS kicker_known_name,
     ka.text_name_confidence AS kicker_name_confidence,
     ka.position             AS kicker_position,
@@ -58,8 +59,10 @@ SELECT
 
     -- team-season identity (realignment-safe)
     kt.display_name AS kicking_team, rt.display_name AS receiving_team,
-    kts.conference_name AS kicking_conference, kts.division AS kicking_division,
-    rts.conference_name AS receiving_conference, rts.division AS receiving_division,
+    kts.conference_name AS kicking_conference, kts.ncaa_division AS kicking_ncaa_division,
+    kts.nfl_division   AS kicking_nfl_division,
+    rts.conference_name AS receiving_conference, rts.ncaa_division AS receiving_ncaa_division,
+    rts.nfl_division   AS receiving_nfl_division,
 
     -- provenance
     p.play_text, p.parse_confidence,
@@ -78,15 +81,24 @@ SELECT
          WHEN p.fg_distance_yds >= 60 THEN 60
          ELSE (p.fg_distance_yds // 5) * 5 END AS fg_dist_bucket,
     month(g.kickoff_utc) AS game_month,
-    -- both teams FBS, i.e. exclude the FBS-vs-FCS games PLAN.md §8 chose to ingest anyway
-    (kts.division = 'FBS' AND rts.division = 'FBS') AS fbs_vs_fbs
+    -- both teams FBS, i.e. exclude the FBS-vs-FCS games PLAN.md §8 chose to ingest anyway.
+    -- CONSTANT TRUE for the NFL, which has no second division: every NFL game is between two
+    -- top-flight teams. Leaving it to the college expression would evaluate NULL there and
+    -- any filter using it would silently drop the entire NFL corpus.
+    CASE WHEN p.league = 'nfl' THEN true
+         ELSE (kts.ncaa_division = 'FBS' AND rts.ncaa_division = 'FBS') END AS both_top_division
+-- EVERY team join carries the league. NFL team ids run 1-34 and collide outright with
+-- college ids -- team 2 is Auburn and also the Buffalo Bills -- so a league-blind join does
+-- not merely mislabel a team, it matches TWO dimension rows per play and doubles the table.
+-- dim_venue and dim_athlete are joined WITHOUT a league because their ids are a single
+-- shared space; that asymmetry is the whole design and is spelled out in sql/migrate_league.sql.
 FROM pg.pbp.special_teams_play p
-LEFT JOIN pg.pbp.fact_game       g   ON g.game_id = p.game_id
+LEFT JOIN pg.pbp.fact_game       g   ON g.game_id = p.game_id AND g.league = p.league
 LEFT JOIN pg.pbp.dim_venue       v   ON v.venue_id = p.venue_id
-LEFT JOIN pg.pbp.dim_team        kt  ON kt.team_id = p.kicking_team_id
-LEFT JOIN pg.pbp.dim_team        rt  ON rt.team_id = p.receiving_team_id
-LEFT JOIN pg.pbp.dim_team_season kts ON kts.team_id = p.kicking_team_id   AND kts.season = p.season
-LEFT JOIN pg.pbp.dim_team_season rts ON rts.team_id = p.receiving_team_id AND rts.season = p.season
+LEFT JOIN pg.pbp.dim_team        kt  ON kt.team_id = p.kicking_team_id   AND kt.league = p.league
+LEFT JOIN pg.pbp.dim_team        rt  ON rt.team_id = p.receiving_team_id AND rt.league = p.league
+LEFT JOIN pg.pbp.dim_team_season kts ON kts.team_id = p.kicking_team_id   AND kts.season = p.season AND kts.league = p.league
+LEFT JOIN pg.pbp.dim_team_season rts ON rts.team_id = p.receiving_team_id AND rts.season = p.season AND rts.league = p.league
 LEFT JOIN pg.pbp.dim_athlete     ka  ON ka.athlete_id = p.kicker_athlete_id
 """
 
@@ -102,7 +114,7 @@ LEFT JOIN pg.pbp.dim_athlete     ka  ON ka.athlete_id = p.kicker_athlete_id
 SCRIMMAGE_SQL = """
 CREATE OR REPLACE TABLE scrimmage AS
 SELECT
-    p.play_uid, p.source, p.game_id, p.season, p.week, p.season_type,
+    p.play_uid, p.league, p.source, p.game_id, p.season, p.week, p.season_type,
     p.play_kind, p.play_type_espn, p.drive_id, p.drive_number,
 
     -- situation
@@ -128,8 +140,10 @@ SELECT
 
     -- team-season identity (realignment-safe)
     ot.display_name AS offense_team, dt.display_name AS defense_team,
-    ots.conference_name AS offense_conference, ots.division AS offense_division,
-    dts.conference_name AS defense_conference, dts.division AS defense_division,
+    ots.conference_name AS offense_conference, ots.ncaa_division AS offense_ncaa_division,
+    ots.nfl_division   AS offense_nfl_division,
+    dts.conference_name AS defense_conference, dts.ncaa_division AS defense_ncaa_division,
+    dts.nfl_division   AS defense_nfl_division,
 
     p.play_text,
 
@@ -149,14 +163,17 @@ SELECT
          WHEN p.yards_to_goal <= 50 THEN 'opponent half'
          ELSE 'own half' END AS field_zone,
     month(g.kickoff_utc) AS game_month,
-    (ots.division = 'FBS' AND dts.division = 'FBS') AS fbs_vs_fbs
+    -- Constant true for the NFL; see the note in PLAY_SQL.
+    CASE WHEN p.league = 'nfl' THEN true
+         ELSE (ots.ncaa_division = 'FBS' AND dts.ncaa_division = 'FBS') END AS both_top_division
+-- Same league-carrying joins as PLAY_SQL; see the note there.
 FROM pg.pbp.scrimmage_play p
-LEFT JOIN pg.pbp.fact_game       g   ON g.game_id = p.game_id
+LEFT JOIN pg.pbp.fact_game       g   ON g.game_id = p.game_id AND g.league = p.league
 LEFT JOIN pg.pbp.dim_venue       v   ON v.venue_id = p.venue_id
-LEFT JOIN pg.pbp.dim_team        ot  ON ot.team_id = p.offense_team_id
-LEFT JOIN pg.pbp.dim_team        dt  ON dt.team_id = p.defense_team_id
-LEFT JOIN pg.pbp.dim_team_season ots ON ots.team_id = p.offense_team_id AND ots.season = p.season
-LEFT JOIN pg.pbp.dim_team_season dts ON dts.team_id = p.defense_team_id AND dts.season = p.season
+LEFT JOIN pg.pbp.dim_team        ot  ON ot.team_id = p.offense_team_id AND ot.league = p.league
+LEFT JOIN pg.pbp.dim_team        dt  ON dt.team_id = p.defense_team_id AND dt.league = p.league
+LEFT JOIN pg.pbp.dim_team_season ots ON ots.team_id = p.offense_team_id AND ots.season = p.season AND ots.league = p.league
+LEFT JOIN pg.pbp.dim_team_season dts ON dts.team_id = p.defense_team_id AND dts.season = p.season AND dts.league = p.league
 LEFT JOIN pg.pbp.dim_athlete     pa  ON pa.athlete_id = p.passer_athlete_id
 LEFT JOIN pg.pbp.dim_athlete     ra  ON ra.athlete_id = p.rusher_athlete_id
 LEFT JOIN pg.pbp.dim_athlete     wa  ON wa.athlete_id = p.receiver_athlete_id
@@ -172,15 +189,15 @@ IN_PROGRESS_DAYS = 30
 
 SEASON_STATUS_SQL = f"""
 CREATE OR REPLACE TABLE season_status AS
-SELECT season,
+SELECT league, season,
        count(DISTINCT game_id)                                   AS games,
        count(*)                                                  AS plays,
        max(week) FILTER (WHERE season_type = 'regular')           AS last_regular_week,
        max(kickoff_utc)                                          AS last_kickoff,
        max(kickoff_utc) > now() - INTERVAL {IN_PROGRESS_DAYS} DAY AS is_in_progress
 FROM play
-GROUP BY season
-ORDER BY season
+GROUP BY league, season
+ORDER BY league, season
 """
 
 COPIES = {
@@ -219,10 +236,11 @@ def build(db: str, out: str) -> None:
     print(f"scrimmage         {ns:>9,} rows   {time.time() - t1:5.1f}s")
 
     con.execute(SEASON_STATUS_SQL)
-    live = con.execute("SELECT season, games, plays FROM season_status "
-                       "WHERE is_in_progress ORDER BY season").fetchall()
+    live = con.execute("SELECT league, season, games, plays FROM season_status "
+                       "WHERE is_in_progress ORDER BY league, season").fetchall()
     print("season_status            "
-          + (", ".join(f"{y} IN PROGRESS ({g:,} games, {pl:,} plays)" for y, g, pl in live)
+          + (", ".join(f"{ln} {y} IN PROGRESS ({g:,} games, {pl:,} plays)"
+                       for ln, y, g, pl in live)
              if live else "no season in progress"))
 
     for name, sql in COPIES.items():
@@ -241,7 +259,7 @@ def build(db: str, out: str) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="cfb")
+    ap.add_argument("--db", default="pbp")
     ap.add_argument("--out", default=OUT)
     a = ap.parse_args()
     try:

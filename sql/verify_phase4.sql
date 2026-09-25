@@ -73,8 +73,10 @@ SELECT CASE WHEN v.indoor THEN 'indoor' ELSE 'outdoor' END AS roof,
 FROM pbp.special_teams_play p
 JOIN pbp.dim_venue v ON v.venue_id = p.venue_id
 JOIN pbp.dim_team_season kts ON kts.team_id = p.kicking_team_id   AND kts.season = p.season
+                            AND kts.league = p.league
 JOIN pbp.dim_team_season rts ON rts.team_id = p.receiving_team_id AND rts.season = p.season
-WHERE v.indoor IS NOT NULL AND kts.division='FBS' AND rts.division='FBS'
+                            AND rts.league = p.league
+WHERE v.indoor IS NOT NULL AND kts.ncaa_division='FBS' AND rts.ncaa_division='FBS'
 GROUP BY 1 ORDER BY 1;
 
 \echo '=== referential integrity'

@@ -51,13 +51,27 @@ global name would arm that script to destroy the other twelve.
 import sys, os, json, gzip, csv, re, time, glob, collections, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/college-football"
-HOME = os.path.expanduser("~/projects/cfb-pbp")
-ESPN, OUT = f"{HOME}/data/espn", f"{HOME}/data/out"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import league as lg
+
+HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LEAGUE = lg.CFB
+CORE = lg.core_base(LEAGUE)
+ESPN, OUT = lg.data_dir(LEAGUE), f"{HOME}/data/out"
 SEASONS = list(range(2014, 2027))
 DIVISIONS = {"80": "FBS", "81": "FCS"}
+SFX = ""            # '' for college, '_nfl' for the NFL; keeps the two extracts apart
+
+
 TEAM_ID = re.compile(r"/teams/(\d+)")
 NAME_SUFFIX = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def use(name):
+    """Point the module at one league: its API, its raw directory, its output suffix."""
+    global LEAGUE, CORE, ESPN, SFX
+    LEAGUE, CORE, ESPN = name, lg.core_base(name), lg.data_dir(name)
+    SFX = "" if name == lg.CFB else f"_{name}"
 
 
 def name_key(n):
@@ -98,8 +112,95 @@ def get(url, tries=3):
             time.sleep(1 + i)
 
 
+def stage_conf_nfl():
+    """AFC/NFC and their eight divisions, per season.
+
+    A different SHAPE of walk from the college one, not just different ids. College asks
+    for the children of a division group (FBS=80, FCS=81) and gets conferences; the NFL has
+    no division group at all -- the two conferences ARE the top-level groups, and their
+    children are the eight divisions. Measured 2026-09-11 and stable across 2014-2025:
+    AFC=8, NFC=7, four divisions of four teams each.
+
+    Realignment risk here is close to nil -- only the three relocations (Rams 2016,
+    Chargers 2017, Raiders 2020), none of which changed a division -- but the table stays
+    team-SEASON grained anyway, because that is the grain the college side needs and one
+    table with two grains would be worse than one redundant key.
+    """
+    rows, confs = [], {}
+
+    def per_season(season):
+        out = []
+        try:
+            top = get(f"{CORE}/seasons/{season}/types/2/groups?limit=60")
+        except Exception as e:
+            print(f"  {season}: ERR {e}", flush=True)
+            return out
+        for it in top.get("items") or []:
+            try:
+                conf = get(it["$ref"])
+            except Exception:
+                continue
+            cid, cname = str(conf.get("id")), conf.get("name")
+            confs[cid] = (cname, conf.get("shortName") or conf.get("abbreviation")
+                          or ("AFC" if cname and cname.startswith("American") else
+                              "NFC" if cname and cname.startswith("National") else None))
+            kids = (conf.get("children") or {}).get("$ref")
+            if not kids:
+                continue
+            try:
+                kd = get(kids)
+            except Exception:
+                continue
+            for c in kd.get("items") or []:
+                try:
+                    div = get(c["$ref"])
+                except Exception:
+                    continue
+                ref = (div.get("teams") or {}).get("$ref")
+                if not ref:
+                    continue
+                try:
+                    tl = get(ref + "&limit=100")
+                except Exception:
+                    continue
+                for t in tl.get("items") or []:
+                    m = TEAM_ID.search(t.get("$ref", ""))
+                    if m:
+                        # `division` stays NULL: it means FBS | FCS and has no NFL meaning.
+                        out.append((m.group(1), season, cid, cname, None, div.get("name")))
+        return out
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for res in ex.map(per_season, SEASONS):
+            rows.extend(res)
+    best = {}
+    for tid, season, cid, cname, dv, dname in rows:
+        best[(tid, season)] = (cid, cname, dv, dname)
+    _write_conf(best, confs)
+
+
+def _write_conf(best, confs):
+    with open(f"{OUT}/dim_team_season{SFX}.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["league", "team_id", "season", "conference_id", "conference_name",
+                    "ncaa_division", "nfl_division"])
+        for (tid, season), (cid, cname, dv, dname) in sorted(best.items(),
+                                                             key=lambda x: (x[0][1], int(x[0][0]))):
+            w.writerow([LEAGUE, tid, season, cid, cname, dv, dname])
+    with open(f"{OUT}/dim_conference{SFX}.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["league", "conference_id", "conference_name", "short_name"])
+        for cid, (n, sn) in sorted(confs.items(), key=lambda x: int(x[0])):
+            w.writerow([LEAGUE, cid, n, sn])
+    print(f"dim_team_season: {len(best):,} team-seasons; dim_conference: {len(confs)} conferences")
+    per = collections.Counter(s for (t, s) in best)
+    print("  teams per season:", {s: per[s] for s in SEASONS if per[s]})
+
+
 def stage_conf():
     os.makedirs(OUT, exist_ok=True)
+    if LEAGUE == lg.NFL:
+        return stage_conf_nfl()
     rows, confs = [], {}
 
     def per_season(args):
@@ -139,17 +240,12 @@ def stage_conf():
     best = {}
     for tid, season, cid, cname, div in rows:
         k = (tid, season)
-        if k not in best or (div == "FBS" and best[k][3] != "FBS"):
-            best[k] = (cid, cname, div, div)
-    with open(f"{OUT}/dim_team_season.csv", "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["team_id", "season", "conference_id", "conference_name", "division"])
-        for (tid, season), (cid, cname, div, _) in sorted(best.items(), key=lambda x: (x[0][1], x[0][0])):
-            w.writerow([tid, season, cid, cname, div])
-    with open(f"{OUT}/dim_conference.csv", "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["conference_id", "conference_name", "short_name"])
-        for cid, (n, sn) in sorted(confs.items(), key=lambda x: int(x[0])):
-            w.writerow([cid, n, sn])
-    print(f"dim_team_season: {len(best):,} team-seasons; dim_conference: {len(confs)} conferences")
+        if k not in best or (div == "FBS" and best[k][2] != "FBS"):
+            # nfl_division is NULL for college: this project has never tracked the
+            # intra-conference divisions (SEC East and the like), and inventing them here
+            # would put two different things in one column across the two leagues.
+            best[k] = (cid, cname, div, None)
+    _write_conf(best, confs)
     fbs = collections.Counter(s for (t, s), v in best.items() if v[2] == "FBS")
     print("  FBS teams per season:", {s: fbs[s] for s in SEASONS})
 
@@ -218,23 +314,28 @@ def stage_venue():
             for t in g["teams"]:
                 if t.get("id"):
                     teams[str(t["id"])] = t.get("name")   # later seasons overwrite: current name
-    with open(f"{OUT}/dim_team.csv", "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["team_id", "display_name"])
+    with open(f"{OUT}/dim_team{SFX}.csv", "w", newline="") as f:
+        w = csv.writer(f); w.writerow(["league", "team_id", "display_name"])
         for tid, nm in sorted(teams.items(), key=lambda x: int(x[0])):
-            w.writerow([tid, nm])
+            w.writerow([LEAGUE, tid, nm])
     print(f"dim_team: {len(teams):,} teams")
 
-    with open(f"{OUT}/dim_venue.csv", "w", newline="") as f:
+    # dim_venue carries NO league column. ESPN venue ids are one id space across both
+    # feeds -- 27 of 31 sampled NFL venues were already in the college table under the same
+    # name -- so the two leagues MERGE into one venue dimension rather than each owning a
+    # copy. sql/load_dims.sql upserts this file instead of replacing the table.
+    with open(f"{OUT}/dim_venue{SFX}.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["venue_id", "venue_name", "city", "state", "zip", "country", "surface",
                     "indoor"])
         for v in sorted(venues.values(), key=lambda r: int(r[0])):
             w.writerow(v)
-    with open(f"{OUT}/fact_game.csv", "w", newline="") as f:
+    with open(f"{OUT}/fact_game{SFX}.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["game_id", "season", "week", "season_type", "kickoff_utc", "home_team_id",
-                    "away_team_id", "venue_id", "attendance", "neutral_site", "conference_game"])
-        w.writerows(games)
+        w.writerow(["league", "game_id", "season", "week", "season_type", "kickoff_utc",
+                    "home_team_id", "away_team_id", "venue_id", "attendance", "neutral_site",
+                    "conference_game"])
+        w.writerows([LEAGUE] + g for g in games)
     print(f"dim_venue: {len(venues):,} venues; fact_game: {len(games):,} games")
     surf = collections.Counter(v[6] for v in venues.values())
     intl = sum(1 for v in venues.values() if v[5] and v[5] != "USA")
@@ -247,21 +348,32 @@ def stage_venue():
               f"{sorted(indoor_conflict)}")
 
 
-def load_identity():
+def load_identity(leagues=None):
     """Authoritative names, positions and jerseys from scripts/fetch_athletes.py.
+
+    Reads EVERY league's store, because the dimension spans them. The two stores are keyed
+    by the same athlete id space, so a player who appears in both is one entry; where both
+    name him, the later league in `leagues` wins. That ordering matters only for the fields
+    that legitimately change between college and the pros -- jersey, team, listed weight --
+    and the pro record is the more current of the two.
 
     Absent is not fatal -- the dimension falls back to the voted text name, which is what it
     used before this existed. It just names 25.9% of athletes instead of ~100%.
     """
-    path = f"{ESPN}/athletes.json.gz"
-    if not os.path.exists(path):
-        print("  WARNING: no data/espn/athletes.json.gz -- run scripts/fetch_athletes.py.\n"
-              "           Falling back to text-voted names only.", flush=True)
-        return {}
-    with gzip.open(path, "rt") as f:
-        d = json.load(f)
-    print(f"  identity store: {len(d):,} athletes", flush=True)
-    return d
+    out = {}
+    for lname in (leagues or [LEAGUE]):
+        path = f"{lg.data_dir(lname)}/athletes.json.gz"
+        if not os.path.exists(path):
+            print(f"  WARNING: no {os.path.relpath(path, HOME)} -- run "
+                  f"scripts/fetch_athletes.py --league {lname}.", flush=True)
+            continue
+        with gzip.open(path, "rt") as f:
+            d = json.load(f)
+        print(f"  identity store [{lname}]: {len(d):,} athletes", flush=True)
+        out.update(d)
+    if not out:
+        print("  Falling back to text-voted names only.", flush=True)
+    return out
 
 
 def _dedup_view(con, name, paths):
@@ -273,7 +385,15 @@ def _dedup_view(con, name, paths):
     parts = " UNION ALL BY NAME ".join(
         f"SELECT *, {i} AS _ord FROM read_csv_auto('{p}', sample_size=-1)"
         for i, p in enumerate(paths))
-    con.execute(f"""CREATE VIEW {name} AS SELECT * EXCLUDE (_ord) FROM ({parts})
+    # Superseding is per SEASON, not per play_uid, for the reason spelled out in
+    # stage_athlete: ESPN renumbers a corrected game's plays, so the frozen extract's copy
+    # of the live season carries uids the fresh one does not, and winning-on-uid leaves
+    # those behind. Whichever file is latest for a season owns that season outright.
+    con.execute(f"""CREATE VIEW {name} AS
+                    WITH u AS ({parts}),
+                         owner AS (SELECT season, max(_ord) AS top FROM u GROUP BY season)
+                    SELECT u.* EXCLUDE (_ord) FROM u JOIN owner o USING (season)
+                    WHERE u._ord = o.top
                     QUALIFY row_number() OVER (PARTITION BY play_uid ORDER BY _ord DESC) = 1""")
 
 
@@ -294,12 +414,22 @@ def scrimmage_rollup(fact_csvs, bridge_csvs):
     con = duckdb.connect()
     _dedup_view(con, "f", fact_csvs)
     con.execute("CREATE VIEW b_all AS " + " UNION ALL BY NAME ".join(
-        f"SELECT play_uid, role, athlete_id, ordinal "
-        f"FROM read_csv_auto('{p}', sample_size=-1)" for p in bridge_csvs))
+        f"SELECT play_uid, role, athlete_id, ordinal, {i} AS _ord "
+        f"FROM read_csv_auto('{p}', sample_size=-1)" for i, p in enumerate(bridge_csvs)))
     # The bridge has no play_uid uniqueness -- many rows per play -- so dedupe it on the
     # full key instead of letting _dedup_view collapse it to one row per play.
-    con.execute("CREATE VIEW b AS SELECT DISTINCT play_uid, role, athlete_id, ordinal "
-                "FROM b_all")
+    #
+    # It also carries no season, so it cannot supersede by season on its own; it takes the
+    # season off the fact. Without that, a game ESPN corrected inside the refresh window
+    # contributes BOTH participant sets -- the frozen extract's and the fresh one's -- and
+    # the union credits the play twice over. Joining f also drops rows for plays the fresh
+    # fact no longer has, which is what makes the count below right.
+    con.execute("""CREATE VIEW b AS
+                   WITH j AS (SELECT b_all.*, f.season FROM b_all
+                              JOIN f ON f.play_uid = b_all.play_uid),
+                        owner AS (SELECT season, max(_ord) AS top FROM j GROUP BY season)
+                   SELECT DISTINCT j.play_uid, j.role, j.athlete_id, j.ordinal
+                   FROM j JOIN owner o USING (season) WHERE j._ord = o.top""")
     rows = con.execute("""
         SELECT b.athlete_id, b.role, f.season,
                CASE WHEN b.role IN ('tackler','assistedBy','sackedBy','passDefender',
@@ -334,7 +464,8 @@ def scrimmage_rollup(fact_csvs, bridge_csvs):
     return roles, teams, seasons, plays
 
 
-def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_bridge=None):
+def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_bridge=None,
+                  leagues=None):
     """Link plays to ESPN athlete ids, and derive an athlete dimension from the data itself.
 
     ESPN tags the kick as role 'kicker' (kickoffs, field goals) or 'punter' (punts), plus
@@ -353,20 +484,55 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
     # would relabel most kickers 'patScorer'. The bridge keeps the raw role.
     ROLE_CANON = {"patScorer": "kicker", "patPasser": "passer"}
 
+    # ONE dimension over BOTH leagues, which is the same principle that already makes it one
+    # dimension over both FACTS: ESPN athlete ids are a single id space across the college
+    # and NFL feeds -- 720 of 720 sampled overlapping ids returned the identical name from
+    # the NFL endpoint -- so Patrick Mahomes is one row whose college and pro plays both
+    # count. Keying by league would split every drafted player in the window into two people
+    # and make the most interesting cross-corpus question unaskable.
+    leagues = leagues or [LEAGUE]
     plays = {}
-    for path in plays_csvs or [f"{OUT}/st_plays.csv"]:
-        n0 = len(plays)
-        with open(path) as f:
-            for r in csv.DictReader(f):
+    play_league = {}
+    for lname in leagues:
+        # Explicit --plays paths belong to the league this run was POINTED AT, not to every
+        # league in --leagues. The in-season caller passes the NFL's full extract plus its
+        # current season and also asks for a both-league dimension; applying those NFL paths
+        # to the college side too read the NFL corpus twice and dropped all 60,100
+        # college-only athletes out of the dimension.
+        paths = (plays_csvs.get(lname) if isinstance(plays_csvs, dict)
+                 else (plays_csvs if lname == LEAGUE else None))
+        sfx = "" if lname == lg.CFB else f"_{lname}"
+        for path in paths or [f"{OUT}/st_plays{sfx}.csv"]:
+            if not os.path.exists(path):
+                print(f"  {os.path.basename(path)}: absent, skipped", flush=True)
+                continue
+            n0 = len(plays)
+            fresh = {}
+            for r in csv.DictReader(open(path)):
                 # 'defensive_conversion' is in this list because those plays have
-                # participants like any other -- somebody returned the blocked kick. Omitting
-                # it silently left 75 plays with no athlete link at all.
+                # participants like any other -- somebody returned the blocked kick.
+                # Omitting it silently left 75 plays with no athlete link at all.
                 if r["play_kind"] in ("punt", "kickoff", "field_goal", "pat", "two_point",
                                       "defensive_conversion"):
-                    plays[r["play_uid"]] = (r["season"], r["kicking_team_id"],
+                    fresh[r["play_uid"]] = (r["season"], r["kicking_team_id"],
                                             r["receiving_team_id"], r["kicker_name"],
                                             r["returner_name"])
-        print(f"  {os.path.basename(path)}: {len(plays) - n0:,} new play_uids", flush=True)
+            # A later extract SUPERSEDES an earlier one for every season it covers, rather
+            # than merely overwriting the uids the two share. ESPN renumbers the plays in a
+            # game it corrects, so the frozen full CSV's copy of the live season holds ids
+            # that no longer exist; a plain union keeps them, and the bridge then names
+            # plays the fact table does not have. load_athletes_league.sql refuses that load
+            # -- correctly -- which is how this was found, on 2026-09-22, with 9 orphans
+            # across two week-1 games.
+            drop = [u for u, v in plays.items()
+                    if play_league[u] == lname and v[0] in {f[0] for f in fresh.values()}]
+            for u in drop:
+                del plays[u], play_league[u]
+            plays.update(fresh)
+            for u in fresh:
+                play_league[u] = lname
+            print(f"  {os.path.basename(path)}: {len(plays) - n0:,} new play_uids"
+                  + (f", {len(drop):,} superseded" if drop else ""), flush=True)
 
     # build_table emits a conversion as a second row off the scoring play, with ':pat'
     # appended to the play_uid. The participants feed knows only the ESPN play, so one
@@ -386,7 +552,12 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
     roles = collections.defaultdict(collections.Counter)
     seasons = collections.defaultdict(set)
     st_plays = collections.defaultdict(set)     # distinct ST play_uids per athlete
-    for path in glob.glob(f"{ESPN}/participants/*.json.gz"):
+    st_by_league = collections.defaultdict(lambda: collections.defaultdict(set))
+    part_files = [(lname, p) for lname in leagues
+                  for p in glob.glob(f"{lg.data_dir(lname)}/participants/*.json.gz")]
+    print(f"  participants files: {len(part_files):,} across {len(leagues)} league(s)",
+          flush=True)
+    for lname, path in part_files:
         gid = os.path.basename(path).split(".")[0]
         try:
             d = json.load(gzip.open(path, "rt"))
@@ -409,6 +580,7 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
                 roles[aid][ROLE_CANON.get(role, role)] += 1
             for role, aid in parts:
                 st_plays[aid].add(base)
+                st_by_league[lname][aid].add(base)
             for uid in targets:
                 season, kteam, rteam, kname, rname = plays[uid]
                 is_conv = uid.endswith(":pat")
@@ -444,26 +616,58 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
     if only_season is not None:
         print(f"  scoped to {only_season}: {len(bridge_out):,} of {len(bridge):,} bridge rows, "
               f"{len(wide_out):,} of {len(wide):,} plays", flush=True)
-    sfx = "" if only_season is None else f"_{only_season}"
-    with open(f"{OUT}/play_athlete{sfx}.csv", "w", newline="") as f:
-        w = csv.writer(f); w.writerow(["play_uid", "role", "athlete_id", "ordinal"])
-        w.writerows(bridge_out)
-    with open(f"{OUT}/play_athlete_wide{sfx}.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["play_uid", "kicker_athlete_id", "returner_athlete_id", "tackler_athlete_id"])
-        for uid, d in wide_out.items():
-            w.writerow([uid, d.get("kicker_athlete_id"), d.get("returner_athlete_id"),
-                        d.get("tackler_athlete_id")])
+    # The DIMENSION spans every league; the BRIDGE does not. Each league's bridge is loaded
+    # and deleted independently, so a file holding both leagues' rows under one league's
+    # name would arm the loader to delete the other league's athletes. Split on the play's
+    # own league rather than on which league this run was pointed at.
+    season_sfx = "" if only_season is None else f"_{only_season}"
+    for lname in leagues:
+        lsfx = ("" if lname == lg.CFB else f"_{lname}") + season_sfx
+        lb = [r for r in bridge_out if play_league.get(r[0].removesuffix(":pat")) == lname
+              or play_league.get(r[0]) == lname]
+        lw = {u: d for u, d in wide_out.items()
+              if play_league.get(u.removesuffix(":pat")) == lname
+              or play_league.get(u) == lname}
+        with open(f"{OUT}/play_athlete{lsfx}.csv", "w", newline="") as f:
+            w = csv.writer(f); w.writerow(["play_uid", "role", "athlete_id", "ordinal"])
+            w.writerows(lb)
+        with open(f"{OUT}/play_athlete_wide{lsfx}.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["play_uid", "kicker_athlete_id", "returner_athlete_id",
+                        "tackler_athlete_id"])
+            for uid, d in lw.items():
+                w.writerow([uid, d.get("kicker_athlete_id"), d.get("returner_athlete_id"),
+                            d.get("tackler_athlete_id")])
+        print(f"  play_athlete{lsfx}.csv: {len(lb):,} bridge rows over {len(lw):,} plays",
+              flush=True)
     # ---- merge the scrimmage side in -------------------------------------------------
     # Both facts feed ONE dimension. A receiver who also returns kicks has to be one row or
     # every cross-phase question double-counts him -- that is the whole reason this project
     # keys on ESPN athlete ids instead of name strings (PLAN.md §10d).
-    ident = load_identity()
+    ident = load_identity(leagues)
     s_roles, s_teams, s_seasons, s_plays = ({}, {}, {}, collections.Counter())
-    facts = [p for p in (scrim_fact or []) if os.path.exists(p)]
-    bridges = [p for p in (scrim_bridge or []) if os.path.exists(p)]
-    if facts and bridges:
-        s_roles, s_teams, s_seasons, s_plays = scrimmage_rollup(facts, bridges)
+    scrim_by_league = {}
+    for lname in leagues:
+        lsfx = "" if lname == lg.CFB else f"_{lname}"
+        # Same rule as --plays above: explicit paths are this run's league only.
+        lf = (scrim_fact.get(lname) if isinstance(scrim_fact, dict)
+              else (scrim_fact if lname == LEAGUE else None))
+        lb = (scrim_bridge.get(lname) if isinstance(scrim_bridge, dict)
+              else (scrim_bridge if lname == LEAGUE else None))
+        facts = [p for p in (lf or [f"{OUT}/scrimmage_plays{lsfx}.csv"]) if os.path.exists(p)]
+        bridges = [p for p in (lb or [f"{OUT}/scrimmage_athlete{lsfx}.csv"]) if os.path.exists(p)]
+        if not (facts and bridges):
+            continue
+        r_, t_, ss_, p_ = scrimmage_rollup(facts, bridges)
+        scrim_by_league[lname] = p_
+        for aid, c in r_.items():
+            s_roles.setdefault(aid, collections.Counter()).update(c)
+        for aid, c in t_.items():
+            s_teams.setdefault(aid, collections.Counter()).update(c)
+        for aid, ss in ss_.items():
+            s_seasons.setdefault(aid, set()).update(ss)
+        s_plays.update(p_)
+    if s_roles:
         for aid, c in s_roles.items():
             # Same canonicalisation the ST side applies. A placekicker is tagged patScorer on
             # every touchdown his team scores, and those rows live on SCRIMMAGE plays, so
@@ -483,7 +687,8 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
         w.writerow(["athlete_id", "known_name", "full_name", "position", "jersey",
                     "text_name", "text_name_confidence", "primary_role",
                     "primary_team_id", "first_season", "last_season",
-                    "st_plays", "scrimmage_plays"])
+                    "st_plays", "scrimmage_plays", "leagues", "nfl_plays",
+                    "date_of_birth", "debut_year", "height_in", "weight_lb"])
         weak = 0
         for aid in sorted(everyone, key=int):
             # Names come from play text, and a player tagged in a kick role on a play whose
@@ -509,8 +714,15 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
                              key=lambda v: (fullness(v), names[aid][v], v))
                 else:
                     weak += 1
-            tm = teams[aid].most_common(1)[0][0] if teams[aid] else None
-            pr = roles[aid].most_common(1)[0][0] if roles[aid] else None
+            # most_common breaks a tie on INSERTION order, and these two counters are fed
+            # by the DuckDB rollup, whose row order is not stable across runs. That made the
+            # dimension irreproducible: 939 athletes -- an offensive tackle with one
+            # 'penalized' and one 'tackler', say -- flipped primary_role or primary_team_id
+            # between two builds off identical input. Count first, then the key itself, so a
+            # tie resolves the same way every time.
+            pick = lambda c: max(c.items(), key=lambda kv: (kv[1], kv[0]))[0] if c else None
+            tm = pick(teams[aid])
+            pr = pick(roles[aid])
             ss = sorted(seasons[aid]) or [None]
             # known_name is ESPN's, with the voted text name as fallback where the fetch has
             # no record. The voted name and its confidence are kept in their own columns
@@ -518,9 +730,20 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
             # is attached to the right play, and a fetched name would paper straight over a
             # bad link.
             idn = ident.get(str(aid)) or {}
+            # Which corpora this person appears in. A drafted player reads 'cfb+nfl', and
+            # that single row spanning both is the whole reason the dimension is not keyed
+            # by league.
+            seen_in = [ln for ln in leagues
+                       if len(st_by_league[ln].get(aid, ()))
+                       or scrim_by_league.get(ln, {}).get(str(aid), 0)]
+            nfl_n = (len(st_by_league[lg.NFL].get(aid, ()))
+                     + scrim_by_league.get(lg.NFL, {}).get(str(aid), 0))
             w.writerow([aid, idn.get("displayName") or nm, idn.get("fullName"),
                         idn.get("position"), idn.get("jersey"), nm, conf, pr, tm,
-                        ss[0], ss[-1], len(st_plays[aid]), s_plays.get(str(aid), 0)])
+                        ss[0], ss[-1], len(st_plays[aid]), s_plays.get(str(aid), 0),
+                        "+".join(seen_in) or None, nfl_n,
+                        idn.get("dateOfBirth"), idn.get("debutYear"),
+                        idn.get("height"), idn.get("weight")])
     linked = sum(1 for d in wide.values() if d.get("kicker_athlete_id"))
     kick_linked = sum(1 for u, d in wide.items()
                       if d.get("kicker_athlete_id") and not u.endswith(":pat"))
@@ -538,7 +761,7 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
 
 
 def _multi(argv, flag, default):
-    """Collect the several paths that may follow a flag, or fall back to the default."""
+    """Collect the several values that may follow a flag, or fall back to the default."""
     if flag not in argv:
         return default
     i = argv.index(flag) + 1
@@ -550,6 +773,7 @@ def _multi(argv, flag, default):
 
 if __name__ == "__main__":
     a = sys.argv[1:]
+    use(lg.from_argv(a))
     if a[0] == "athlete":
         csvs = None
         if "--plays" in a:
@@ -557,9 +781,14 @@ if __name__ == "__main__":
             csvs = []
             while i < len(a) and not a[i].startswith("--"):
                 csvs.append(a[i]); i += 1
+        # `--leagues cfb nfl` builds ONE dimension over both corpora, which is how it should
+        # normally be run once the NFL is loaded. Without it the dimension covers only the
+        # league named by --league, and a rebuild would drop every athlete from the other.
+        lnames = _multi(a, "--leagues", None) or [LEAGUE]
         stage_athlete(csvs,
                       int(a[a.index("--only-season") + 1]) if "--only-season" in a else None,
-                      _multi(a, "--scrim-fact", [f"{OUT}/scrimmage_plays.csv"]),
-                      _multi(a, "--scrim-bridge", [f"{OUT}/scrimmage_athlete.csv"]))
+                      _multi(a, "--scrim-fact", None),
+                      _multi(a, "--scrim-bridge", None),
+                      lnames)
     else:
         {"conf": stage_conf, "venue": stage_venue}[a[0]]()

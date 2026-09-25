@@ -11,7 +11,8 @@ all (0% of plays), 2014 onward ~91%. 2014 is therefore the floor for this feed.
 Join key: the core-API play id is the game id concatenated with sequenceNumber, which is
 exactly how the fact table's play_uid is built (espn:<game_id>:<sequenceNumber>).
 
-    python fetch_participants.py     -> data/espn/participants/<game_id>.json.gz
+    python fetch_participants.py                  -> data/espn/participants/<id>.json.gz
+    python fetch_participants.py --league nfl     -> data/espn_nfl/participants/<id>.json.gz
 
 For a season still being played the default "fetch what has no file yet" rule never
 revisits a game, so a late box-score correction is missed. Two flags cover that:
@@ -25,14 +26,27 @@ import os, sys, json, gzip, re, time, random, urllib.request
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/college-football"
-HOME = os.path.expanduser("~/projects/cfb-pbp")
-ESPN = f"{HOME}/data/espn"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import league as lg
+
+# Set by main() from `--league`; college unless asked otherwise. See scripts/league.py.
+LEAGUE = lg.CFB
+CORE = lg.core_base(LEAGUE)
+ESPN = lg.data_dir(LEAGUE)
 OUT = f"{ESPN}/participants"
 SEASONS = [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 WORKERS = 6
+
+
 PAGE = 400          # core-API page size; one() follows pages beyond the first
 ATH = re.compile(r"/athletes/(\d+)")
+
+
+def use(lname):
+    """Point every module-level path and URL at one league."""
+    global LEAGUE, CORE, ESPN, OUT
+    LEAGUE, CORE, ESPN = lname, lg.core_base(lname), lg.data_dir(lname)
+    OUT = f"{ESPN}/participants"
 
 
 def recent(iso, days):
@@ -109,8 +123,9 @@ def main():
     they already have one. That is the path for repairing games whose stored file uses the
     old id-based key and cannot be joined; there is no need to re-pull all 10,379.
     """
-    os.makedirs(OUT, exist_ok=True)
     a = sys.argv[1:]
+    use(lg.from_argv(a))
+    os.makedirs(OUT, exist_ok=True)
     if "--games" in a:
         todo = [int(g) for g in json.load(open(a[a.index("--games") + 1]))]
         print(f"re-fetching {len(todo):,} named games", flush=True)

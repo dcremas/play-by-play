@@ -168,6 +168,30 @@ def outcome_by_distance(where: str, phases, mode: str, height: int = 300):
                           xtype="linear", key="st", noun="kicks")
 
 
+def conversion_by_type(where: str, mode: str, height: int = 300):
+    """Outcome share by how the conversion was attempted.
+
+    The distance chart's replacement on the conversion chip. A conversion has no
+    distance -- `kick_yds` is NULL on all 71,460 rows -- so `outcome_by_distance`
+    drew an empty panel here until 2026-09-09. Attempt type is the axis conversions
+    actually vary along, and it separates the three things the chip pools: a kick
+    that converts 97.4% of the time, a two-point try that converts 42.6%, and a
+    defensive return that is not an attempt at all.
+    """
+    df = data.q(f"""
+        SELECT CASE WHEN play_kind = 'pat'                  THEN 'Kick (XP)'
+                    WHEN play_kind = 'defensive_conversion' THEN 'Return (def 2pt)'
+                    WHEN two_point_type = 'pass'            THEN 'Pass (2pt)'
+                    WHEN two_point_type = 'rush'            THEN 'Rush (2pt)'
+                    ELSE 'Unstated (2pt)' END AS attempt_type,
+               outcome, count(*) AS n
+        FROM st_play WHERE {where} GROUP BY 1, 2
+    """)
+    return _stacked_share(df, "attempt_type", mode, ["conversion"],
+                          "Outcome by attempt type", height, xtype="category",
+                          key="st", noun="attempts")
+
+
 def theme_key(phases) -> str:
     p = list(phases or [])
     return p[0] if len(p) == 1 else "mixed"
@@ -253,6 +277,43 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
         fig.update_xaxes(title=None)
         return fig
 
+    if key == "conversion":
+        # Both series are shares, so one axis is legitimate -- but of DIFFERENT
+        # denominators, which the hover states. They are drawn together because the
+        # interesting thing about conversions over this window is the gap between
+        # them and that the two-point line is the one that moves.
+        df = data.q(f"""
+            SELECT season,
+                   count(*) FILTER (play_kind = 'pat')                    xp,
+                   count(*) FILTER (play_kind = 'pat'
+                                    AND outcome = 'Converted')            xp_good,
+                   count(*) FILTER (play_kind = 'two_point')              two,
+                   count(*) FILTER (play_kind = 'two_point'
+                                    AND outcome = 'Converted')            two_good
+            FROM st_play WHERE {where} GROUP BY 1 ORDER BY 1
+        """)
+        if df.empty:
+            return empty_fig(mode, height=height)
+        fig = go.Figure()
+        series = (("Extra point", df["xp_good"] / df["xp"].replace(0, float("nan")),
+                   df["xp"], s["yellow"]),
+                  ("Two-point", df["two_good"] / df["two"].replace(0, float("nan")),
+                   df["two"], s["magenta"]))
+        for name, y, denom, hexv in series:
+            fig.add_scatter(x=df["season"], y=y, name=name, mode="lines+markers",
+                            line=dict(color=hexv, width=2),
+                            marker=dict(size=8, color=hexv,
+                                        line=dict(color=t["surface"], width=2)),
+                            customdata=denom,
+                            hovertemplate=f"<b>{name}</b><br>%{{x}}<br>"
+                                          "%{y:.1%} of %{customdata:,}<extra></extra>")
+        fig.update_layout(**theme.plotly_layout(mode, height=height,
+                          title=dict(text="Conversion rate by season "
+                                          "(each on its own attempts)")))
+        fig.update_yaxes(tickformat=".0%", range=[0, 1.05], title=None)
+        fig.update_xaxes(title=None, dtick=1)
+        return fig
+
     if key == "kickoff":
         # Both series are shares of the same denominator -- one axis.
         df = data.q(f"""
@@ -315,20 +376,31 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
 def season_trend(where: str, mode: str, kind: str, height: int = 260):
     """One measure across seasons for a single player or team, per phase."""
     t, s = theme.TOKENS[mode], theme.SLOTS[mode]
+    # Each spec carries its own play_kind predicate rather than taking `kind` as one:
+    # `conversion` is a chip over three kinds, and the measure it draws is narrower
+    # still. The extra point is the conversion with a stable denominator -- a kicker
+    # takes one after every touchdown -- while a two-point try is a coach's decision
+    # on a twentieth of the volume, so a pooled line would move with how often the
+    # team went for two rather than with how well it kicked. The two-point rate is in
+    # the grid directly below, and both are drawn together by phase_detail.
     spec = {
         "field_goal": ("Make rate by season",
                        "sum(CASE WHEN outcome='Made' THEN 1 ELSE 0 END)::DOUBLE / "
                        "nullif(sum(CASE WHEN outcome<>'Negated' THEN 1 ELSE 0 END),0)",
-                       ".0%", s["blue"]),
-        "punt": ("Average net by season", "avg(punt_net_yds)", ".1f", s["orange"]),
+                       ".0%", s["blue"], "play_kind = 'field_goal'"),
+        "punt": ("Average net by season", "avg(punt_net_yds)", ".1f", s["orange"],
+                 "play_kind = 'punt'"),
         "kickoff": ("Touchback rate by season",
                     "sum(CASE WHEN outcome='Touchback' THEN 1 ELSE 0 END)::DOUBLE / "
-                    "nullif(count(*),0)", ".0%", s["aqua"]),
+                    "nullif(count(*),0)", ".0%", s["aqua"], "play_kind = 'kickoff'"),
+        "conversion": ("Extra point rate by season",
+                       "sum(CASE WHEN outcome='Converted' THEN 1 ELSE 0 END)::DOUBLE / "
+                       "nullif(count(*),0)", ".0%", s["yellow"], "play_kind = 'pat'"),
     }[kind]
-    title, expr, fmt, hexv = spec
+    title, expr, fmt, hexv, kind_where = spec
     df = data.q(f"""
         SELECT season, {expr} AS v, count(*) n
-        FROM st_play WHERE {where} AND play_kind = '{kind}' GROUP BY 1 ORDER BY 1
+        FROM st_play WHERE {where} AND {kind_where} GROUP BY 1 ORDER BY 1
     """)
     df = df[df["v"].notna()]
     if df.empty:
@@ -509,8 +581,11 @@ def explorer_figs(key: str, where: str, chips, mode: str, height: int = 300):
                 scrim_outcome_by_season(where, key, ps, mode, height),
                 scrim_yards_by_down(where, key, mode, height))
     if len(ps) == 1:
-        return (outcome_mix_by_season(where, ps, mode, height),
-                outcome_by_distance(where, ps, mode, height),
+        # The middle slot is the distance chart on every chip but one. Conversions
+        # have no distance, so they get attempt type instead of an empty panel.
+        middle = (conversion_by_type(where, mode, height) if ps[0] == "conversion"
+                  else outcome_by_distance(where, ps, mode, height))
+        return (outcome_mix_by_season(where, ps, mode, height), middle,
                 phase_detail(where, ps, mode, height))
     # Two charts, not three. The third used to be the unreadable-outcome share by
     # season -- removed 2026-09-09 at the user's request. `None` rather than an empty

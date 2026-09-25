@@ -50,3 +50,62 @@ UNION ALL SELECT 'kickoff yds > 100', count(*) FROM pbp.special_teams_play WHERE
 UNION ALL SELECT 'null kicking_team', count(*) FROM pbp.special_teams_play WHERE kicking_team_id IS NULL
 UNION ALL SELECT 'kicking = receiving', count(*) FROM pbp.special_teams_play
   WHERE kicking_team_id = receiving_team_id;
+
+-- ============================================================================================
+-- CROSS-LEAGUE INVARIANTS
+--
+-- Added 2026-09-11 with the NFL. Every one of these was true when the NFL was first loaded;
+-- they are here because "was true once" and "is a property of the schema" are different
+-- claims, and only the second one survives a reload. Each must return ZERO.
+-- ============================================================================================
+
+\echo '=== [must be 0] play_uid duplicated across the two facts or the two leagues'
+SELECT count(*) AS duplicate_play_uids FROM (
+  SELECT play_uid FROM pbp.special_teams_play
+  UNION ALL SELECT play_uid FROM pbp.scrimmage_play
+) u GROUP BY play_uid HAVING count(*) > 1;
+
+\echo '=== [must be 0] a game_id claimed by both leagues'
+-- The ranges interleave (college 400547640-401870790, NFL 400554214-401772954), so
+-- non-collision is a fact about ESPN's id allocation and not a structural guarantee. Test
+-- it; do not trust it.
+SELECT count(*) AS cross_league_game_ids FROM (
+  SELECT game_id FROM pbp.fact_game GROUP BY game_id HAVING count(DISTINCT league) > 1
+) x;
+
+\echo '=== [must be 0] a fact row whose game is missing from fact_game IN ITS OWN LEAGUE'
+SELECT 'special_teams_play' AS fact, count(*) AS orphan_plays
+FROM pbp.special_teams_play p
+WHERE NOT EXISTS (SELECT 1 FROM pbp.fact_game g
+                   WHERE g.game_id = p.game_id AND g.league = p.league)
+UNION ALL
+SELECT 'scrimmage_play', count(*) FROM pbp.scrimmage_play p
+WHERE NOT EXISTS (SELECT 1 FROM pbp.fact_game g
+                   WHERE g.game_id = p.game_id AND g.league = p.league);
+
+\echo '=== [must be 0] a team on a play that its own league''s dimension does not know'
+-- The point of keying dim_team by (league, team_id): team 2 is Auburn in one league and
+-- nobody in the other, so a league-blind join would silently succeed with the wrong team.
+SELECT p.league, count(DISTINCT p.offense_team_id) AS unknown_teams
+FROM pbp.scrimmage_play p
+WHERE p.offense_team_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM pbp.dim_team t
+                   WHERE t.league = p.league AND t.team_id = p.offense_team_id)
+GROUP BY 1;
+
+\echo '=== [must be 0] Pro Bowl all-star squads anywhere in the NFL corpus'
+-- ESPN gives the AFC and NFC all-star teams ids 31 and 32 and files the game as postseason
+-- week 4. They are rosters that do not exist; fetch_espn drops the 8 games at fetch time.
+SELECT count(*) AS probowl_rows FROM pbp.scrimmage_play
+WHERE league = 'nfl' AND (offense_team_id IN (31,32) OR defense_team_id IN (31,32));
+
+\echo '=== [must be 0] division/nfl_division used by the wrong league'
+-- `division` means FBS|FCS and is college-only; `nfl_division` means AFC East and is
+-- NFL-only. Either column populated for the other league means the two meanings have
+-- started to merge.
+SELECT count(*) AS mislabelled FROM pbp.dim_team_season
+WHERE (league = 'nfl' AND ncaa_division IS NOT NULL)
+   OR (league = 'cfb' AND nfl_division IS NOT NULL);
+
+\echo '=== athletes by corpus -- cfb+nfl is ONE person who played in both'
+SELECT leagues, count(*) AS athletes FROM pbp.dim_athlete GROUP BY 1 ORDER BY 2 DESC;

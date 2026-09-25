@@ -17,7 +17,7 @@ CREATE TABLE pbp.dim_team_season (
   season          smallint NOT NULL,
   conference_id   integer,
   conference_name text,
-  division        text,          -- FBS | FCS
+  ncaa_division   text,          -- FBS | FCS. College only; see nfl_division
   PRIMARY KEY (team_id, season)
 );
 

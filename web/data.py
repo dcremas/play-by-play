@@ -37,7 +37,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from . import lens
+from . import league, lens
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "out" / "pbp.duckdb"
 
@@ -53,7 +53,7 @@ YARD_LIMIT = 110
 # 2026-08-31 the flags had no NULL state -- a kick whose outcome the parser could not
 # read was stored as false on every one of them, indistinguishable from a kick that
 # genuinely had no touchback, fair catch or return -- so this view had to reconstruct
-# the unreadable set by testing for all-false. st_parser.py now writes NULL on the five
+# the unreadable set by testing for all-false. st_parser_cfb.py now writes NULL on the five
 # "how did it end" flags in exactly that case, so `returned IS NULL` is the
 # single-column test and the distinction is a fact of the table rather than a
 # convention of this file.
@@ -64,11 +64,22 @@ YARD_LIMIT = 110
 # keep false (not NULL) flags, so they never collide with the Unknown test.
 #
 # Conversions are in the view -- all 71,460 of them -- and off by default at the chip.
-# See lens.PHASE_DEFAULT for why.
+# See lens.PHASE_DEFAULT for why. Off by default is the only thing still second-class
+# about them: every measure, column set, leaderboard and profile tab the other three
+# phases have, they have too.
+#
+# A conversion reads `Blocked` on the 531 extra points the text says were blocked,
+# which until 2026-09-09 collapsed into `Failed`. `converted` is tested first because
+# it decides the rate and a blocked conversion is never good (0 of 531); `Blocked`
+# then splits the failures into the two ways a placekick fails, exactly as it does on
+# a field goal. Nothing that divides by `converted` moves -- the block was already a
+# failure and still is -- and the drawer's "Blocked: yes" line, written for a value
+# this view never produced, now fires.
 _ST_VIEW = """
 CREATE OR REPLACE VIEW st_play AS
 SELECT
     p.play_uid,
+    p.league,
     p.game_id,
     p.season,
     p.week,
@@ -84,6 +95,7 @@ SELECT
       WHEN p.play_kind IN ('pat', 'two_point', 'defensive_conversion') THEN
         CASE WHEN p.converted IS NULL                THEN 'Unknown'
              WHEN p.converted                        THEN 'Converted'
+             WHEN COALESCE(p.kick_blocked, FALSE)    THEN 'Blocked'
              ELSE 'Failed' END
       WHEN p.play_kind = 'field_goal' THEN
         CASE WHEN p.fg_made IS NULL                  THEN 'Negated'
@@ -123,16 +135,22 @@ SELECT
     p.tackler_athlete_id,
     ta.known_name                                                            AS tackler_name,
     p.blocker_name,
+    -- NFL only: the gamebook names the long snapper on every snapped kick and the holder
+    -- on every place kick. NULL for all 316,397 college rows -- that feed names neither.
+    p.snapper_name,
+    p.holder_name,
 
     -- teams
     p.kicking_team_id                                                        AS team_id,
     p.kicking_team                                                           AS team,
     p.kicking_conference                                                     AS conference,
-    p.kicking_division                                                       AS division,
+    p.kicking_ncaa_division                                                  AS ncaa_division,
+    p.kicking_nfl_division                                                  AS nfl_division,
     p.receiving_team_id                                                      AS opp_id,
     p.receiving_team                                                         AS opponent,
     p.receiving_conference                                                   AS opp_conference,
-    p.receiving_division                                                     AS opp_division,
+    p.receiving_ncaa_division                                                     AS opp_ncaa_division,
+    p.receiving_nfl_division                                                AS opp_nfl_division,
     CASE WHEN p.neutral_site THEN 'Neutral'
          WHEN p.is_home_kicking IS NULL THEN NULL
          WHEN p.is_home_kicking THEN 'Home' ELSE 'Away' END                  AS site,
@@ -158,9 +176,19 @@ SELECT
     lpad((p.clock_secs_period / 60)::INT::VARCHAR, 2, '0') || ':' ||
       lpad((p.clock_secs_period % 60)::VARCHAR, 2, '0')                      AS clock,
     p.game_secs_remaining,
-    p.down,
-    p.distance                                                               AS dist_to_go,
-    p.yards_to_goal,
+    -- Down, distance and yards to goal are the TOUCHDOWN's on a derived conversion.
+    -- `emit_pat` builds the row from the scoring play (`r = dict(base)`) and nulls
+    -- fourteen inherited measures, but not these three, so 71,330 extra points and
+    -- two-point tries carry the snap that scored rather than their own: 14,546 PATs
+    -- read "3rd down" and the median reads 12 yards to goal. They are nulled here so
+    -- a column that cannot be right is empty rather than wrong. The 130 conversions
+    -- ESPN emits as their own play (`play_uid` with no `:pat` suffix) keep theirs,
+    -- because those are the conversion's own situation and not a borrowed one.
+    -- The fix belongs upstream in emit_pat's null list; see Known limits.
+    CASE WHEN p.play_uid LIKE '%:pat' THEN NULL ELSE p.down END              AS down,
+    CASE WHEN p.play_uid LIKE '%:pat' THEN NULL ELSE p.distance END          AS dist_to_go,
+    CASE WHEN p.play_uid LIKE '%:pat' THEN NULL
+         ELSE p.yards_to_goal END                                            AS yards_to_goal,
     p.score_diff_kicking                                                     AS score_diff,
     CASE WHEN p.score_diff_kicking > 0 THEN 'Leading'
          WHEN p.score_diff_kicking = 0 THEN 'Tied' ELSE 'Trailing' END       AS score_state,
@@ -176,7 +204,7 @@ SELECT
     p.attendance,
     p.neutral_site,
     p.conference_game,
-    p.fbs_vs_fbs,
+    p.both_top_division,
 
     -- provenance
     p.play_text,
@@ -228,6 +256,7 @@ _SCRIM_VIEW = """
 CREATE OR REPLACE VIEW {view} AS
 SELECT
     s.play_uid,
+    s.league,
     s.game_id,
     s.season,
     s.week,
@@ -279,11 +308,13 @@ SELECT
     s.{subj}_team_id                                                         AS team_id,
     s.{subj}_team                                                            AS team,
     s.{subj}_conference                                                      AS conference,
-    s.{subj}_division                                                        AS division,
+    s.{subj}_ncaa_division                                                   AS ncaa_division,
+    s.{subj}_nfl_division                                                   AS nfl_division,
     s.{other}_team_id                                                        AS opp_id,
     s.{other}_team                                                           AS opponent,
     s.{other}_conference                                                     AS opp_conference,
-    s.{other}_division                                                       AS opp_division,
+    s.{other}_ncaa_division                                                  AS opp_ncaa_division,
+    s.{other}_nfl_division                                                  AS opp_nfl_division,
     -- An unknown home flag is NULL, not 'Away'. 15 rows carry no is_home_offense,
     -- and defaulting them would have put the same team at home on both lenses.
     CASE WHEN s.neutral_site THEN 'Neutral'
@@ -316,7 +347,7 @@ SELECT
     s.attendance,
     s.neutral_site,
     s.conference_game,
-    s.fbs_vs_fbs,
+    s.both_top_division,
 
     -- provenance
     s.play_text,
@@ -429,6 +460,13 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
     def use(name: str) -> bool:
         return name not in ignore and bool(f.get(name))
 
+    # League first, and NOT behind `use()`. It is the one predicate that is never
+    # optional: the two corpora share every view, and a query that forgets it silently
+    # answers a question about 1.9M plays that was asked about 447k. `ignore` cannot
+    # drop it either -- a chart showing "the distribution of the thing you filtered on"
+    # still means within one league.
+    parts.append(f"league = {lit(league.resolve(f.get('league')))}")
+
     if use("phases"):
         parts.append(in_list("play_kind", lens.kinds_for(key, f["phases"])))
     if f.get("seasons"):
@@ -441,7 +479,9 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
     if use("conferences"):
         parts.append(in_list("conference", f["conferences"]))
     if use("divisions"):
-        parts.append(in_list("division", f["divisions"]))
+        # `division` is FBS|FCS and college-only; `nfl_division` is AFC East and
+        # NFL-only. One facet, two columns -- see web/league.py.
+        parts.append(in_list(league.division_column(f.get("league")), f["divisions"]))
     if use("players"):
         parts.append(_any_of(PLAYER_COLS[key], f["players"]))
     if use("outcomes"):
@@ -476,8 +516,10 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
 
     if f.get("clutch_only"):
         parts.append("is_clutch")
-    if f.get("fbs_only"):
-        parts.append("fbs_vs_fbs")
+    if f.get("fbs_only") and league.has_fbs_filter(f.get("league")):
+        # Constant true in the NFL, which has no second division. Applying it there would
+        # be a no-op that reads like a real narrowing; the sidebar hides the control.
+        parts.append("both_top_division")
     if f.get("neutral") == "exclude":
         parts.append("NOT neutral_site")
     elif f.get("neutral") == "only":
@@ -621,7 +663,8 @@ def season_bounds() -> tuple[int, int]:
 
 
 @functools.lru_cache(maxsize=1)
-def in_progress_seasons() -> list[dict]:
+@functools.lru_cache(maxsize=8)
+def in_progress_seasons(league_key: str | None = None) -> list[dict]:
     """Seasons still being played, straight off the snapshot's season_status table.
 
     build_snapshot.py marks a season in progress while its most recent game kicked off
@@ -634,51 +677,85 @@ def in_progress_seasons() -> list[dict]:
     so. These are the seasons that need saying so.
     """
     try:
-        df = q("""SELECT season, games, plays, last_regular_week AS week
-                  FROM snap.season_status WHERE is_in_progress ORDER BY season""")
+        df = q(f"""SELECT season, games, plays, last_regular_week AS week
+                   FROM snap.season_status
+                   WHERE is_in_progress AND {_lg(league_key)}
+                   ORDER BY season""")
     except Exception:
         return []
     return records(df)
 
 
-@functools.lru_cache(maxsize=1)
-def dist_bounds() -> tuple[int, int]:
-    lo, hi = con().cursor().sql(
-        "SELECT min(kick_yds), max(kick_yds) FROM st_play").fetchone()
-    return int(lo), int(hi)
+# EVERY option list below is scoped to one league as well as one lens. Without that the
+# team picker offers 281 teams from two leagues at once -- with Auburn and the Buffalo
+# Bills both labelled "2" upstream -- the conference list mixes the SEC with the AFC, and
+# a picked id means whichever team the query happens to match. `_lg()` is the predicate;
+# the lru_caches are keyed on the league for the same reason.
+def _lg(league_key: str | None) -> str:
+    return f"league = {lit(league.resolve(league_key))}"
 
 
 @functools.lru_cache(maxsize=8)
-def team_options(key: str) -> list[dict]:
+def dist_bounds(league_key: str | None = None) -> tuple[int, int]:
+    """The kick-distance slider's range. With no league, spans BOTH corpora.
+
+    Deliberately global by default: the slider is built once at import and its full-range
+    position has to be a no-op for whichever league is on screen. Scoping it to college
+    (whose three impossible parsed kickoffs of 108, 125 and 127 yards set the ceiling)
+    and then switching to the NFL would leave the handle above every NFL kick; scoping it
+    to the NFL would silently drop the college tail.
+    """
+    where = "TRUE" if league_key is None else _lg(league_key)
+    lo, hi = con().cursor().sql(
+        f"SELECT min(kick_yds), max(kick_yds) FROM st_play WHERE {where}"
+    ).fetchone()
+    return int(lo), int(hi)
+
+
+@functools.lru_cache(maxsize=16)
+def team_options(key: str, league_key: str | None = None) -> list[dict]:
     df = q(f"""
         SELECT team_id, any_value(team) AS team, count(*) AS n
         FROM {lens.VIEW[lens.resolve(key)]}
-        WHERE team_id IS NOT NULL GROUP BY team_id ORDER BY team
+        WHERE team_id IS NOT NULL AND {_lg(league_key)}
+        GROUP BY team_id ORDER BY team
     """)
     return [{"value": str(r.team_id), "label": r.team} for r in df.itertuples()
             if isinstance(r.team, str) and r.team]
 
 
-@functools.lru_cache(maxsize=8)
-def conference_options(key: str) -> list[str]:
+@functools.lru_cache(maxsize=16)
+def conference_options(key: str, league_key: str | None = None) -> list[str]:
     return q(f"""SELECT DISTINCT conference FROM {lens.VIEW[lens.resolve(key)]}
-                 WHERE conference IS NOT NULL ORDER BY 1""")["conference"].tolist()
+                 WHERE conference IS NOT NULL AND {_lg(league_key)}
+                 ORDER BY 1""")["conference"].tolist()
 
 
-@functools.lru_cache(maxsize=8)
-def surface_options(key: str) -> list[str]:
+@functools.lru_cache(maxsize=16)
+def division_options(key: str, league_key: str | None = None) -> list[str]:
+    """FBS/FCS for college, AFC East and its siblings for the NFL -- two columns, one
+    facet. See web/league.py."""
+    col = league.division_column(league_key)
+    return q(f"""SELECT DISTINCT {col} AS d FROM {lens.VIEW[lens.resolve(key)]}
+                 WHERE {col} IS NOT NULL AND {_lg(league_key)}
+                 ORDER BY 1""")["d"].tolist()
+
+
+@functools.lru_cache(maxsize=16)
+def surface_options(key: str, league_key: str | None = None) -> list[str]:
     return q(f"""SELECT DISTINCT surface FROM {lens.VIEW[lens.resolve(key)]}
-                 WHERE surface IS NOT NULL ORDER BY 1""")["surface"].tolist()
+                 WHERE surface IS NOT NULL AND {_lg(league_key)}
+                 ORDER BY 1""")["surface"].tolist()
 
 
-@functools.lru_cache(maxsize=8)
-def outcome_options(key: str) -> list[str]:
+@functools.lru_cache(maxsize=16)
+def outcome_options(key: str, league_key: str | None = None) -> list[str]:
     return q(f"SELECT DISTINCT outcome FROM {lens.VIEW[lens.resolve(key)]} "
-             "ORDER BY 1")["outcome"].tolist()
+             f"WHERE {_lg(league_key)} ORDER BY 1")["outcome"].tolist()
 
 
-@functools.lru_cache(maxsize=8)
-def zone_options(key: str) -> list[str]:
+@functools.lru_cache(maxsize=16)
+def zone_options(key: str, league_key: str | None = None) -> list[str]:
     """Field zone is a scrimmage column and the facet is hidden on the kicks, so the
     kicks answer with nothing rather than with an error. The control that reads this
     is populated for every lens by one callback; returning [] is what keeps that
@@ -687,27 +764,29 @@ def zone_options(key: str) -> list[str]:
     if not lens.is_scrimmage(key):
         return []
     return q(f"""SELECT DISTINCT field_zone FROM {lens.VIEW[key]}
-                 WHERE field_zone IS NOT NULL ORDER BY 1""")["field_zone"].tolist()
+                 WHERE field_zone IS NOT NULL AND {_lg(league_key)}
+                 ORDER BY 1""")["field_zone"].tolist()
 
 
-# A player has to clear this many plays to appear in the picker. Without a floor the
-# offense list is ~25,000 names, every one of which ships to the browser on page load.
-_PLAYER_FLOOR = {"off": 25, "def": 25, "st": 3}
-
-
-@functools.lru_cache(maxsize=64)
-def player_options(key: str, phases: tuple[str, ...] = ()) -> list[dict]:
+# A player has to clear a floor to appear in the picker: without one the offense list is
+# ~25,000 names, every one of which ships to the browser on page load. The floor is
+# per-league, because the NFL corpus is about a third the size and the college floor
+# would hide genuine rotation players there -- see web/league.py.
+@functools.lru_cache(maxsize=128)
+def player_options(key: str, phases: tuple[str, ...] = (),
+                   league_key: str | None = None) -> list[dict]:
     """The players a filter can name, scoped to the selected phases.
 
     Offense unions the three roles ESPN puts on the row, so a receiver is as findable
     as the passer who threw to him. Defense has only the first-tackler column, which is
-    why its list is thin -- see lens.PLAYER_HINT.
+    why its list is thin -- see lens.player_hint().
     """
     key = lens.resolve(key)
     v = lens.VIEW[key]
     kinds = lens.kinds_for(key, list(phases)) if phases else None
-    where = in_list("play_kind", kinds) if kinds else "TRUE"
-    floor = _PLAYER_FLOOR[key]
+    where = (in_list("play_kind", kinds) if kinds else "TRUE") + " AND " + _lg(league_key)
+    floor = (league.kicker_floor(league_key) if key == "st"
+             else league.player_floor(league_key))
 
     if key == "off":
         src = " UNION ALL ".join(

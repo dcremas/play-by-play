@@ -5,10 +5,10 @@
 -- state in which you want one without the other.
 --
 --   .venv/bin/python scripts/build_scrimmage.py
---   psql -d cfb -f sql/load_bridge_drive_1_stage.sql
---   psql -d cfb -c "\copy pbp.stg_scrimmage_athlete FROM 'data/out/scrimmage_athlete.csv' WITH (FORMAT csv, HEADER true)"
---   psql -d cfb -c "\copy pbp.stg_drive FROM 'data/out/drives.csv' WITH (FORMAT csv, HEADER true)"
---   psql -d cfb -f sql/load_bridge_drive_2_insert.sql
+--   psql -d pbp -f sql/load_bridge_drive_1_stage.sql
+--   psql -d pbp -c "\copy pbp.stg_scrimmage_athlete FROM 'data/out/scrimmage_athlete.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d pbp -c "\copy pbp.stg_drive FROM 'data/out/drives.csv' WITH (FORMAT csv, HEADER true)"
+--   psql -d pbp -f sql/load_bridge_drive_2_insert.sql
 
 DROP TABLE IF EXISTS pbp.stg_scrimmage_athlete;
 CREATE TABLE pbp.stg_scrimmage_athlete (

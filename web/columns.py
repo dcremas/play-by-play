@@ -91,7 +91,7 @@ def _shared(mode: str, key: str) -> dict[str, dict]:
         "player": _name("player", lens.PLAYER[key], 150),
         "team": _txt("team", subject, 170),
         "conference": _txt("conference", "Conference", 150),
-        "division": _txt("division", "Div", 70),
+        "ncaa_division": _txt("ncaa_division", "Div", 70),
         "opponent": _txt("opponent", "Opponent", 170),
         "opp_conference": _txt("opp_conference", "Opp conference", 150),
         "site": _txt("site", "Site", 82),
@@ -243,7 +243,7 @@ DEFAULTS = {
 }
 
 _OPT_ENV = [
-    "week", "season_type", "conference", "opp_conference", "division",
+    "week", "season_type", "conference", "opp_conference", "ncaa_division",
     "score_state", "is_clutch", "game_secs_remaining",
     "venue_name", "venue_city", "venue_state", "surface", "attendance",
     "neutral_site", "conference_game", "play_text",
@@ -253,6 +253,16 @@ _OPT_KICK = [
     "player_conf", "player_name_unparsed", "tackler_name", "returned_for_td",
     "down", "dist_to_go", "yards_to_goal", "converted", "two_point_type",
 ] + _OPT_ENV
+
+# Conversions get their own optional list rather than the kick one. Four of its
+# columns are NULL on all 71,460 conversion rows -- `emit_pat` nulls the return and
+# block fields when it lifts the row out of the touchdown text, and no conversion in
+# the corpus carries a returner, a return, a blocker or a return touchdown -- so
+# offering them is offering an empty column. Down, distance and yards to goal stay,
+# because they are now honest: the view nulls the touchdown's values on the 71,330
+# derived rows and keeps the real ones on the 130 conversions ESPN emits as their own
+# play.
+_OPT_CONV = [c for c in _OPT_KICK if c != "returned_for_td"]
 
 _OPT_SCRIM = [
     "phase", "site", "qtr", "clock", "score_diff", "points_scored",
@@ -268,7 +278,7 @@ OPTIONAL = {
         "field_goal": ["blocker_name", "negated_by_penalty"] + _OPT_KICK,
         "punt": ["blocker_name", "qtr", "clock", "score_diff"] + _OPT_KICK,
         "kickoff": _OPT_KICK,
-        "conversion": ["blocker_name", "return_yds", "returner_name"] + _OPT_KICK,
+        "conversion": _OPT_CONV,
         "mixed": ["fg_distance_yds", "punt_gross_yds", "punt_net_yds", "kickoff_yds",
                   "returner_name", "miss_reason", "onside"] + _OPT_KICK,
     },
@@ -312,7 +322,10 @@ def optional_options(key: str, chips, mode: str = "dark") -> list[dict]:
 
 # Columns fetched for the play-detail drawer regardless of what the grid shows.
 _DETAIL_SHARED = [
-    "play_uid", "phase", "play_kind", "season", "week", "season_type", "game_id",
+    # `league` is on every detail row, and not only for display: the drawer builds
+    # league-qualified profile links out of it, and a bare team or athlete id is ambiguous
+    # across the two corpora.
+    "play_uid", "league", "phase", "play_kind", "season", "week", "season_type", "game_id",
     "game_date", "outcome", "outcome_unknown", "player", "player_id", "player_conf",
     "player_name_unparsed", "team", "team_id", "opponent", "opp_id", "site",
     "conference", "opp_conference", "qtr", "clock", "down", "dist_to_go",
@@ -324,7 +337,9 @@ _DETAIL_SHARED = [
 DETAIL_FIELDS = {
     "st": _DETAIL_SHARED + [
         "returner_name", "returner_athlete_id", "tackler_name", "tackler_athlete_id",
-        "blocker_name", "fg_distance_yds", "punt_gross_yds", "punt_net_yds",
+        # NFL only; NULL on every college row, and the drawer drops an empty card.
+        "blocker_name", "snapper_name", "holder_name",
+        "fg_distance_yds", "punt_gross_yds", "punt_net_yds",
         "kickoff_yds", "return_yds", "kick_yds", "returned_for_td", "onside",
         "converted", "two_point_type", "miss_reason", "negated_by_penalty",
         "parse_confidence",

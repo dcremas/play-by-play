@@ -1,25 +1,34 @@
-# D-I FBS Play-by-Play
+# Play-by-Play — college football and the NFL
 
-Every play in FBS college football from 2014 to the game played last weekend — one row per
-play, with the situation it happened in, the venue, the people identified by stable ESPN id
-rather than name string, and the raw source text kept alongside so any row can be audited
-back to what the feed actually said.
+Every play in FBS college football and in the NFL from 2014 to the game played last weekend —
+one row per play, with the situation it happened in, the venue, the people identified by
+stable ESPN id rather than name string, and the raw source text kept alongside so any row can
+be audited back to what the feed actually said.
 
-**1,827,076 plays** over **10,301 games** and **13 seasons**, split across two fact tables
-that are disjoint by construction:
+**2,365,530 plays** over **13,597 games** and **13 seasons**, across two leagues and two fact
+tables that are disjoint by construction:
 
-| fact | rows | what it holds |
+| fact | college | NFL | what it holds |
+|---|---|---|---|
+| `pbp.special_teams_play` | 316,397 | 90,819 | kickoffs, punts, field goals, and the conversion family |
+| `pbp.scrimmage_play` | 1,510,679 | 447,635 | rushes, passes, sacks, penalties |
+| | **1,827,076** | **538,454** | |
+
+Built from ESPN play-by-play and nothing else — the same two endpoints for both leagues.
+Stored in local Postgres, read through a DuckDB snapshot by two applications.
+
+> **The special-teams half is not deprecated** — it is the older, more heavily parsed, and
+> better validated of the two facts, and most of this document is still about it.
+
+**The two leagues are one warehouse, not two.** Both facts carry a `league` column and both
+corpora live in the same tables. What is and is not keyed by league was measured rather than
+assumed, and the asymmetry is the whole design:
+
+| | keyed by league? | why |
 |---|---|---|
-| `pbp.special_teams_play` | 316,397 | kickoffs, punts, field goals, and the conversion family |
-| `pbp.scrimmage_play` | 1,510,679 | rushes, passes, sacks, penalties |
-
-Built from ESPN play-by-play and nothing else. Stored in local Postgres, read through a
-DuckDB snapshot by two applications.
-
-> **The name.** This repository was `cfb-special-teams` and the schema was `st` until
-> 2026-09-08, when the scrimmage fact was added and both became misnomers. The special-teams
-> half is not deprecated — it is the older, more heavily parsed, and better validated of the
-> two, and most of this document is still about it.
+| `dim_team`, `dim_team_season`, `dim_conference` | **yes** | the ids collide and mean different things. NFL team ids run 1–34; team `2` is Auburn in one corpus and the Buffalo Bills in the other, and conference `8` is the SEC and also the AFC |
+| `dim_venue` | **no** | ESPN venue ids are one id space. 27 of 31 sampled NFL venues were already in the table under the same name, because a bowl game at AT&T Stadium is that building |
+| `dim_athlete` | **no** | likewise, and more strongly: 720 of 720 sampled overlapping ids returned the identical name from the NFL endpoint. Patrick Mahomes is `3139477` in both feeds and is one man. **2,779 people have one row spanning both corpora**, which is the cross-league question this schema exists to make answerable |
 
 This file is the whole project. It is written to be read cold, after time away, and it is
 complete on its own — `PLAN.md` (the original design record, with the parser's answer-key
@@ -28,35 +37,42 @@ implementation notes) are kept, but nothing here depends on them.
 
 | | |
 |---|---|
-| **Grain** | one row per play. Kicks: `kickoff` \| `punt` \| `field_goal` \| `pat` \| `two_point` \| `defensive_conversion`. Scrimmage: `rush` \| `pass` \| `sack` \| `penalty` \| `other` |
-| **Window** | 2014–2026. 2026 is in progress and flagged as such |
-| **Source** | ESPN site API (play text, venue) + ESPN core API (per-play athlete ids, athlete identity). No API key, no other feed |
-| **Warehouse** | PostgreSQL 18.6, database `cfb`, schema `pbp`, 11 tables + rollback copies, 1.34 GB |
-| **Read path** | `data/out/pbp.duckdb` — wide `play` and `scrimmage` tables plus `drive`, 251 MB, rebuilt from Postgres in one command |
-| **Parse quality** | kicks: 98.51% of rows `exact`. Scrimmage needs no parser — `statYardage` and `down` are structured fields at 100% coverage |
-| **People** | one shared `dim_athlete` of 62,879 athletes, 100% named and positioned from ESPN; 29,819 appear in both facts. 98.7% of kicks carry a kicker id |
-| **Apps** | Dash instance explorer (all 1.83M plays, through an Offense / Defense / Special teams lens) · Excel reports (kicks) · one-page ERD (both facts) |
+| **Grain** | one row per play, per league. Kicks: `kickoff` \| `punt` \| `field_goal` \| `pat` \| `two_point` \| `defensive_conversion`. Scrimmage: `rush` \| `pass` \| `sack` \| `penalty` \| `other` |
+| **Window** | 2014–2026 in both leagues. 2026 is in progress in both and flagged as such |
+| **Source** | ESPN site API (play text, venue) + ESPN core API (per-play athlete ids, athlete identity), under `college-football` and `nfl`. No API key, no other feed |
+| **Warehouse** | PostgreSQL 18.6, database `pbp`, schema `pbp`, 11 tables |
+| **Read path** | `data/out/pbp.duckdb` — wide `play` and `scrimmage` tables plus `drive`, 373 MB, rebuilt from Postgres in one command |
+| **Parse quality** | kicks: **98.04% `exact` college, 98.19% NFL**. Two different dialects, two parser modules. Scrimmage needs no parser in either league — `statYardage` and `down` are structured fields at 100% coverage |
+| **People** | one shared `dim_athlete` of 66,426 athletes, 100% named and positioned from ESPN; 32,582 appear in both facts and 2,779 in both leagues. 98.7% of college kicks and 99.9% of NFL kicks carry a kicker id |
+| **Apps** | Dash instance explorer (all 2.37M plays, through a League toggle and an Offense / Defense / Special teams lens) · Excel reports (kicks) · one-page ERD (both facts) |
 
-Does it behave like football? These come out of the data, not out of a reference book:
+Does it behave like football? These come out of the data, not out of a reference book, and
+the two leagues are checked separately because they are different sports at the margin:
 
-| | corpus | 2014 | 2018 | 2025 | reality check |
-|---|---|---|---|---|---|
-| Field goal % | 74.3 | 71.8 | 72.7 | 76.4 | rises across the decade, as PAT% does |
-| Punt gross (yd) | 42.04 | 41.30 | 41.52 | 43.19 | FBS is ~41–43 |
-| Kickoff touchback % | 50.9 | 38.2 | **51.5** | 59.6 | steps in 2018, the year the fair-catch rule landed |
-| PAT % | 97.34 | **98.49** | 96.61 | 98.54 | 2014 is a source defect, not a trend — see [Known limits](#known-limits) |
-| FG % by distance | 93.6 (20–24) → 48.5 (50–54) → 36.6 (60+) | | | | monotonic decline over 30k attempts |
-| Completion % | 60.1 | 58.5 | 59.3 | 61.6 | the real, documented rise in passing efficiency |
-| Yards per carry | 5.14 | | | | FBS is ~4.5–5.5 |
-| Yards per pass attempt | 7.60 | | | | |
-| First-down rate by down | 28% (1st) → 33% (2nd) → 42% (3rd) → 55% (4th) | | | | 4th down is selected-for, hence highest |
-| Drive TD% by start | 51.9% (inside opp 20) → 36.3% (midfield) → 20.1% (own 10) | | | | monotonic in field position |
+| | college | NFL | reality check |
+|---|---|---|---|
+| Field goal % | 74.3 | **84.7** | the pro game is far more accurate, and both match published rates |
+| Punt gross (yd) | 42.04 | **46.01** | FBS is ~41–43, the NFL ~45–47 |
+| PAT % | 97.34 | **97.82** | |
+| Completion % | 60.1 | **63.0** | |
+| Yards per carry | 5.14 | **4.22** | the pro number is *lower*, which is correct and is the opposite of what a copied pipeline would produce |
+| Yards per pass attempt | 7.60 | **7.22** | |
+| FG % by distance | 93.6 (20–24) → 48.5 (50–54) | 98.9 (20–24) → 70.2 (50–54) → 35.8 (60+) | monotonic in both, over 30k and 12.8k attempts |
+| First-down rate by down | 28 → 33 → 42 → 55% | 27 → 32 → 38 → 42% | monotonic in both |
+| Drive TD% by start | 51.9% (inside opp 20) → 20.1% (own 10) | 53.3% → 19.9% | monotonic in both |
 
-The 2018 touchback step and the two monotonic curves are the checks that matter most,
-because none was targeted: a distance field that was silently wrong would not produce the
-field-goal curve, a touchback flag reading the wrong thing would not step on the exact
-season the rule changed, and a drive table with its field position reversed would produce
-the touchdown curve backwards.
+And the checks that matter most, because none of them was targeted:
+
+| | 2014 | 2018 | 2023 | 2024 | 2025 | the rule |
+|---|---|---|---|---|---|---|
+| College kickoff touchback % | 38.2 | **51.5** | | | 59.6 | steps in 2018, the year the fair-catch rule landed |
+| NFL kickoff touchback % | 51.7 | | 74.6 | **65.4** | **21.9** | the dynamic kickoff arrives in 2024; the touchback spot moves to the 35 in 2025 and returns become the better option |
+
+A distance field that was silently wrong would not produce either field-goal curve. A
+touchback flag reading the wrong thing would not step on the exact season each league changed
+its rule — and the NFL's two-stage collapse is a *different* shape from college's single
+step, in a column parsed by a *different* module. A drive table with its field position
+reversed would produce the touchdown curve backwards in both.
 
 ---
 
@@ -83,7 +99,7 @@ the touchdown curve backwards.
 ### The map
 
 ```
-cfb-pbp/
+pbp/
 ├── PLAN.md            design record: source recon, parser answer-key proof, phase log,
 │                      §10 scrimmage design + decisions
 ├── README.md          this file
@@ -93,41 +109,54 @@ cfb-pbp/
 │   ├── fetch_espn.py          scoreboard + game summaries  -> data/espn/
 │   ├── fetch_participants.py  per-play athlete ids         -> data/espn/participants/
 │   ├── fetch_athletes.py      athlete name/position/jersey -> data/espn/athletes.json.gz
-│   ├── st_parser.py           the play-text parser. 497 lines, four dialects, no deps.
-│   │                          KICKS ONLY -- the scrimmage fact does not use it
+│   ├── league.py              which league a run is about, and the four things
+│   │                          that differ because of it
+│   ├── st_parser_cfb.py       KICK TEXT, college dialects. 497 lines, four of them.
+│   ├── st_parser_nfl.py       KICK TEXT, the NFL gamebook dialect. Peers, not a base
+│   │                          class and a special case -- one league each, same output
+│   │                          contract, chosen by build_table.PARSER_BY_LEAGUE.
+│   │                          KICKS ONLY; the scrimmage fact needs no parser at all
 │   ├── build_table.py         ESPN JSON + parser           -> data/out/st_plays.csv
 │   ├── build_scrimmage.py     ESPN JSON, no parser         -> scrimmage_plays.csv,
 │   │                                                          scrimmage_athlete.csv, drives.csv
 │   ├── build_dims.py          conf | venue | athlete       -> the dimension CSVs
 │   ├── build_snapshot.py      Postgres                     -> data/out/pbp.duckdb
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
-│   └── build_erd.py           live Postgres                -> reports/cfb_pbp_erd.pdf (2 sheets)
+│   └── build_erd.py           live Postgres                -> reports/pbp_erd.pdf (2 sheets)
 │
-├── sql/               DDL and loaders. Numbered files run in order
+├── sql/               DDL and loaders
 │   ├── schema.sql  dims.sql  enrich.sql          DDL (special teams)
 │   ├── schema_scrimmage.sql  schema_drive.sql    DDL (scrimmage fact, bridge, drives)
 │   ├── schema_dim_athlete.sql                    DDL (the shared athlete dimension)
-│   ├── load_1_stage.sql  load_2_insert.sql       ST backfill loader (TRUNCATE + INSERT)
-│   ├── load_3_season.sql                         ST in-season loader (one season, atomic)
-│   ├── load_scrimmage_{1_stage,2_insert}.sql     scrimmage backfill loader
-│   ├── load_bridge_drive_{1_stage,2_insert}.sql  bridge + drives backfill loader
-│   ├── load_scrimmage_3_season.sql               scrimmage in-season loader
+│   ├── migrate_league.sql                        one-time: make the warehouse two-league
+│   ├── load_league.sql                           ★ THE loader. -v league=, optional
+│   │                                               -v season=. Dims + both facts + bridge
+│   │                                               + drives + enrichment, one transaction
+│   ├── load_athletes_league.sql                  ★ the shared dimension + both bridges
 │   ├── reparse.sql                               re-derive parser columns in place
-│   ├── load_dims.sql                             the five dimension CSVs, FK order
-│   ├── load_athletes_{1_stage,2_apply,3_season}.sql   athlete link: backfill / in-season
-│   ├── enrich_game_context.sql                   the three columns the loaders leave NULL
-│   └── verify.sql  verify_phase4.sql             assertion suites
+│   ├── enrich_game_context.sql                   standalone form of what load_league does
+│   ├── verify.sql  verify_phase4.sql             assertion suites (incl. cross-league)
+│   └── load_{1_stage,2_insert,3_season,dims,scrimmage_*,bridge_drive_*,athletes_*}.sql
+│                                                 SUPERSEDED 2026-09-11 and guarded: each
+│                                                 RAISEs if a second league is present,
+│                                                 because its TRUNCATE would delete it
 │
 ├── web/               Dash instance explorer — every play, three lenses
 ├── reports/           formatted Excel workbooks + the ERD output
 │
-└── data/              ~1 GB, all of it re-derivable from ESPN
-    ├── espn/
+└── data/              ~1.2 GB, all of it re-derivable from ESPN
+    ├── espn/                            COLLEGE. The NFL is data/espn_nfl/, same shape,
+    │   │                                so the two corpora stay independently rebuildable
     │   ├── games_<season>.json          13 files, the completed-game lists
     │   ├── summaries/<game_id>.json.gz  10,470 files, 182 MB — play text lives here
     │   ├── participants/<game_id>.json.gz  10,470 files, 41 MB — athlete ids
     │   ├── athletes.json.gz              1.7 MB, 62,872 athlete identities
     │   └── participants_pre20260831/    454 files kept from before the key fix
+    ├── espn_nfl/                        NFL, identical layout
+    │   ├── games_<season>.json          13 files, 3,297 completed games (Pro Bowl dropped)
+    │   ├── summaries/<game_id>.json.gz  3,297 files
+    │   ├── participants/<game_id>.json.gz  3,297 files
+    │   └── athletes.json.gz             6,326 athlete identities
     └── out/
         ├── st_plays.csv                 the full special-teams extract
         ├── scrimmage_plays.csv          382 MB, the full scrimmage extract
@@ -159,11 +188,11 @@ explorer's header shows how old the snapshot is.
 
 | | |
 |---|---|
-| **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts; both applications; the weekly in-season update; the ERD |
-| **In progress right now** | the 2026 season, 99 games deep. `scripts/update_season.py 2026` pulls both facts forward |
+| **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts in BOTH leagues; both applications, with a league toggle; the weekly in-season update per league; the ERD |
+| **In progress right now** | the 2026 season in both leagues — 99 college games and 2 NFL. `scripts/update_season.py 2026 [--league nfl]` pulls both facts forward, one league per run |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
-| **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side; the NFL as a league toggle (scoped 2026-09-09 — the feed carries the same detail, the kick parser is the work) |
-| **Open follow-ups** | A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9) |
+| **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
+| **Open follow-ups** | A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 
@@ -175,7 +204,7 @@ itself changes character:
 | | `pbp.special_teams_play` | `pbp.scrimmage_play` |
 |---|---|---|
 | rows | 316,397 | 1,510,679 |
-| how the outcome is known | **parsed out of prose.** A kick's result exists nowhere but the play text, which is why `st_parser.py` is 497 lines of regex over four dialects | **read off structured fields.** `statYardage`, `down`, `distance`, `isTurnover` and `scoringPlay` are 100% populated. No parser is involved |
+| how the outcome is known | **parsed out of prose.** A kick's result exists nowhere but the play text, which is why `st_parser_cfb.py` is 497 lines of regex over four dialects | **read off structured fields.** `statYardage`, `down`, `distance`, `isTurnover` and `scoringPlay` are 100% populated. No parser is involved |
 | built by | `build_table.py` | `build_scrimmage.py` |
 | `play_kind` | `kickoff` `punt` `field_goal` `pat` `two_point` `defensive_conversion` | `rush` `pass` `sack` `penalty` `other` |
 
@@ -215,6 +244,14 @@ writes a *second* row off the scoring play with `:pat` appended to the `play_uid
 ESPN play can feed two fact rows — a kickoff-return touchdown produces both a `kickoff` row
 and a `pat` row — and anything joining the participants feed has to route roles to the right
 one. `build_dims.stage_athlete` does exactly that; it is the reason conversions link at all.
+
+**Second-class is about how the row is built, not about what it is worth.** Everything
+downstream now treats a conversion as a peer of the other three kick phases: it has its own
+measures, its own leaderboard columns, its own profile tab and its own charts. See
+[The applications](#the-applications). Being derived does cost the row three columns —
+`emit_pat` copies the touchdown's situation and nulls fourteen inherited measures but not
+`down`, `distance` and `yards_to_goal`, so those three are the touchdown's on 71,330 rows.
+See [Known limits](#known-limits) §12.
 
 A minority of conversions *do* get their own play row, and those are read directly rather
 than derived (`build_table.STANDALONE_CONV`). 48 of them are two-point attempts, almost all
@@ -282,12 +319,16 @@ unset in January.
 
 - **Every game with at least one FBS team is ingested**, FBS-vs-FCS included, and filtered
   at query time rather than at ingest. 274,629 rows are FBS-vs-FBS; 38,954 are not. The
-  snapshot carries `fbs_vs_fbs` precomputed, so either cut is one `WHERE` — and
+  snapshot carries `both_top_division` precomputed, so either cut is one `WHERE` — and
   kicker-quality work almost always wants the FBS-only one.
 - **Extra points and two-point tries are in the table.** They are placekicks, they are
   71,385 rows, and they are cheap to carry. The Dash explorer carries them too, on a chip
   that is off by default — 67,678 attempts from one spot would put a spike at one distance
   in every distance-based view, which is a presentation problem rather than a scope one.
+  **Off by default is now the only thing that separates them from the other three phases**:
+  as of 2026-09-09 they carry their own aggregate measures, leaderboard columns, per-season
+  profile tab and charts, so switching the chip on gives a complete phase rather than rows
+  with nothing built on them.
 - **169 of 10,470 games have no play-by-play at all** (1.6%), because ESPN carries none for
   them. Mostly FBS-vs-FCS. They are in `fact_game` and absent from both fact tables, which
   is why `count(DISTINCT game_id)` on plays is 10,301, not 10,470. The two facts agree
@@ -343,7 +384,7 @@ per-season counts by kind would still expose a source-shaped discontinuity at th
 boundary if one ever reappeared.
 
 **A CFBD API key was planned for 2022–2025 and never needed.** The archive turned out to
-*be* parsed ESPN data, so running `st_parser.py` against live ESPN text returned `exact` on
+*be* parsed ESPN data, so running `st_parser_cfb.py` against live ESPN text returned `exact` on
 every play with no changes. One dialect family, one source, all thirteen seasons.
 
 ### The team convention
@@ -364,7 +405,7 @@ because ESPN's own scoreboard does not move on the play; those rows keep whateve
 
 ### The four dialects, and the parser
 
-`scripts/st_parser.py` is the heart of the project: 495 lines, regex only, no dependencies,
+`scripts/st_parser_cfb.py` is the heart of the project: 495 lines, regex only, no dependencies,
 grounded in skeleton analysis of 833,544 plays. ESPN's play text is not one format — it is
 four, arriving at different times in the corpus:
 
@@ -477,9 +518,24 @@ athletes** (8,794 of 33,891) — dominated by tacklers, who are usually a bare j
 and by one-play athletes. The scrimmage fact would have made it worse: of 698 distinct
 passers in 2024, 107 had a name.
 
-`scripts/fetch_athletes.py` now caches ESPN's own athlete records instead. **62,872 of
-62,879 athletes, 100% named and 100% with a position**, the seven misses being records ESPN
-has deleted. It also brings `full_name` and `jersey`.
+`scripts/fetch_athletes.py` now caches ESPN's own athlete records instead. **66,419 of
+66,426 athletes, 100% named and 100% with a position**, the seven misses being records ESPN
+has deleted. It also brings `full_name` and `jersey`, and from the NFL endpoint
+`dateOfBirth` and `debutYear`, which the college one does not carry.
+
+**One dimension, two leagues, because the id space is one.** This is the single most
+consequential thing that was measured rather than assumed during the NFL work. ESPN athlete
+ids are shared across the `college-football` and `nfl` feeds: of 720 ids sampled from NFL
+participants that also appear in the college corpus, **720 returned the identical name from
+the NFL endpoint**. Patrick Mahomes is `3139477` in both. So `dim_athlete` is *not* keyed by
+league, 2,779 people hold one row spanning both corpora, and a kicker's college and
+professional careers are joinable without matching on a name string — which is the entire
+premise of this project, one level up from where it was first applied.
+
+The *endpoints* are not shared, though: a college-only id 404s against
+`/leagues/nfl/athletes/<id>`. Each league therefore caches its own store and
+`build_dims.load_identity()` merges them, later leagues winning for the fields that
+legitimately change between college and the pros — jersey, listed weight.
 
 The voted name was **not** thrown away. It lives in `text_name` beside `text_name_confidence`,
 because it is derived from a completely different source than `known_name`: play text versus
@@ -662,7 +718,7 @@ the derived columns, so no query has to repeat a join or a `CASE`. Everything ab
 | `kickoff_utc`, `attendance` | `fact_game` |
 | `venue_name`, `venue_city`, `venue_state`, `venue_country`, `surface`, `venue_indoor` | `dim_venue` |
 | `kicking_team`, `receiving_team` | `dim_team` |
-| `kicking_conference`, `kicking_division`, `receiving_conference`, `receiving_division` | `dim_team_season` on **`(team_id, season)`** |
+| `kicking_conference`, `kicking_ncaa_division`, `kicking_nfl_division`, and the `receiving_*` pair | `dim_team_season` on **`(team_id, season)`** |
 
 **Derived, computed once**
 
@@ -672,7 +728,7 @@ the derived columns, so no query has to repeat a join or a `CASE`. Everything ab
 | `is_clutch` | 4th quarter or later, margin ≤ 8, under five minutes |
 | `fg_dist_bucket` | 5-yard bucket keyed by lower bound; `<20` → 15, `60+` → 60 |
 | `game_month` | `month(kickoff_utc)` |
-| `fbs_vs_fbs` | both divisions `FBS` — the FBS-vs-FCS games that scope decision chose to ingest anyway |
+| `both_top_division` | both teams in the top division — the FBS-vs-FCS games that scope decision chose to ingest anyway. **Constant `true` for the NFL**, which has no second division |
 
 **Also in the snapshot**
 
@@ -683,7 +739,7 @@ the derived columns, so no query has to repeat a join or a `CASE`. Everything ab
 | `drive` | 258,795 | |
 | `play_athlete` | 681,464 | the special-teams bridge, copied verbatim |
 | `scrimmage_athlete` | 3,135,126 | the scrimmage bridge, copied verbatim |
-| `dim_athlete` | 62,879 | |
+| `dim_athlete` | 66,426 | shared across both leagues |
 | `dim_team` | 249 | |
 | `dim_team_season` | 3,368 | |
 | `dim_venue` | 201 | |
@@ -698,7 +754,7 @@ The `scrimmage` table adds a few things the Postgres fact does not carry, comput
 so no consumer recomputes them: `passer_name` / `rusher_name` / `receiver_name` /
 `tackler_name` and their positions, `game_secs_remaining`, `is_clutch`, `distance_bucket`
 (short / medium / long), `field_zone` (red zone / opponent half / own half) and
-`fbs_vs_fbs`.
+`both_top_division`.
 
 **A note on rebuilding it.** `build_snapshot.py` sets `pg_connection_limit = 4`. DuckDB's
 Postgres scanner parallelises a table read by opening one COPY stream per ctid range, up to
@@ -769,10 +825,10 @@ plays have two tacklers and 1,156 have three.
 |---|---|---|---|
 | `pbp.fact_game` | 10,470 | one game | `game_id` PK · `season` · `week` · `season_type` · `kickoff_utc` · `home_team_id` · `away_team_id` · `venue_id` **(the only declared FK in the schema)** · `attendance` · `neutral_site` · `conference_game` |
 | `pbp.play_athlete` | 681,464 | play × role × athlete | `play_uid` · `role` · `athlete_id` · `ordinal`; PK on the first three |
-| `pbp.dim_athlete` | 62,879 | one athlete, **career, across BOTH facts** | `athlete_id` PK · `known_name` (ESPN) · `full_name` · `position` · `jersey` · `text_name` · `text_name_confidence` · `primary_role` · `primary_team_id` · `first_season` · `last_season` · `st_plays` · `scrimmage_plays` |
+| `pbp.dim_athlete` | 66,426 | one athlete, **career, across BOTH facts and BOTH leagues** | `athlete_id` PK · `known_name` (ESPN) · `full_name` · `position` · `jersey` · `text_name` · `text_name_confidence` · `primary_role` · `primary_team_id` · `first_season` · `last_season` · `st_plays` · `scrimmage_plays` · `leagues` (`cfb` \| `nfl` \| `cfb+nfl`) · `nfl_plays` · `date_of_birth` · `debut_year` · `height_in` · `weight_lb` |
 | `pbp.scrimmage_athlete` | 3,135,126 | play × role × athlete | same shape as `play_athlete`; see its own section above |
 | `pbp.drive` | 258,795 | one drive | see its own section above |
-| `pbp.dim_team_season` | 3,368 | team × season | `team_id`, `season` PK · `conference_id` · `conference_name` · `division` (`FBS` \| `FCS`) |
+| `pbp.dim_team_season` | 3,784 | league × team × season | `league`, `team_id`, `season` PK · `conference_id` · `conference_name` · `ncaa_division` (`FBS` \| `FCS`, college only) · `nfl_division` (`AFC East` …, NFL only) |
 | `pbp.dim_team` | 246 | one team | `team_id` PK · `display_name` (the team's *most recent* name in the window) |
 | `pbp.dim_venue` | 201 | one venue | `venue_id` PK · `venue_name` · `city` · `state` · `zip` · `country` · `surface` (73 grass / 128 turf) · `indoor` (**18 indoor / 183 outdoor / 0 unknown**, added 2026-09-09 — a *stadium* property, not a game condition; 5 of the 18 are retractable and read true whether or not the roof was open). No lat/lon |
 | `pbp.dim_conference` | 31 | one conference | `conference_id` PK · `conference_name` · `short_name` |
@@ -1046,7 +1102,62 @@ fixed at the parser and all 1,012 now link to a real athlete id. The column stay
 next dialect ESPN introduces lights up in a grid instead of quietly producing phantom
 kickers.
 
+### 12. A derived conversion row carries the touchdown's down, distance and yards to goal
+
+`build_table.emit_pat` builds a conversion row from the scoring play — `r = dict(base)` —
+and then nulls fourteen inherited measures (`fg_distance_yds`, `return_yds`, the five
+outcome flags, and so on). `down`, `distance` and `yards_to_goal` are not on that list, so
+**71,330 of the 71,460 conversions carry the situation of the touchdown that produced
+them** rather than their own. Read literally, 14,546 extra points happened on third down
+and the median extra point was snapped 12 yards from the goal line.
+
+`score_diff_kicking` had exactly this defect and was fixed on 2026-09-08 by computing the
+margin the kicker actually faced. These three were missed in that pass.
+
+- **The 130 conversions ESPN emits as their own play are fine** — their `play_uid` carries
+  no `:pat` suffix and their situation is their own.
+- **`web/data.py`'s `st_play` view nulls all three on the derived rows** (2026-09-09), so
+  nothing in the explorer can show a borrowed value. That is a holding action, in the same
+  spirit as the `statYardage` window it sits beside.
+- **The upstream fix is one line**: add the three columns to `emit_pat`'s null list, then
+  runbook B. Nothing is fitted on them, so the re-derive is cheap and the app's view clause
+  can come out afterwards.
+
 ---
+
+### 13. NFL-only: three things that differ from the college corpus by design
+
+None is a defect; each is a place where the two leagues legitimately disagree and a query
+written for one will mislead on the other.
+
+**A penalty on a kick down lands in a different fact table.** College text says `punt` when a
+punt happened, so `classify()`'s text hints put a penalised punt in `pbp.special_teams_play`.
+NFL gamebook text opens with the *formation* — `(Punt formation) PENALTY on KC, False Start,
+5 yards ... - No Play` — which names how the team lined up, not what the play was. The NFL
+hints match the verb instead, so those **1,077 rows land in `pbp.scrimmage_play` typed
+`penalty`**, as do 235 fake punts and field goals, which are genuinely rushes and passes.
+`play_type_espn` keeps the raw label on both sides, so either choice is recoverable.
+
+**`both_top_division` is constant `true` for the NFL.** It has no second division. The column is
+computed explicitly rather than left to the college expression, which would have evaluated
+NULL — and any filter using it would then have silently dropped the entire NFL corpus rather
+than narrowing it. The explorer hides the control for the NFL for the same reason: a checkbox
+that cannot change the answer is worse than an absent one.
+
+**`ncaa_division` and `nfl_division` are different columns and each is one league's.**
+`ncaa_division` means `FBS | FCS` and is NULL for every NFL row; `nfl_division` means
+`AFC East` and is NULL for every college row. Overloading one column would have made it mean
+two incompatible things across leagues, and `sql/verify.sql` asserts neither is ever
+populated for the wrong one.
+
+**And one that is not NFL-specific but shows up first there.** A `GROUP BY` over the
+scrimmage fact is *not* an official stat line, in either league. ESPN's `statYardage` carries
+the defence's return on an interception and non-zero yardage on some incompletions, and
+plays wiped by a defensive penalty are still plays. Joe Burrow's 2024 reads 671 attempts and
+5,113 yards here against an official 652 and 4,918; a college quarterback shows the identical
+pattern. The columns needed to reconcile it — `is_complete`, `is_turnover`, `play_type_espn`
+— are all on the row. See [Not built](#not-built) on derived stat lines.
+
 
 ## The pipeline
 
@@ -1064,7 +1175,7 @@ kickers.
                 │                                 dim_conference.csv
      ┌──────────┴──────────┐                                   │
      v                     v                                   │
- build_dims.py venue   build_table.py + st_parser.py            │
+ build_dims.py venue   build_table.py + st_parser_cfb.py            │
      │                     │                                   │
      v                     v                                   │
  dim_venue.csv         st_plays.csv                                    │
@@ -1083,10 +1194,10 @@ kickers.
      │                                             play_athlete.csv
      │                                             play_athlete_wide.csv
      └──────────────┬──────────────────────────────────┘
-                    │  sql/load_*.sql — \copy into all-text staging, then a typed INSERT
+                    │  sql/load_league.sql — staging, typed INSERT, enrichment
                     v
  ┌────────────────────────────────────────────────────────────────────────┐
- │ PostgreSQL  cfb.pbp.* — 11 tables, 1.34 GB, the system of record       │
+ │ PostgreSQL  database pbp, schema pbp — 11 tables, the system of record │
  │ special_teams_play · play_athlete      (kicks)                         │
  │ scrimmage_play · scrimmage_athlete     (everything else)               │
  │ drive · fact_game                      (span both)                     │
@@ -1117,7 +1228,7 @@ snapshot is a build artifact — delete it and rebuild rather than repairing it.
 | conferences | `build_dims.py conf` | core-API season groups | `dim_team_season.csv`, `dim_conference.csv` | ~250 API calls |
 | venues, teams, games | `build_dims.py venue` | every stored summary on disk | `dim_venue.csv`, `dim_team.csv`, `fact_game.csv` | the slow local stage — re-reads all 10,470 summaries |
 | athlete identity | `fetch_athletes.py` | core-API `/athletes/<id>` | `athletes.json.gz` | 6 workers, ~20 min once, then incremental. **Do not raise it** — see runbook C3 |
-| the kicks fact | `build_table.py` | summaries + `st_parser` | `st_plays.csv` — 40 columns, 80 MB | a few minutes for the full window |
+| the kicks fact | `build_table.py` | summaries + `st_parser_cfb` | `st_plays.csv` — 40 columns, 80 MB | a few minutes for the full window |
 | the scrimmage fact | `build_scrimmage.py` | summaries + participants, **no parser** | `scrimmage_plays.csv`, `scrimmage_athlete.csv`, `drives.csv` | 50 s for the full window, 8 workers |
 | the athlete link | `build_dims.py athlete` | participants + both fact extracts + `athletes.json.gz` | `dim_athlete.csv`, `play_athlete.csv`, `play_athlete_wide.csv` | reads all participants files; the scrimmage half is rolled up in DuckDB |
 | the snapshot | `build_snapshot.py` | Postgres | `pbp.duckdb` | ~15 s |
@@ -1134,32 +1245,45 @@ Two properties hold across every stage and are worth relying on:
 ### Which loader is right when
 
 This is the part most likely to be got wrong, because the wrong choice does not error — it
-quietly empties columns. Three loaders exist and they are not interchangeable:
+quietly empties columns, and since 2026-09-11 the wrong choice can also quietly delete a
+whole league. **There is now one loader**, and that consolidation is the fix:
 
 | you are… | use | why not the others |
 |---|---|---|
-| **adding or rebuilding whole seasons** (a backfill) | `load_1_stage.sql` → `\copy` → `load_2_insert.sql` → **`enrich_game_context.sql`** → the athlete link | `reparse.sql` is an `UPDATE` joined on `play_uid` and cannot insert new rows. `load_3_season.sql` handles one season |
-| **changing the parser** (no new rows) | `load_1_stage.sql` → `\copy` → `reparse.sql` | `load_2_insert.sql`'s `TRUNCATE` would wipe the enrichment and force the whole athlete link to be re-run behind it |
-| **pulling an in-progress season forward** (weekly) | `scripts/update_season.py <season>` — which uses `load_3_season.sql` and `load_athletes_3_season.sql` | `load_2_insert.sql` rewrites all 313k rows to add thirty games, three times over once the enrichment `UPDATE`s follow. That is the bloat the *reclaim space* step exists to mop up |
+| **adding or rebuilding a whole league** (a backfill) | `psql -v league=<cfb\|nfl> -f sql/load_league.sql` → the athlete link | `reparse.sql` is an `UPDATE` joined on `play_uid` and cannot insert new rows |
+| **pulling an in-progress season forward** (weekly) | `scripts/update_season.py <season> --league <cfb\|nfl>` — the same file with `-v season=` | a full-league load rewrites 1.5M rows to add thirty games. That is the bloat the *reclaim space* step exists to mop up |
+| **changing the parser** (no new rows) | `load_1_stage.sql` → `\copy` → `reparse.sql` | a load would clear the enrichment and force the whole athlete link to be re-run behind it |
 
-**The trap in `load_2_insert.sql`, stated once so it is never rediscovered.** Its `TRUNCATE`
-clears three groups of columns that its own `INSERT` column list does not repopulate:
+**Why one file replaced eight.** The old loaders split the job across a stage script, an
+insert script and a separate enrichment script, per fact, per scope. Two things went wrong
+with that, and the second is what forced the change:
 
-| cleared by the TRUNCATE | restored by |
+1. **`enrich_game_context.sql` was a separate, forgettable step whose omission was silent.**
+   `TRUNCATE` clears `venue_id`, `neutral_site` and `conference_game`, which no `INSERT`
+   column list repopulates. Nothing errors; every `dim_venue` join simply returns zero rows,
+   so the field-goal-by-surface section of `verify_phase4.sql` goes silently empty. It is
+   now inside the same transaction as the load, so it cannot be skipped.
+2. **`TRUNCATE` became destructive the moment a second league existed.** Running
+   `load_2_insert.sql` after the NFL was loaded would delete all 90,819 NFL kicks to make
+   room for the college ones and report success. Every superseded loader now opens with a
+   guard that RAISEs if more than one league is present — **and with `\set ON_ERROR_STOP on`,
+   because a RAISE alone does not stop psql**: without it the exception is printed and the
+   very next statement truncates anyway. That is not hypothetical; it is how the guard was
+   found to be insufficient, and restoring the table from `data/out/st_plays*.csv` took one
+   command, which is the argument for keeping the extracts.
+
+Two groups of columns are still cleared by any full load and restored afterwards:
+
+| cleared | restored by |
 |---|---|
-| `venue_id`, `neutral_site`, `conference_game` | `sql/enrich_game_context.sql` |
-| `kicker_athlete_id`, `returner_athlete_id`, `tackler_athlete_id` | the athlete link (runbook D) |
-| nothing else — every parser column is in the insert list | |
+| `venue_id`, `neutral_site`, `conference_game` | folded into `sql/load_league.sql`'s transaction |
+| `kicker_athlete_id`, `returner_athlete_id`, `tackler_athlete_id` | the athlete link (runbook D) — **run it after any full load** |
 
-The venue columns are the quiet one. Nothing errors; every `dim_venue` join simply returns
-zero rows, so the field-goal-by-surface section of `verify_phase4.sql` goes silently empty.
-**Run the verify suite after any backfill and check that section is non-empty.** The two roof
-sections added on 2026-09-09 fail the same quiet way and catch one more thing: if `indoor` reads
-all-NULL, the games lists were rebuilt by a `stage_games` that does not capture `venue_indoor`
-— the scoreboard is the only payload that states a roof, and dropping the field costs nothing
-visible until someone asks which kicks were indoors.
-`load_3_season.sql` avoids the whole problem by applying that season's game context inside
-the same transaction, so the enrichment cannot be forgotten.
+**Run the verify suite after any backfill and check the surface section is non-empty.** The
+two roof sections added on 2026-09-09 fail the same quiet way and catch one more thing: if
+`indoor` reads all-NULL, the games lists were rebuilt by a `stage_games` that does not capture
+`venue_indoor` — the scoreboard is the only payload that states a roof, and dropping the field
+costs nothing visible until someone asks which kicks were indoors.
 
 Both `reparse.sql` and `load_athletes_2_apply.sql` write a rollback table before they touch
 anything (`pbp.special_teams_play_prereparse`, `pbp.special_teams_play_preathletefix`). Both
@@ -1179,11 +1303,17 @@ relative to the caller.
 ### A. Pull the in-progress season forward (the weekly run)
 
 ```bash
-.venv/bin/python scripts/update_season.py 2026              # the whole thing
-.venv/bin/python scripts/update_season.py 2026 --dry-run    # fetch, build, change nothing
-.venv/bin/python scripts/update_season.py 2026 --skip-conf  # skip the ~250-call conf refetch
-.venv/bin/python scripts/update_season.py 2026 --skip-fetch # rebuild from summaries on disk
+.venv/bin/python scripts/update_season.py 2026                # college, the whole thing
+.venv/bin/python scripts/update_season.py 2026 --league nfl   # the NFL, same pipeline
+.venv/bin/python scripts/update_season.py 2026 --dry-run      # fetch, build, change nothing
+.venv/bin/python scripts/update_season.py 2026 --skip-conf    # skip the ~250-call conf refetch
+.venv/bin/python scripts/update_season.py 2026 --skip-fetch   # rebuild from summaries on disk
 ```
+
+**Both leagues are live in 2026 and are updated independently** — two runs, one per league.
+Each is scoped to its own corpus and provably leaves the other alone; the only thing that
+spans both is `pbp.dim_athlete`, which is one row per person across the two leagues and is
+therefore rebuilt from both on every run regardless of which one was pulled forward.
 
 It runs fetch → build → load → snapshot in order, streams each stage, stops at the first
 non-zero exit, and is idempotent. On the eight games of 2026 week 1 it takes about 90
@@ -1195,7 +1325,7 @@ It exists because the backfill path is wrong in-season in three specific ways:
 |---|---|---|
 | `fetch_espn.py games` skips the games list if the file exists | the list freezes at whatever had finished the first time it ran | `--refresh`, always passed for the live season |
 | nothing revisits a game once fetched | a late box-score correction is never picked up | `--refresh-days 21`, which re-pulls summaries **and** participants for anything that kicked off inside the window |
-| `load_2_insert.sql` truncates everything and needs the enrichment and the whole athlete link behind it | 313k rows rewritten to add thirty games | `load_3_season.sql` + `load_athletes_3_season.sql` |
+| `load_2_insert.sql` truncates everything and needs the enrichment and the whole athlete link behind it | 313k rows rewritten to add thirty games — **and since 2026-09-11, deleting the other league** | `sql/load_league.sql` with `-v league= -v season=`, which scopes to both and folds the enrichment into the same transaction |
 
 **Where the season boundary sits.** Not everything can be scoped, and the exception is the
 one worth remembering:
@@ -1205,10 +1335,11 @@ one worth remembering:
 | games list, summaries, participants | season | `--seasons` / the `SEASONS` env var |
 | `st_plays_<season>.csv` | season | `build_table.py --seasons` |
 | `scrimmage_plays_<season>.csv`, `scrimmage_athlete_<season>.csv`, `drives_<season>.csv` | season | `build_scrimmage.py --seasons` |
-| `pbp.special_teams_play`, `pbp.play_athlete`, the three id columns | season | `DELETE` + `INSERT` on that season only; earlier seasons are provably untouched, and both loaders print every season's coverage so you can see they did not move |
-| `pbp.scrimmage_play`, `pbp.scrimmage_athlete`, `pbp.drive` | season | `sql/load_scrimmage_3_season.sql`, same pattern, enrichment in the same transaction |
-| `data/espn/athletes.json.gz` | **global, incremental** | `fetch_athletes.py` only pulls ids it has never seen, so a weekly run is a few hundred calls |
-| `dim_team_season`, `dim_venue`, `dim_team`, `fact_game` | **global** | small enough that a wholesale swap cannot leave a stale row behind — 201 venues, 3.4k team-seasons, 10.4k games |
+| `pbp.special_teams_play`, `pbp.scrimmage_play`, `pbp.scrimmage_athlete`, `pbp.drive`, `pbp.fact_game` | **(league, season)** | `sql/load_league.sql` — `DELETE` + `INSERT` on that league's one season; every other season and the whole other league are provably untouched, and the loader prints the counts per league so you can see they did not move |
+| `data/espn/athletes.json.gz`, `data/espn_nfl/athletes.json.gz` | **global per league, incremental** | `fetch_athletes.py --league` only pulls ids it has never seen, so a weekly run is a few hundred calls. Two stores because the two *endpoints* differ, even though the id space does not |
+| `dim_team_season`, `dim_team`, `dim_conference` | **league** | small enough that a wholesale per-league swap cannot leave a stale row behind — 3.4k college team-seasons, 416 NFL |
+| `dim_venue` | **shared, UPSERT** | one id space across both leagues, so it is merged rather than replaced: 215 venues, 34 of them used by both |
+| `pbp.play_athlete` | **global, both leagues** | replaced wholesale from the two per-league extracts. It costs nothing — `build_dims.py athlete` walks every participants file on disk either way |
 | `pbp.dim_athlete` | **global** | a *career* aggregate. A 2026-only rebuild would give every returning kicker `first_season = 2026`. Eight games of 2026 updated 100 existing athletes |
 
 That last row is why `build_dims.py athlete` takes `--plays` with several extracts: it
@@ -1219,7 +1350,10 @@ summaries. `--only-season` then narrows the bridge and wide outputs — the part
 `play_athlete_<season>.csv` and `play_athlete_wide_<season>.csv`, deliberately **not** over
 the global pair. `load_athletes_2_apply.sql` truncates `pbp.play_athlete` and reloads it from
 whatever `play_athlete.csv` holds, so one season's rows sitting under the global name would
-arm that script to destroy the other twelve.
+arm that script to destroy the other twelve. (Since 2026-09-11 the bridge is written whole
+and `sql/load_athletes_league.sql` replaces it wholesale for both leagues, so the
+`--only-season` path is no longer used by `update_season.py`; it costs nothing either way,
+because `stage_athlete` walks every participants file on disk regardless.)
 
 Two guards fire before anything is written, and both have caught a real mistake:
 
@@ -1243,11 +1377,11 @@ Two guards fire before anything is written, and both have caught a real mistake:
 ```bash
 .venv/bin/python scripts/build_table.py --out /tmp/new.csv    # diff before going near Postgres
 .venv/bin/python scripts/build_table.py                       # -> data/out/st_plays.csv
-psql -d cfb -f sql/load_1_stage.sql
-psql -d cfb -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -f sql/reparse.sql                                # UPDATE, not TRUNCATE
+psql -d pbp -f sql/load_1_stage.sql
+psql -d pbp -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
+psql -d pbp -f sql/reparse.sql                                # UPDATE, not TRUNCATE
 .venv/bin/python scripts/build_snapshot.py
-psql -d cfb -f sql/verify.sql                                 # read it season by season
+psql -d pbp -f sql/verify.sql                                 # read it season by season
 ```
 
 `reparse.sql` updates the **25 columns the loader derives** — the 22 from the parser plus
@@ -1265,24 +1399,37 @@ that season; it is invisible pooled, where it is 4.6% of the decade.
 
 The window is set in three places that must agree: `SEASONS` in `scripts/build_table.py`,
 `scripts/build_dims.py` and `scripts/fetch_participants.py`. All three run to 2026.
-`fetch_espn.py` reads its own from the environment.
+`fetch_espn.py` reads its own from the environment. Which *league* is a separate axis and is
+always `--league`, defaulting to college so every command that predates 2026-09-11 still
+means what it meant; `scripts/league.py` holds the four things that differ.
 
 ```bash
-SEASONS=2013 .venv/bin/python scripts/fetch_espn.py games
-SEASONS=2013 .venv/bin/python scripts/fetch_espn.py summaries
-.venv/bin/python scripts/fetch_participants.py           # reads SEASONS from the script
-.venv/bin/python scripts/build_dims.py conf
-.venv/bin/python scripts/build_dims.py venue
-.venv/bin/python scripts/build_table.py
-psql -d cfb -f sql/load_dims.sql
-psql -d cfb -f sql/load_1_stage.sql
-psql -d cfb -c "\copy pbp.stg_plays FROM 'data/out/st_plays.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -f sql/load_2_insert.sql                     # TRUNCATE + reload
-psql -d cfb -f sql/enrich_game_context.sql               # REQUIRED — restores venue/neutral/conf
+L=cfb                                                    # or: L=nfl
+SEASONS=2013 .venv/bin/python scripts/fetch_espn.py games     --league $L
+SEASONS=2013 .venv/bin/python scripts/fetch_espn.py summaries --league $L
+.venv/bin/python scripts/fetch_participants.py --league $L    # reads SEASONS from the script
+.venv/bin/python scripts/build_dims.py conf  --league $L
+.venv/bin/python scripts/build_dims.py venue --league $L
+.venv/bin/python scripts/build_table.py      --league $L
+.venv/bin/python scripts/build_scrimmage.py  --league $L
+psql -d pbp -v league=$L -f sql/load_league.sql          # dims + both facts + bridge + drives
 # then runbook D (the athlete link), then build_snapshot.py, then reclaim space
-psql -d cfb -f sql/verify.sql
-psql -d cfb -f sql/verify_phase4.sql                     # check the surface section is non-empty
+psql -d pbp -f sql/verify.sql
+psql -d pbp -f sql/verify_phase4.sql                     # check the surface section is non-empty
 ```
+
+One command loads the whole league because `sql/load_league.sql` does the dimensions, both
+facts, the bridge, the drives **and** the game-context enrichment in one transaction. The
+enrichment used to be a separate, forgettable step whose omission was silent — every join to
+`dim_venue` returned nothing — so it is no longer separate.
+
+It is scoped: `DELETE ... WHERE league = :league`, never `TRUNCATE`. Adding `-v season=2026`
+narrows it further to one season within the league, which is what `update_season.py` runs.
+
+> **`\copy` does not interpolate psql variables.** `sql/load_league.sql` uses server-side
+> `COPY` for that reason, which needs absolute paths and a superuser connection. This is not
+> a style preference: handed `:'var'`, `\copy` silently loads **zero rows** and reports
+> success, which is the worst failure mode a loader can have.
 
 **2013 will not work**, for the record: the participants feed has no athlete `$ref` before
 2014, so the season would land with no identity at all. 2014 is the floor.
@@ -1297,23 +1444,19 @@ All three come out of one pass over the summaries, so there is one build command
 seconds to build, about a minute to load.
 
 ```bash
-.venv/bin/python scripts/build_scrimmage.py              # -> 3 CSVs in data/out/
-psql -d cfb -f sql/schema_scrimmage.sql                  # DROPs and recreates fact + bridge
-psql -d cfb -f sql/schema_drive.sql
-psql -d cfb -f sql/load_scrimmage_1_stage.sql
-psql -d cfb -c "\copy pbp.stg_scrimmage FROM 'data/out/scrimmage_plays.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -f sql/load_scrimmage_2_insert.sql
-psql -d cfb -f sql/load_bridge_drive_1_stage.sql
-psql -d cfb -c "\copy pbp.stg_scrimmage_athlete FROM 'data/out/scrimmage_athlete.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -c "\copy pbp.stg_drive FROM 'data/out/drives.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -f sql/load_bridge_drive_2_insert.sql
-psql -d cfb -f sql/enrich_game_context.sql               # REQUIRED — covers both facts
+.venv/bin/python scripts/build_scrimmage.py --league cfb   # -> 3 CSVs in data/out/
+psql -d pbp -v league=cfb -f sql/load_league.sql          # loads them with everything else
 # then runbook D (the athlete link, which spans both facts), then build_snapshot.py
 ```
 
-`schema_scrimmage.sql` **drops the fact table**, so this is a backfill, not a top-up. For one
-season use `sql/load_scrimmage_3_season.sql` instead — or just run `update_season.py`, which
-does it.
+Since 2026-09-11 this is not a separate runbook so much as a subset of C: the scrimmage fact,
+the bridge and the drives are loaded by the same `sql/load_league.sql` as everything else,
+because splitting them across five scripts is what let the game-context enrichment be
+forgotten and what made the loaders unsafe once a second league existed.
+
+`sql/schema_scrimmage.sql` still **drops the fact table** and is a from-nothing rebuild for
+BOTH leagues — after running it, load each league in turn. For one season use
+`-v season=<year>` — or just run `update_season.py`, which does it.
 
 Two checks worth running afterwards:
 
@@ -1326,7 +1469,15 @@ SELECT count(*), count(DISTINCT play_uid) FROM (
 -- no bridge row may point at a play that is not there
 SELECT count(*) FROM pbp.scrimmage_athlete b
 WHERE NOT EXISTS (SELECT 1 FROM pbp.scrimmage_play p WHERE p.play_uid = b.play_uid);  -- 0
+
+-- and the other league must not have moved
+SELECT league, count(*) FROM pbp.scrimmage_play GROUP BY 1;
 ```
+
+`sql/verify.sql` carries all of this plus the six cross-league invariants, each of which
+must return zero. They are assertions rather than observations on purpose: game ids happen
+not to collide across the two leagues, but the ranges interleave, so that is a fact about
+ESPN's id allocation and not a property of the schema.
 
 ### C3. Refresh athlete identity
 
@@ -1335,9 +1486,16 @@ fetch is incremental — it only pulls ids the store has never seen — so this 
 20-minute cost and a few hundred calls a week thereafter.
 
 ```bash
-.venv/bin/python scripts/fetch_athletes.py               # whatever is missing
-.venv/bin/python scripts/fetch_athletes.py --refresh     # everything, after a transfer window
+.venv/bin/python scripts/fetch_athletes.py                     # college, whatever is missing
+.venv/bin/python scripts/fetch_athletes.py --league nfl        # the NFL, into data/espn_nfl/
+.venv/bin/python scripts/fetch_athletes.py --refresh           # all, after a transfer window
 ```
+
+**Two stores, one id space.** The ids are shared — Patrick Mahomes is `3139477` in both
+feeds — but the *endpoints* are not: a college-only id 404s against
+`/leagues/nfl/athletes/<id>`. So each league caches its own store and
+`build_dims.load_identity()` merges them when it builds the single dimension. That merge is
+where the shared id space is actually exploited.
 
 **Do not raise `--workers`.** The default is 6. At 24 the endpoint 403s the whole IP after
 about 20,000 athletes, and the block outlasts the run — ids that succeeded minutes earlier
@@ -1351,27 +1509,31 @@ Only needed when the participants feed or `build_dims.stage_athlete` changes, or
 `load_2_insert.sql` / `load_scrimmage_2_insert.sql` backfill. Not after an ordinary parser
 edit.
 
-`dim_athlete` is **one dimension over both facts** — 62,879 athletes, of whom 29,819 appear
-in both. A receiver who also returns kicks has to be one row or every cross-phase question
-double-counts him. `build_dims.py athlete` reads the special-teams extract with `--plays` and
-the scrimmage extract with `--scrim-fact` / `--scrim-bridge`; both accept several files so
-the in-season run can pass the frozen global CSV alongside one season.
+`dim_athlete` is **one dimension over both facts and both leagues** — 66,426 athletes, of
+whom 32,582 appear in both facts and 2,779 in both leagues. A receiver who also returns kicks
+has to be one row or every cross-phase question double-counts him; a kicker who went pro has
+to be one row for the same reason, one level up. `build_dims.py athlete` reads the
+special-teams extract with `--plays` and the scrimmage extract with `--scrim-fact` /
+`--scrim-bridge`; both accept several files so the in-season run can pass the frozen global
+CSV alongside one season.
 
 ```bash
-.venv/bin/python scripts/fetch_athletes.py               # top up identity first
-.venv/bin/python scripts/build_dims.py athlete           # BOTH facts -> 3 CSVs
-psql -d cfb -f sql/load_athletes_1_stage.sql
-psql -d cfb -c "\copy pbp.stg_dim_athlete FROM 'data/out/dim_athlete.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -c "\copy pbp.stg_play_athlete FROM 'data/out/play_athlete.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -c "\copy pbp.stg_play_athlete_wide FROM 'data/out/play_athlete_wide.csv' WITH (FORMAT csv, HEADER true)"
-psql -d cfb -f sql/load_athletes_2_apply.sql
+.venv/bin/python scripts/fetch_athletes.py                        # top up identity, per league
+.venv/bin/python scripts/fetch_athletes.py --league nfl
+.venv/bin/python scripts/build_dims.py athlete --leagues cfb nfl  # BOTH facts, BOTH leagues
+psql -d pbp -f sql/load_athletes_league.sql
 .venv/bin/python scripts/build_snapshot.py
 ```
 
-`load_athletes_2_apply.sql` clears the three id columns before applying, so the result does
-not depend on what ran before it, and keeps the previous values in
-`pbp.special_teams_play_preathletefix`. It prints coverage by kind and by season on the way
-out.
+**`--leagues cfb nfl` is not optional once both are loaded.** Without it the dimension covers
+only the league named by `--league`, and because the loader replaces `pbp.dim_athlete`
+wholesale, a one-league rebuild would drop every athlete who appears only in the other.
+
+`sql/load_athletes_league.sql` clears the three id columns before applying, so the result does
+not depend on what ran before it. It refuses to run against empty staging — without that
+guard every check below it passes vacuously, the `TRUNCATE`s empty the dimension and the
+bridge, and the apply puts nothing back, all with exit code 0. It prints coverage by league
+and by kind on the way out.
 
 To repair games whose stored participants file uses the old id-based key:
 
@@ -1387,7 +1549,7 @@ re-fetch is forced.
 
 ```bash
 .venv/bin/python scripts/build_snapshot.py            # -> data/out/pbp.duckdb
-.venv/bin/python scripts/build_snapshot.py --db cfb --out /tmp/other.duckdb
+.venv/bin/python scripts/build_snapshot.py --db pbp --out /tmp/other.duckdb
 ```
 
 It deletes and recreates the file, installs and loads DuckDB's `postgres` extension,
@@ -1396,25 +1558,25 @@ snapshot on restart. Run it after any load.
 
 ### F. Reclaim space after a backfill
 
-`load_2_insert.sql` followed by the two enrichment `UPDATE`s rewrites every row three times,
-so the heap ends up roughly 3× the size of the live data.
+A full-league load followed by the enrichment `UPDATE`s rewrites every row more than once,
+so the heap ends up several times the size of the live data.
 
 ```bash
-psql -d cfb -c "VACUUM (FULL, ANALYZE) pbp.special_teams_play"
-psql -d cfb -c "VACUUM (FULL, ANALYZE) pbp.play_athlete"
+psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.special_teams_play"
+psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.play_athlete"
 ```
 
 Autovacuum frees the space for reuse but cannot shrink the file. `VACUUM FULL` takes an
 exclusive lock and rewrites the table, but the apps read the snapshot rather than Postgres,
-so it can run any time. It took `cfb` from 612 MB to 232 MB on 2026-08-31 (dropping five
+so it can run any time. It took `pbp` from 612 MB to 232 MB on 2026-08-31 (dropping five
 rollback tables accounted for 173 MB of that). The in-season path does not create the bloat
 and does not need this.
 
 ### G. Verify
 
 ```bash
-psql -d cfb -f sql/verify.sql          # counts by season/kind, football sanity, integrity
-psql -d cfb -f sql/verify_phase4.sql   # athlete coverage, the conference trap, surface, orphans
+psql -d pbp -f sql/verify.sql          # counts by season/kind, football sanity, integrity
+psql -d pbp -f sql/verify_phase4.sql   # athlete coverage, the conference trap, surface, orphans
 ```
 
 `verify.sql` and `verify_phase4.sql` print; they do not assert, and **nothing in the repository
@@ -1478,7 +1640,7 @@ and never learns what is in it. `web/lens.py` is the only module that knows the 
 | surface | route | what it is |
 |---|---|---|
 | **Explorer** | `/` | one filter set, one lens, two or three grains. **Plays** is the point: up to 1.5M rows on AG Grid's infinite row model. **Teams** is the same selection rolled up. **Kickers & punters** is on the kicks lens only — the one side with an honest player grain today |
-| **Player** | `/player/<athlete_id>` | one page per athlete, with a section for each phase he actually kicks in. 1,533 of the 2,729 players with five or more kicks work more than one phase and 302 do all three, which is why it is one page per person rather than per role |
+| **Player** | `/player/<athlete_id>` | one page per athlete, with a section for each of the four kick phases he actually appears in. 1,533 of the 2,729 players with five or more kicks work more than one of the three kicking roles and 302 do all of them, which is why it is one page per person rather than per role |
 | **Team** | `/team/<team_id>` | decade roll-up on top, one row per season under it, then who kicked, then every kick |
 
 The two profile pages are **pinned to the kicks lens** whatever the header shows: they
@@ -1511,13 +1673,15 @@ it, and every `ORDER BY` is tie-broken on `play_uid` so paging is stable.
 Design decisions in `web/` that are settled unless deliberately reopened: descriptive only,
 **no models**; the side is exclusive, never a union; profiles are kicking side only;
 conversions are in the kicks lens but off by default, because 67,678 extra points from one
-spot would put a spike at one distance in every distance view; `Unknown` is a first-class
+spot would put a spike at one distance in every distance view — off by default and complete
+in every other respect, which is a different statement from the one this line used to make; `Unknown` is a first-class
 outcome and so are `Negated` and `Unclassified`; `Onside` is tested before the real
 outcomes, because an onside kick is a different play rather than a kickoff with an unusual
 result — folding it in both muddied touchback rates and would dump 1,382 of the 1,486
-onside kicks into `Unknown`. `web/README.md` carries the palette-validation record and two
+onside kicks into `Unknown`. `web/README.md` carries the palette-validation record and three
 implementation notes that each cost real debugging time (dash-ag-grid ships only the light
-`quartz` stylesheet; never pass `None` to a Mantine colour prop).
+`quartz` stylesheet; never pass `None` to a Mantine colour prop; plotly's `responsive` only
+re-measures on a window resize event, so `web/assets/resize.js` watches the boxes instead).
 
 Two feed properties are handled in `web/data.py` rather than left to each caller, because
 both would otherwise publish a confidently wrong number:
@@ -1671,7 +1835,7 @@ render** rather than silently dropping the column off the diagram.
 
 
 ```bash
-.venv/bin/python scripts/build_erd.py        # -> reports/cfb_pbp_erd.pdf, 2 pages (+ 2 .png proofs)
+.venv/bin/python scripts/build_erd.py        # -> reports/pbp_erd.pdf, 2 pages (+ 2 .png proofs)
 ```
 
 One landscape **Tabloid (17×11in)** page, Crow's Foot notation, rendered by Chrome headless
@@ -1789,7 +1953,7 @@ SELECT season, games, plays, last_regular_week, last_kickoff, is_in_progress
 FROM season_status ORDER BY season;
 ```
 
-Two habits worth keeping: filter `fbs_vs_fbs` for any kicker-quality question, and exclude
+Two habits worth keeping: filter `both_top_division` for any kicker-quality question, and exclude
 `yards_to_goal = 0` from any field-position analysis.
 
 ---
@@ -1811,7 +1975,7 @@ fixed are in [Known limits](#known-limits).
 | 2026-08-31 | **Athlete identity, two independent bugs** | (1) all 58,535 conversions had a NULL `kicker_athlete_id`: `stage_athlete` considered only punt/kickoff/FG plays and looked for roles `kicker`/`punter`, which a conversion never carries — ESPN tags it `patScorer`/`patPasser`. (2) 2025 kicks collapsed from week 9: `fetch_participants` keyed each play by the core-API play `id`, assuming it is the game id plus sequence number. From week 9 the two endpoints stopped agreeing | conversions 0% → **98.4%**, and the links are as trustworthy as the ones already relied on (96.27% parsed-name agreement against a 96.26% control). Kicks 94.33% → **98.65%**; 2025 alone 58.2% → **98.82%**. Only the 454 unjoinable games were re-fetched, not all 8,634; the originals are kept on disk |
 | 2026-08-31 | **`known_name` votes on `(initial, surname)`** | ESPN went 40.2% abbreviated in 2025 to **97.7%** in 2026. A modal vote over the raw string made a returning player split his own vote between two spellings of his own name, drop under the confidence floor, and end up with no name at all. 1,281 athletes were exposed | **recovered 209 names, lost none**, respelled 123 into a fuller form. `Dillon Curtis` (177 plays) and `Beckham Sunderland` (82) had no name before it |
 | 2026-08-31 | **2014–2015 backfilled** | the corpus started in 2016; the participants feed supports 2014 | +54,745 rows, +1,714 games. 2014 brought its own source defect — see [Known limits](#known-limits) §3 |
-| 2026-08-31 | **Rollback tables dropped, database vacuumed** | five rollback tables and three-rewrites-per-load bloat | `cfb` 612 MB → 232 MB; the database now holds exactly the eight tables the pipeline needs |
+| 2026-08-31 | **Rollback tables dropped, database vacuumed** | five rollback tables and three-rewrites-per-load bloat | `pbp` 612 MB → 232 MB; the database now holds exactly the eight tables the pipeline needs |
 | 2026-08-31 | **Phase 4 load scripts brought into the repository** | the step that applies the athlete CSVs lived outside the repo, and `reparse.sql` warned about "a step that is not in this directory" | `load_athletes_1_stage.sql` and `load_athletes_2_apply.sql`. The athlete link is now reproducible from the same command list as everything else |
 | 2026-09-01 | **In-season path** | the backfill path is wrong three ways against a season still being played | `update_season.py`, `load_3_season.sql`, `load_athletes_3_season.sql`, `load_dims.sql`, `build_dims.py athlete --plays/--only-season`, and the self-maintaining `season_status` table. 2026 loaded, 8 games |
 | 2026-09-08 | **Scrimmage fact built** | the warehouse held only special teams; 1.5M plays already on disk were unused | `pbp.scrimmage_play` (1,510,679), `pbp.scrimmage_athlete` (3,135,126), `pbp.drive` (258,795). No fetching and no parser: `statYardage`, `down` and `isTurnover` are structured fields at 100% coverage. Disjoint from the kicks by calling `build_table.classify()` rather than re-listing its rules |
@@ -1822,21 +1986,29 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-08 | **Names taken from ESPN instead of play text** | voting names out of the text named only **25.9%** of athletes, and would have done worse on scrimmage — 107 of 698 passers in 2024 | `fetch_athletes.py`; **100% named, 100% with a position**. The voted name is kept in `text_name` as an independent cross-check: 8,018 of 8,794 agree exactly, and all 776 disagreements are spelling variants, gamebook initials or real name changes |
 | 2026-09-08 | **Standalone conversions recovered** | `emit_pat` fires on `scoringPlay or "kick attempt" in text`, read off the *touchdown* play, so it never saw the conversions ESPN emits as their own row | 48 two-point attempts (mostly overtime) and 75 `defensive_conversion` rows — the defence returning a blocked PAT, a different event from the offence's failed try. `emit_pat` also assigned the scoring team by *swapping* two ids, which fails when `start.team.id` is NULL: all three conversions in the 9OT Illinois–Penn State game were on Penn State |
 | 2026-09-08 | **Empty-staging guard on both athlete loaders** | every other guard passes vacuously on an empty set, so `TRUNCATE pbp.dim_athlete` emptied the dimension, the bridge `DELETE` removed a season, the apply put nothing back — and psql exited **0**. One mistyped `\copy` path is enough | both loaders now refuse. Found by making that exact mistake |
-| 2026-09-08 | **Renamed `st` → `pbp`, repo → `cfb-pbp`** | the schema was named for special teams and now holds every play | 374 references across 29 files, matched on table names rather than the bare `st.` prefix — `app.py`, then still in the tree, did `import streamlit as st`. The DuckDB view named `st` in `web/data.py` was deliberately left alone: it still meant special teams. It became `st_play` on 2026-09-09, when the offense and defense views joined it and a bare `st` stopped being unambiguous |
 | 2026-09-08 | **Score-lag repaired** | ESPN's score column reports a stale, pre-scoring snapshot on 6,470 rows and is out of order on 765 more, so the running score stepped backward in 33.9% of games. Read literally that produced 7,237 negative point deltas and credited 14,002 plays with points they did not score | one invariant — a score never goes down — clamps each team's running total to its own maximum, in a helper both builders call. Negative deltas 7,237 → **0**, phantom point rows 14,002 → **584**, reconstructed finals matching the official score 10,021 → **10,053** of 10,301, conversions on the correct team 99.814% → **99.846%** against game-local ground truth. Sorting into clock order first, and using raw deltas as a tiebreak, were both tried and both measured worse |
 | 2026-09-08 | **`score_diff_kicking` means what it says** | it documented "the kicking team's margin before the play" but was computed from ESPN's after-play scoreboard, so a made field goal carried a margin that already included the three points it had just scored | now taken from the repaired running score entering the play, like `score_diff_offense`. **22,562 of 23,220 made field goals moved by exactly −3**; **7,813 of 8,044 missed field goals did not move at all**, which is the control. Conversion rows get the margin the KICKER faced — after the touchdown, before his own kick — since a `pat` row is derived from the touchdown play. `is_clutch` flips on 662 of 316,397 rows; no measured column moved, FG% is 74.27% before and after |
-| 2026-09-08 | **Rollback tables dropped** | four tables from the expansion, kept until the new coverage was trusted | `cfb` 1,369 MB → 1,327 MB; the schema holds exactly the eleven tables the pipeline needs |
+| 2026-09-08 | **Rollback tables dropped** | four tables from the expansion, kept until the new coverage was trusted | `pbp` 1,369 MB → 1,327 MB; the schema holds exactly the eleven tables the pipeline needs |
 | 2026-09-09 | **Explorer reads every play, through three lenses** | the app covered 244,937 of 1,827,076 plays; the scrimmage fact had been queryable offline since 2026-09-08 and no surface read it | `web/lens.py` and three views — `off_play` and `def_play` over `snap.scrimmage`, `st_play` over `snap.play`, all normalised to one column vocabulary so the filter and sort translation stayed lens-blind. **Offense and defense are one row read from opposite ends, not two copies**: verified over all 1,510,679 rows that `score_diff` and `points_scored` are exact negations and the team ids exactly swap. Conversions joined the kicks lens as a default-off chip. Two feed defects surfaced and are handled rather than published: `statYardage` on a turnover is the *defense's return* (it lifts the passing mean 7.5 → 13.2, so turnovers are out of every mean-yards measure) and four rows carry an impossible value (11,131 yards on a 2017 pass), NULLed not clamped, flagged by `yards_impossible`. Found `is_home_offense` NULL on 15 rows reading as "Away" on **both** lenses at once; `site` is now NULL there, and the same latent defect was fixed on the kicks' 4 rows |
 | 2026-09-09 | **`dim_venue.indoor` — the roof ESPN was already sending** | `dim_venue` recorded surface but not roof, and this file asserted there is **no roof field in the ESPN payload**, so flagging domes "needs a separate source or a manual list". Wrong on both counts. `summary.gameInfo.venue` carries `grass` but never `indoor`, and `build_dims.py` reads venue from the summary — but the **scoreboard** states `venue.indoor`, and `fetch_espn.stage_games` was already fetching that exact payload and keeping only `venue_id` off it. The roof had been arriving and being discarded on every one of 10,470 games since 2026-08-30 | `dim_venue.indoor` on **201 of 201 venues — 18 indoor, 183 outdoor, 0 unknown** — and denormalised onto both facts as `venue_indoor`. **Purely additive, and checked to be:** the games lists were re-fetched for all 13 seasons at **+0 delta** in every one, `fact_game.csv` came back byte-identical, and `dim_venue.csv` is identical after dropping the new column. **Not one of the 201 venues reports both values** across 10,470 games, so the venue grain is the feed's own rather than an aggregation chosen here; the guard that would complain stays in `stage_venue` regardless. NULL on 438 kick and 2,149 scrimmage rows, which are **exactly** the rows whose venue was already entirely NULL (14 Hawai'i home games in 2019–2020 that carry no venue in the scoreboard at all) — the column adds no gap of its own. Reality check, FBS-vs-FBS: FG% **76.86 indoor against 74.50 outdoor**, punt gross **42.77 against 41.80**, touchback **52.05% against 50.32%**, and indoor leads in every distance bucket under 50 yards — three independent kicking measures moving the way a roof should, which a flag wired to the wrong column would not produce. **It is a stadium property, not a game condition**: 5 of the 18 are retractable and read true whether or not the roof was open, so `indoor = true` means "weather may not apply", never "weather did not" |
+| 2026-09-09 | **Charts stopped being drawn at the wrong size** | plotly measures its container when it draws and re-measures on a **window resize event** and nothing else, so a chart whose container changed size any other way kept a stale width. Three ways it did: a chart drawn inside an inactive tab panel or the collapsed *Shape of the current selection* accordion measured a host of 0 and fell back to plotly's default 700, so opening the Punt tab spilled it 231px past a 469px panel; the explorer's chart row re-columns 3 ↔ 2 as the phase count changes, moving the hosts 296 ↔ 452 while both charts stayed at 296.3; and a new figure does not re-measure either, because `Plotly.react` keeps the existing size. Latent since the app was built and made more visible by the fourth profile tab | `web/assets/resize.js` — a `ResizeObserver` over every `.js-plotly-plot`, calling `Plotly.Plots.resize` when the measured width stops matching the drawn one. **Watching the boxes rather than the controls is the point**: a clientside resize wired to each Tabs and Accordion was tried first and does not cover the re-layout case, which has no control to hang it on. Verified on all three paths with no `ResizeObserver loop` warning. Note that verifying it at all needs the tab in the foreground — `ResizeObserver` and `requestAnimationFrame` are rendering-steps callbacks, so a background tab measures stale on every chart and looks exactly like the bug |
+| 2026-09-09 | **Conversions became a full phase in the explorer** | the chip was one click from 71,460 rows and nothing was built behind it. `common.METRICS` had no conversion measure, so a kicker's extra points were invisible on both leaderboards; `SEASON_KINDS` listed three phases, so neither profile page had a tab or a by-season table for them; two of the three explorer charts drew empty panels because `kick_bucket` is NULL on every conversion; and the `Blocked` outcome the drawer was already written to display did not exist — the view collapsed all 531 blocked extra points into `Failed` | `pat_att / pat_made / pat_rate / pat_blocked / two_att / two_made / two_rate / def_conv` in the aggregates and on both leaderboards (`def_conv` on the team grain only — all 75 carry a NULL kicker id, so it is zero on every player); a **Conversions** tab on both profile pages over a per-season grid that splits extra point from two-point and pass from rush; XP tiles on both KPI rows; `charts.conversion_by_type` and a conversion branch in `phase_detail`, so the three-chart row is full. **Blocked is now an outcome on a conversion** — 531 extra points moved out of `Failed`, taking the vocabulary to the field goals' validated blue/red/violet triple. No rate moved: a blocked PAT was already a failure. Off-by-default is unchanged and is now the only thing that separates the phase from the other three. Two honesty fixes came with it: the view nulls the touchdown's `down`, `distance` and `yards_to_goal` on the 71,330 derived rows ([Known limits](#known-limits) §12), and the four columns that are NULL on all 71,460 conversions stopped being offered as optional grid columns |
 | 2026-09-09 | **The Streamlit console was removed** | it was no longer wanted; the Dash explorer and the Excel reports cover what is still read | `app.py` deleted (1,189 lines) and five pins dropped — `streamlit`, `scikit-learn`, and the `scipy` / `matplotlib` / `pytz` sitting beside them that nothing in the repository imports. Every reference was rewritten, `PLAN.md`'s design record included. **Two capabilities went with it and are replaced nowhere.** The **20 scored rule assertions**: `verify.sql` and `verify_phase4.sql` still print the same underlying counts, but nothing grades them or judges a check on its worst single season. The **two fitted baselines** `fg_exp` / `punt_exp`: what they measured is kept in [Not built](#not-built) so a rebuild starts from a known bar rather than from scratch. |
+| 2026-09-11 | **The NFL, in both facts** | the warehouse was one league because the project started as one league, not because the feed was | 538,454 NFL plays across 3,297 games and 13 seasons. `league` on both facts, both bridges, `drive`, `fact_game` and the three team dimensions; `dim_venue` and `dim_athlete` deliberately NOT keyed by it, because ESPN's venue and athlete ids are one id space across both feeds (27/31 venues and **720/720 athlete names** agreed on a sampled overlap). 2,779 people now have one row spanning college and the pros |
+| 2026-09-11 | **`scripts/st_parser_nfl.py`** | `st_parser_cfb.py` scored **14.1% `exact`** on NFL kick text. The NFL gamebook is a dialect it has never seen and is not the NCAA gamebook despite the shared name | **98.19% `exact`** over 74,740 NFL kicks, against 98.04% for college — 15 rows corpus-wide unparsed. Flat at 98.0–98.5% in every season 2014–2025, so there is no era drift to chase. Validated independently: `fg_made` agrees with ESPN's own structured play type on **12,785 of 12,785** kicks; punt gross averages 46.01 yd against a published ~45–47; and the 2024/2025 kickoff rule changes appear as 74.6% → 65.4% → **21.9%** touchbacks without being looked for |
+| 2026-09-11 | **`classify()` mis-fired on NFL text** | the college `TEXT_HINT` table matches nouns, and `"kick for"` is a substring of `"(kick formation)"` — the formation parenthetical the NFL gamebook opens with. **148 touchdowns were typed as kickoffs** and taken out of the scrimmage fact; 1,077 kick-down penalties and 235 fake punts went with them | NFL hints match the **verb** (`punts N yards`, `kicks N yards from`, `N yard field goal is`), which is exact because the gamebook is machine-generated. The 1,460 misfiled plays return to the fact they belong in, and 65 real kicks the noun hints had always missed are rescued |
+| 2026-09-11 | **One loader replaced five** | the in-season scripts `TRUNCATE`, which was right for one corpus and would now delete the other league to make room | `sql/load_league.sql` is scoped to `(league, season)` and folds the game-context enrichment into the same transaction, so it can no longer be forgotten. Proven by reloading the **college** corpus through it end to end: identical counts, NFL untouched |
+| 2026-09-11 | **The NFL workbook said FBS** | `reports/fg_by_distance.py` was scoped by league in its **queries** from the start but not in its **prose**, so `fg_by_distance_nfl.xlsx` was titled "FBS field goals by distance" over NFL kicks and reported "1,019 FBS attempts" per season | a `TIER` term per league drives every heading and note, and the non-FBS exclusion paragraph is replaced for the NFL by one saying there is no second division to exclude. Found by reading the generated workbook, not the code |
+| 2026-09-11 | **A shadowed name in the same file** | `build()` took the corpus as a parameter named `league` and then rebound it to `rollup()`'s all-teams dict. It worked only because the query ran before the rebind | the dict is `all_teams`; `league` means the corpus and nothing else |
 
 ---
 
 ## Not built
 
-Five things are deliberately absent. None is blocked; each is a fresh decision rather than
-a re-derivation, and what each would need is written down so picking it up does not start
-from scratch.
+Four things are deliberately absent, plus one that was built. None is blocked; each is a
+fresh decision rather than a re-derivation, and what each would need is written down so
+picking it up does not start from scratch. The NFL section is kept below as a record of an
+estimate against its outcome.
 
 ### Weather — tabled, but both halves of the join key already exist
 
@@ -1882,7 +2054,7 @@ Note the 2017 `wallclock_utc` hole (66.9%) is a real gap in that season's play-l
 
 ### Derived stat lines and team box scores — a `GROUP BY`, not a build
 
-Scope was deliberately stopped at play-level facts (PLAN.md §10j.5). Per-player-per-game and
+Scope was deliberately stopped at play-level facts (PLAN.md §10i.5). Per-player-per-game and
 per-player-per-season stat lines (passing, rushing, receiving, defence) and per-game team
 totals are all aggregations over `pbp.scrimmage_play` and its bridge, and can be added later
 without reloading anything.
@@ -1929,13 +2101,21 @@ default-off chip. What is left is the player grain.
 
 Both are the user's words and both are currently unstarted:
 
-1. **~~Reconsider PATs for the explorer.~~ Done, 2026-09-09.** Part of why conversions were
-   excluded was that they had no usable kicker identity — `kicker_athlete_id` was NULL on all
-   58,535 of them — and that was fixed on 2026-08-31. The other reason still held: ~67k
-   attempts at one distance would drown any distance-based view. So they went in as a fourth
-   phase chip that is **off by default**, which makes the corpus complete without putting a
-   spike at one distance in every chart. Selecting it takes the kicks lens from 244,937 rows
-   to all 316,397.
+1. **~~Reconsider PATs for the explorer.~~ Done, 2026-09-09, in two passes.** Part of why
+   conversions were excluded was that they had no usable kicker identity —
+   `kicker_athlete_id` was NULL on all 58,535 of them — and that was fixed on 2026-08-31.
+   The other reason still held: ~67k attempts at one distance would drown any
+   distance-based view. So they went in as a fourth phase chip that is **off by default**,
+   which makes the corpus complete without putting a spike at one distance in every chart.
+   Selecting it takes the kicks lens from 244,937 rows to all 316,397.
+
+   The first pass put the rows behind the chip and stopped there, which left a phase that
+   was reachable but not built: no measures, no leaderboard columns, no profile tab, two of
+   three charts empty. The second pass, the same day, built all of it — see the changelog
+   row. **The remaining question is whether off-by-default is still right.** It rests
+   entirely on the distance charts, and two of the four surfaces that used to be
+   distance-based no longer are on this chip. If the answer changes, it is one list in
+   `lens.PHASE_DEFAULT`.
 2. **The baselines — a rebuild now, not a port.** The explorer deliberately carries no
    models, and that was framed as provisional ("for now"), making it the likeliest of these
    decisions to revisit. The two baselines it would have inherited went with the Streamlit
@@ -1967,139 +2147,46 @@ it. The view half was built and has since been retired; the MCP server was never
 The pattern is already proven elsewhere on this machine against a different warehouse, so
 this is a small job whenever it is wanted.
 
-### The NFL, as a league toggle — the feed is there, the kick parser is not
+### ~~The NFL, as a league toggle~~ — built 2026-09-11
 
-Scoped 2026-09-09, unstarted. The question was whether the same play-level detail exists for
-the NFL over the same window, and what it would take to put it behind a league selector at
-the top of the explorer. **It exists, it comes from the same ESPN API this project already
-depends on, and in places it is richer.** One component does not port: `st_parser.py` scores
-**14.1% `exact` on NFL text against 98.51% on college**, and rewriting it for the NFL dialect
-is roughly 40% of the total effort.
+**This section is kept only as a record of what was predicted against what happened.** The
+NFL is in the warehouse, in both facts, behind a league selector in the explorer. See the
+[opening](#play-by-play--college-football-and-the-nfl) for the corpus and
+[Changelog](#changelog) for what it cost.
 
-Every number below is measured, not assumed — but most come from samples, and the sample
-size is stated wherever it matters. None of it is a census.
+The 2026-09-09 scoping estimated **12–16 days** and called the kick parser ~40% of the work.
+What the estimate got right and wrong, since an estimate nobody grades is worth nothing:
 
-**What is identical.** The two endpoints, `site.api.../summary?event=` and
-`sports.core.api.../plays`, exist for `nfl` in place of `college-football` and return the
-same JSON shape back to 2014:
-
-| the dependency | NFL status |
+| predicted | actual |
 |---|---|
-| `drives.previous[].plays[]` | same shape, 2014 onward |
-| `statYardage`, `start.{down,distance,yardLine,yardsToEndzone}`, `end.*` | present, 100% populated |
-| `isTurnover`, `scoringPlay`, `isPenalty`, `wallclock`, `period`, `clock` | all present |
-| `type.id` / `type.text` | **same id space** — `5` Rush, `24` Pass Reception, `3` Pass Incompletion, `52` Punt, `53` Kickoff, `59`/`60` FG Good/Missed, `7` Sack, `8` Penalty, `12`/`32` Kickoff Return |
-| `KIND_BY_TYPE` keys | **11 of the 13 observed directly** across ~190 games, spelled identically, so `classify()` matches without a new entry. The two unobserved — `Blocked Field Goal Touchdown` and `Missed Field Goal Return Touchdown` — are the rarest scoring variants there are; absence from a 190-game sample is a sample-size artifact, not evidence, and should be confirmed on the full pull |
-| `participants[]` roles | same vocabulary — `kicker`, `punter`, `returner`, `passer`, `receiver`, `rusher`, `tackler`, `assistedBy` |
-| participants coverage | 84–91% of plays; the gap is timeouts, end-of-period, two-minute warnings and the coin toss, which is correct |
-| kicker/punter id on kicks | **98.4–100%**, against 98.7% here |
-| `gameInfo.venue.grass`, `address.zipCode`, `attendance` | all present |
-| extra points folded into touchdown text | same, so `emit_pat`'s whole architecture carries over |
+| the feed carries the same detail | **right.** Same two endpoints, same `type.id` space, same `participants[]` role vocabulary |
+| `build_scrimmage.py` needs no parser and ports nearly free | **right.** It needed a `league` column, four new play-type entries and one bug fix; 447,635 rows came across with no parsing at all |
+| `st_parser_cfb.py` does not port — 14.1% `exact` | **right, and it was the whole job.** `scripts/st_parser_nfl.py` is a new ~480-line module |
+| a fresh dialect module "should clear 98% more easily than college did" | **right.** 98.19% `exact`, against 98.04% for college on the same measure |
+| no era drift in the NFL dialect | **right.** 98.0–98.5% `exact` in every season from 2014 to 2025 |
+| 3,303 completed games, ~500–580k plays | **3,297 and 538,454.** The six-game gap is the Pro Bowl, which the scoping did not know about |
+| "`both_top_division` is meaningless, constant true" | right, and it had to be made *explicitly* true — left as the college expression it evaluated NULL, and any filter using it would have silently dropped the entire NFL corpus |
 
-**`build_scrimmage.py` is the windfall.** It needs no parser by design, and every structured
-field it reads is fully populated in the NFL feed — so ~85% of the rows come across for
-close to free. Even the derived-`play_kind` recovery survives: reading the snap back from
-the participant roles when ESPN's type names an outcome works identically, because the roles
-are named identically.
+**What the scoping missed entirely**, and both were found by measuring rather than by
+reading the plan:
 
-**Richer for the NFL than for college.** Kicks name the **long snapper and the holder**
-(`"Center-C.Gresham, Holder-J.Ryan"`), which the college feed never gives — snapper and
-holder identity would be new columns, not ported ones. Games carry `officials[]` (7 per
-game). Athlete records carry `dateOfBirth`, `debutYear`, height and weight, none of which
-`dim_athlete` has today.
+1. **`classify()` mis-fires on NFL text.** The college `TEXT_HINT` table matches nouns, and
+   NFL gamebook text opens with the *formation* — `(Punt formation)`, `(Kick formation)`.
+   Worst of all, `"kick for"` is a substring of `"(kick formation)"`, so **148 touchdowns
+   were classified as kickoffs** and pulled out of the scrimmage fact; 1,077 penalties on
+   kick downs and 235 fake punts went the same way. The NFL hints match the *verb* instead,
+   which is precise because the gamebook is machine-generated — and it rescued 65 real kicks
+   the noun hints had been missing. See `NFL_TEXT_HINT` in `scripts/build_table.py`.
+2. **The ids do not collide the way the scoping assumed.** It checked *game* ids (correctly:
+   zero overlap) and stopped there. Team ids collide outright, conference ids collide, and
+   venue and athlete ids are *deliberately shared*. Getting this wrong in either direction
+   is silent: a league-blind join to `dim_team` matches two rows per play and doubles the
+   table, and a league-*keyed* `dim_athlete` would have split 2,779 people in half.
 
-**The parser is the whole problem.** NFL play text is the official NFL gamebook rendering —
-a dialect unrelated to any that `st_parser.py` handles, and not the same thing as the NCAA
-gamebook dialect added on 2026-08-30 despite the shared name:
-
-```
-M.Bosher kicks 65 yards from ATL 35 to end zone, Touchback.
-(10:31) M.Koenen punts 44 yards to ATL 17, Center-A.DePaola. D.Hester to TB 35 for 48 yards
-(6:07) S.Hauschka 35 yard field goal is GOOD, Center-C.Gresham, Holder-J.Ryan.
-(:06) M.Bryant 59 yard field goal is No Good, Wide Left, Center-J.Harris, Holder-M.Bosher.
-```
-
-Running the existing parser over 566 kicks from 24 games spanning 2014/2019/2025:
-
-| kind | n | `exact` | `none` | `ambiguous` |
-|---|---|---|---|---|
-| kickoff | 246 | **0.4%** | 99.6% | — |
-| punt | 232 | 29.7% | 65.9% | 4.3% |
-| field_goal | 88 | 11.4% | 88.6% | — |
-| **all** | **566** | **14.1%** | 84.1% | 1.8% |
-
-Two things make that less bad than it reads. The gamebook is **machine-generated from
-official scoring, so it is more regular than any college dialect** — no `#NN` jersey
-prefixes, no `Last,First` rendering, and `Touchback`, `fair catch by`, `downed by`,
-`out of bounds`, `MUFFS catch` and `No Good, Wide Left` are literal and stable. And there is
-**no era drift**: sampling 10 games per season, the gamebook share holds at **84–100% across
-the entire 2014–2025 window**, which is the opposite of the college side, where the dialect
-arrived in 2021 and moved every year (see the 2026-08-30 changelog row). The residual is the
-scoring-summary form (`"Matt Bryant Made 40 Yrd Field Goal"`), which the existing ESPN
-patterns already partly match. A fresh dialect module should clear 98% more easily than
-college did.
-
-**What gets smaller.**
-
-| | college | NFL |
-|---|---|---|
-| completed games 2014–2026 | 10,470 | **3,303** (2026 had not kicked off as of 2026-09-09) |
-| estimated plays | 1,827,076 | **~500–580k** |
-| teams | 275 | 32 |
-| conferences | ~11, heavy realignment | 2 — AFC=`8`, NFC=`7` |
-| `dim_team_season` realignment risk | 83 of 275 teams moved | essentially nil; only relocations (Rams 2016, Chargers 2017, Raiders 2020) |
-| `fbs_vs_fbs` | meaningful, 5 code sites | meaningless, constant true |
-| `groups=80` | required | not applicable |
-| estimated Postgres / DuckDB | 1,327 MB / 251 MB | ~400 MB / ~75 MB |
-| full fetch | 10,470 summaries | ~30–45 min at 6 workers |
-
-The league string is a **one-line constant in exactly four files** — `fetch_espn.py`,
-`fetch_participants.py`, `fetch_athletes.py`, `build_dims.py`. `WEEKS` has to become
-season-dependent: 17 regular-season weeks through 2020, 18 from 2021, plus 5 postseason.
-
-**Effort, by component.**
-
-| component | work | est. |
-|---|---|---|
-| fetchers + dimensions | four constants, season-dependent weeks, drop `groups`, AFC/NFC | 1 d |
-| scrimmage fact | `build_scrimmage.py` near-unchanged; verify, audit the `other` bucket | 1 d |
-| **kick parser, NFL dialect** | new ~400–500 line module, three kick families | **4–6 d** |
-| PAT / two-point | new patterns for `extra point is GOOD`, `Made Ex. Pt`, `TWO-POINT CONVERSION ATTEMPT … ATTEMPT FAILS` | 1 d |
-| schema + loaders | `league` column on both facts and the dimensions; a `division_name` beside `division` (see below); assert `play_uid` uniqueness | 1–2 d |
-| snapshot + verify | reuse; drop `fbs_vs_fbs` | 1 d |
-| explorer league toggle | a `league.py` registry parallel to `lens.py` | 2–3 d |
-| answer-key validation | the reality-check tables this project holds itself to (PLAN.md) | 2 d |
-| | | **~12–16 d** |
-
-**Ship the scrimmage half first.** Because that fact needs no parser, there is a real
-milestone at **4–5 days** that puts NFL Offense and Defense on the explorer over ~450k plays
-with zero parser work, leaving Special teams for later. That maps onto `lens.py` as it
-already stands: the toggle offers the NFL with two of the three lenses live, which is a
-stated scope rather than a missing feature.
-
-**Three things to decide before writing any code.**
-
-1. **One snapshot or two.** `web/data.py`'s filter, sort and row-model layer is already
-   lens-blind — it interpolates a view name and never learns what is in it — so the cheapest
-   toggle is a `league` column on both facts, after which league behaves like any other
-   filter column and the toggle is a chip. The alternative is a second DuckDB file and a
-   swapped `ATTACH`. The column is the smaller diff; the second file keeps the two corpora
-   independently rebuildable.
-2. **`lens.py` hardcodes this corpus.** `PLAYER_HINT` and the phase comments carry literal
-   counts (`1,510,679 plays`, `98.7% of kicks`, `25+ plays`) and `PHASE_DEFAULT` encodes a
-   judgement about ~67k college extra points. Those scalars become per-league dicts. Small,
-   but it is the whole reason the toggle is 2–3 days and not one.
-3. **Assert that game ids do not collide, do not assume it.** A 547-game NFL sample showed
-   **zero overlap** with all 10,470 college ids, but the ranges interleave (college
-   400547640–401870790, NFL 400554214–401772954), so `play_uid` uniqueness across leagues is
-   a property to test in `verify.sql` rather than to trust. Carry a `league` column
-   regardless — it makes the constraint expressible.
-
-One semantic snag worth naming now: `dim_team_season.division` currently means `FBS | FCS`.
-For the NFL the natural content is `AFC East` and its seven siblings. Reusing the column
-overloads it across leagues; a separate `division_name` leaves `division` NULL for the NFL
-and keeps both meanings honest. `fact_game.conference_game` needs no change — same-conference
-means AFC-vs-AFC and is still meaningful.
+The Pro Bowl is the small one worth naming: ESPN files it as postseason week 4 and gives the
+two all-star squads team ids 31 and 32, which appear in 8 games each and nowhere else —
+34 distinct team ids against 32 franchises. They are rosters that do not exist, so
+`fetch_espn.py` drops those games at fetch time and `sql/verify.sql` asserts they are absent.
 
 ---
 
@@ -2126,7 +2213,7 @@ answer that did not look wrong.
    because a silent repair hides a real upstream bug. The explorer's decision not to strip
    `(09:34) #98` for display was vindicated within a day.
 6. **A new value's meaning goes in the parser docstring**, next to the rule that produces it.
-   `st_parser.py`'s header is the specification for what the flags mean; it is long on
+   `st_parser_cfb.py`'s header is the specification for what the flags mean; it is long on
    purpose.
 
 **On the pipeline**
@@ -2155,7 +2242,7 @@ answer that did not look wrong.
 13. **Neither app touches Postgres.** If a new surface needs a column, add it to
     `build_snapshot.py` and rebuild the snapshot — do not open a second connection.
 14. **Derived columns are computed once, in the snapshot.** `game_secs_remaining`,
-    `is_clutch`, `fg_dist_bucket`, `fbs_vs_fbs` are there so no two queries can disagree
+    `is_clutch`, `fg_dist_bucket`, `both_top_division` are there so no two queries can disagree
     about their definition.
 15. **Anything fitted goes on the whole corpus and excludes any in-progress season.** No
     model ships here today; this is the rule if one comes back. "Above expected" needs a

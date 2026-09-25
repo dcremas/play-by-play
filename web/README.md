@@ -1,4 +1,4 @@
-# CFB Play-by-Play · Instance Explorer
+# Play-by-Play · Instance Explorer
 
 A Dash application for reading the snapshot one **play at a time**: "show me the actual
 instances, by player and by team, and let me take them apart."
@@ -10,15 +10,45 @@ instances, by player and by team, and let me take them apart."
 It reads `data/out/pbp.duckdb` **read-only**, attached to an in-memory database, so it
 runs alongside any other reader of the snapshot without contending for the file.
 
-## The first choice is the side
+## Two choices: which league, then which side
 
-Every one of the corpus's 1,827,076 plays is reachable, through one of three **lenses**:
+The header carries **two** selectors, and they are independent axes rather than one combined
+list of six — every lens works in both leagues.
 
-| Lens | Reads | Rows | Subject of a row |
+| League | Kicks | Scrimmage | Games |
 |---|---|---|---|
-| **Offense** | `off_play` over `snap.scrimmage` | 1,510,679 | the team with the ball |
-| **Defense** | `def_play` over `snap.scrimmage` | 1,510,679 | the team facing it |
-| **Special teams** | `st_play` over `snap.play` | 316,397 | the kicking team |
+| **College** | 316,397 | 1,510,679 | 10,470 |
+| **NFL** | 90,819 | 447,635 | 3,297 |
+
+League comes first because it is the outer scope: changing it changes what every number on
+the page counts. It is cheap to implement — `league` is an ordinary column on both facts and
+`data.py`'s filter layer is column-driven — with one rule that is *not* optional:
+
+> **`where_from_filters` always emits a league predicate, and `ignore` cannot drop it.** A
+> chart that shows "the distribution of the thing you are filtering on" still means *within
+> one league*. A query that forgets the predicate silently answers a question about 2.37M
+> plays that was asked about 538k.
+
+What was not cheap is everything that was *scoped by lens alone* and now has to be scoped by
+both: every option list, the player picker's floor, and the profile routes. See
+`web/league.py`, which is `lens.py`'s sibling and holds the per-league scalars that used to
+be literals in `lens.py`'s prose — the leaderboard floors and the kicker-id coverage, which
+is 98.7% in one league and 99.9% in the other.
+
+**Team and athlete ids behave differently across leagues, and the UI has to respect that.**
+Team ids collide — `2` is Auburn *and* the Buffalo Bills — so every picker, every join and
+every profile URL is league-qualified (`/team/nfl/2`; the bare `/team/2` still resolves to
+college so older links keep working). Athlete ids do *not* collide; they are one id space,
+so a kicker who went pro is one person with two league-scoped profile pages that link to
+each other. Jason Sanders is `3124679` at New Mexico and at Miami.
+
+Within a league, every play is reachable through one of three **lenses**:
+
+| Lens | Reads | Subject of a row |
+|---|---|---|
+| **Offense** | `off_play` over `snap.scrimmage` | the team with the ball |
+| **Defense** | `def_play` over `snap.scrimmage` | the team facing it |
+| **Special teams** | `st_play` over `snap.play` | the kicking team |
 
 **Offense and defense are the same rows read from opposite ends, not two copies.** One
 row in `snap.scrimmage` is one row in each view: `team_id` is whoever the lens is about,
@@ -42,6 +72,14 @@ the kicks. Every filter that still means something keeps its value when the side
 Two do not and are cleared: the player picker (a quarterback is not a tackler) and any
 outcome the new vocabulary cannot produce (`Touchback` on offense).
 
+Switching **league** clears more, and for a sharper reason. The player picker empties because
+a college athlete id left selected after a switch to the NFL would *silently match that same
+man's professional plays* rather than nothing — the shared id space makes a stale filter look
+like a working one. The division chips empty because `FBS` is not a value the NFL column can
+hold, and a selection carried across would match nothing and read as an empty corpus rather
+than a stale filter. The FBS-vs-FBS switch is hidden outright in the NFL, where it cannot
+change the answer.
+
 ## Scope inside each lens
 
 **Special teams** covers all 316,397 kick rows. Field goals, punts and kickoffs are on by
@@ -51,6 +89,50 @@ two-point tries and the 75 defensive conversions. They are **off by default** be
 distance-based view. Both halves of the original exclusion are recorded in the project
 README's "Not built"; the identity half evaporated on 2026-08-31 when conversions started
 linking at 98.6%, and the one-distance half is why the chip starts off rather than absent.
+
+**Off by default is the only thing about them that is (2026-09-09).** Everything the other
+three phases have, the conversions have:
+
+| | what it is |
+|---|---|
+| measures | `pat_att`, `pat_made`, `pat_rate`, `pat_blocked`, `two_att`, `two_made`, `two_rate`, `def_conv` in `common.METRICS` / `DERIVED` |
+| leaderboards | an XP and two-point block on both the kickers and the teams grid. `Def conv` is on the **team** grid only — all 75 defensive conversions carry a NULL kicker id, so on a player it is zero on every row |
+| profile tab | a **Conversions** tab on `/player` and `/team`, over a per-season grid that keeps extra point and two-point apart and splits the two-point tries into pass and rush |
+| KPI tiles | `Extra points` and `XP make rate` on a player, `XP / 2pt rate` on a team |
+| charts | `Extra point rate by season` on the profile panel and `charts.conversion_by_type` beside it; `phase_detail` draws both rates by season in the explorer |
+
+**The two rates are never pooled.** An extra point converts at 97.4% and a two-point try at
+42.6%, so one rate over both moves with how often a team went for two and reads as kicking
+form. The trend line is the extra point alone for the same reason: the kicker takes one
+after every touchdown, and the two-point try is a coach's decision on a twentieth of the
+volume.
+
+**`Blocked` is an outcome on a conversion, as of 2026-09-09.** The view used to collapse
+all 531 blocked extra points into `Failed`; it now splits them the way a field goal is
+split, which takes the conversion palette to the field goals' validated blue / red / violet
+triple. No rate moved — a blocked PAT was already a failure and still is — and the detail
+drawer's `Blocked: yes` line, written for a value the view never produced, now fires.
+
+**`Down`, `Dist to go` and `Yards to goal` are NULL on a derived conversion.** They used to
+carry the touchdown's, because `emit_pat` copies the scoring play and does not null them:
+14,546 extra points read "3rd down". The view nulls them on the 71,330 derived rows and
+keeps them on the 130 conversions ESPN emits as their own play. The four columns that are
+NULL on *every* conversion — returner, return yards, blocker, returned-for-TD — are no
+longer offered under **Add columns** on this chip. The upstream fix is in the project
+README's Known limits section 12.
+
+**The player picker is not only kickers once the chip is on.** ESPN tags a two-point
+try `patPasser` / `patScorer`, so the athlete on the row is whoever threw or ran it, not
+the placekicker. Of the 3,578 names the picker can offer at its 3-kick floor, **254 reach
+this lens through a conversion and nothing else** — and they get a profile page like
+anyone else, with one Conversions tab and no others. `lens.player_hint()` says so under the
+picker.
+
+**An empty profile tab says which kind of empty it is.** The tabs are built from an
+athlete's whole career and the panels from the current filter, so any tab can come up empty
+— but the conversion chip is the one that starts off, so an unqualified "no conversions
+under these filters" would be the default state of every profile page. `common.empty_panel`
+distinguishes the chip being off from the entity genuinely having none.
 
 **Offense** names the passer on a pass or sack and the rusher on a run — 99.9% of those
 rows — with receivers as their own column and their own filter. The player filter matches
@@ -70,7 +152,7 @@ onto the play grid would multiply a play by its defenders.
 | Surface | Route | What it is |
 |---|---|---|
 | **Explorer** | `/` | One filter set, one lens, two or three grains. **Plays** is up to 1.5M rows on AG Grid's infinite row model. **Teams** is the same selection rolled up. **Kickers & punters** exists on the kicks lens only, because that is the only side with an honest player grain today. |
-| **Player** | `/player/<athlete_id>` | One page per athlete, with a section for each phase he actually kicks in. Kicking-side only. |
+| **Player** | `/player/<athlete_id>` | One page per athlete, with a section for each of the four kick phases he actually appears in. Kicking-side only. |
 | **Team** | `/team/<team_id>` | Decade roll-up on top, one row per season underneath, then who kicked, then every kick. Kicking-side only. |
 
 The two profile pages are **pinned to the kicks lens** whatever the header is set to
@@ -124,7 +206,7 @@ two phases.
 When this app was first built the warehouse could not express that: the outcome flags had no
 NULL state, so a kick whose ending the parser could not read was stored `false` on every one
 of them, and this view had to reconstruct the unreadable set by testing for all-false. As of
-2026-08-31 `st_parser.py` writes NULL on the five flags in exactly that case, so
+2026-08-31 `st_parser_cfb.py` writes NULL on the five flags in exactly that case, so
 `returned IS NULL` is the single-column test and the derivation here just reads it. It is
 worst in 2023–2025 — 29.6% of 2023 punts and 28.0% of its kickoffs — so rates from those
 seasons rest on a visibly smaller denominator.
@@ -227,6 +309,10 @@ modes:
   a polarity rather than an identity: blue (Made) ↔ red (Missed), violet (Blocked).
   Light CVD ΔE 21.6, dark 19.2. Green/red was tried first and rejected — it landed in
   the 6–8 CVD warn band, which is exactly the wrong place for made-vs-missed.
+- **Conversion outcomes** — the field-goal triple exactly: blue (Converted) ↔ red
+  (Failed), violet (Blocked). Not a sequence of its own and not a new validator run: the
+  same three hues in the same roles, because a conversion fails the two ways a placekick
+  fails. Blue/red only until 2026-09-09, when `Blocked` stopped being folded into `Failed`.
 - **Scrimmage outcomes** — the kick order above with the red pole appended: blue, orange,
   aqua, yellow, magenta, violet, **red**. Validated as its own sequence on 2026-09-09.
   Light: CVD ΔE 9.1 (protan, yellow/aqua), normal ΔE 19.6. Dark: CVD ΔE 8.4, normal ΔE
@@ -284,7 +370,7 @@ grew from 620px to 720px with the space. Two consequences to know:
   6. The kicks lens has five tiles since the Unknown-outcome one was dropped, and a
   six-column grid left the row stopping short with dead space on the right.
 
-Two implementation notes that cost real debugging time:
+Three implementation notes that cost real debugging time:
 
 - **dash-ag-grid bundles only the light `quartz` stylesheet.** Asking for
   `ag-theme-quartz-dark` silently leaves cell text near-black on a dark surface. Both
@@ -292,3 +378,35 @@ Two implementation notes that cost real debugging time:
 - **Never pass `None` to a Mantine colour prop.** Dash serialises it to `null`,
   `typeof null === "object"`, and Mantine's parser throws and takes the surrounding
   subtree down with it. Omit the prop instead.
+- **Plotly's `responsive` does not mean what it sounds like, and `assets/resize.js` is
+  what actually keeps a chart the size of its box.** Plotly measures its container when
+  it draws and re-measures on a **window resize event** and nothing else. Every way a
+  container changes size in this app is some other way, and each left a chart at a
+  width that was right when it was drawn:
+
+  | | measured before the fix |
+  |---|---|
+  | a chart drawn in an inactive tab panel or the collapsed *Shape of the current selection* accordion | host 0, so plotly fell back to its default **700** — opening the Punt tab spilled the chart 231px past a 469px panel |
+  | the explorer's chart row re-columning, three columns on one phase and two on several | hosts moved 296 ↔ 452 and both charts stayed at **296.3**: 156px wrong, in one direction as dead space and in the other as overflow |
+  | a new figure arriving | `Plotly.react` keeps the existing size, which is why the figure that arrives in the same callback as the re-layout does not rescue it |
+
+  A resize event fixes all three. **Wiring one to each Dash control that can cause them
+  does not** — the re-layout case has no control to hang it on, and the next tab set or
+  collapsible added to the app would be broken until someone remembered. So the asset
+  watches the boxes rather than the controls: one `ResizeObserver` over every
+  `.js-plotly-plot` (plotly sizes that div to 100% of its host, so its box tracks the
+  host's), calling `Plotly.Plots.resize` when the measured width no longer matches the
+  drawn one. A `MutationObserver` picks up graphs as callbacks create them, scanning
+  only the added subtrees — never the whole document, because the plays grid mutates
+  constantly while it scrolls.
+
+  Two guards are load-bearing: a zero width is skipped, because a hidden panel has
+  nothing to measure and comes straight back when it is shown; and a graph already at
+  the right size is skipped, which is what stops a resize from feeding itself. Verified
+  with no `ResizeObserver loop` warning in the console.
+
+  **Testing this needs the tab in the foreground.** `ResizeObserver` and
+  `requestAnimationFrame` callbacks are part of the rendering steps, so in a
+  background tab neither fires and every chart measures stale — which looks exactly
+  like the bug. A hidden tab reports `document.visibilityState === "hidden"` and zero
+  animation frames; check that before believing a measurement.

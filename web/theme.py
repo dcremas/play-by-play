@@ -19,8 +19,12 @@ renders on, in both modes:
                  sequence already carries, so this adds no new risk. Seven was the
                  ceiling: every ordering that also used green failed, and red beside
                  magenta failed the normal-vision floor at dE 7.8 in dark mode.
-  conversions    blue(converted) red(failed) -- the same polarity pair as the field
-                 goals, for the same reason
+  conversions    blue(converted) red(failed) violet(blocked) -- not a sequence of its
+                 own. These are the SAME three hues in the same roles as the field
+                 goals above, so that run covers them and no new one was needed. A
+                 conversion fails the two ways a placekick fails, which is why the
+                 polarity pair and the third slot carry over unchanged. Blue/red only
+                 until 2026-09-09, when Blocked stopped folding into Failed
 
 Two obligations follow from those runs and are honoured in the charts:
   * the light-mode contrast WARN triggers the relief rule -> stacked segments carry
@@ -75,13 +79,13 @@ SEQ_BLUE = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
 KICK_OUTCOMES = ["Touchback", "Fair catch", "Out of bounds", "Downed", "Returned",
                  "Onside", "Blocked", "Unknown"]
 FG_OUTCOMES = ["Made", "Missed", "Blocked", "Negated"]
-CONV_OUTCOMES = ["Converted", "Failed", "Unknown"]
+CONV_OUTCOMES = ["Converted", "Failed", "Blocked", "Unknown"]
 
 _KICK_HUE = {"Touchback": "blue", "Fair catch": "orange", "Out of bounds": "aqua",
              "Downed": "yellow", "Returned": "magenta", "Onside": "violet",
              "Blocked": "violet"}
 _FG_HUE = {"Made": "blue", "Missed": "red", "Blocked": "violet"}
-_CONV_HUE = {"Converted": "blue", "Failed": "red"}
+_CONV_HUE = {"Converted": "blue", "Failed": "red", "Blocked": "violet"}
 
 # `Onside` and `Blocked` share violet. They can never appear in one chart: kickoffs
 # carry a NULL `kick_blocked` on every row and punts can never be onside.

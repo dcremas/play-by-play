@@ -27,13 +27,20 @@ staging table.
 
     python build_table.py                              every season -> data/out/st_plays.csv
     python build_table.py --seasons 2026 --out x.csv   one season, for the in-season update
-"""
-import sys, os, gzip, json, csv, collections
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from st_parser import parse_field_goal, parse_punt, parse_kickoff, parse_pat
+    python build_table.py --league nfl                 the NFL -> data/out/st_plays_nfl.csv
 
-HOME = os.path.expanduser("~/projects/cfb-pbp")
-ESPN, OUT = f"{HOME}/data/espn", f"{HOME}/data/out"
+The league changes two things and nothing else: which raw directory is read, and which kick
+dialect parses the play text. See PARSER_BY_LEAGUE below and scripts/st_parser_nfl.py.
+"""
+import sys, os, re, gzip, json, csv, collections
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import league as lg
+from st_parser_cfb import parse_field_goal, parse_punt, parse_kickoff, parse_pat
+from st_parser_nfl import NFL_PARSER, parse_nfl_pat
+
+HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LEAGUE = lg.CFB
+ESPN, OUT = lg.data_dir(LEAGUE), f"{HOME}/data/out"
 SEASONS = [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
 KIND_BY_TYPE = {
@@ -49,16 +56,78 @@ KIND_BY_TYPE = {
 TEXT_HINT = [("punt", "punt"), ("kickoff", "kickoff"), ("kick for", "kickoff"),
              ("onside kick", "kickoff"), ("on-side kick", "kickoff"),
              ("field goal", "field_goal"), (" fg ", "field_goal")]
-PARSER = {"punt": parse_punt, "kickoff": parse_kickoff, "field_goal": parse_field_goal}
 
-COLUMNS = ["play_uid", "source", "game_id", "season", "week", "season_type", "play_kind",
+# The NFL needs its own hints, and substring-on-a-noun is the reason why.
+#
+# NFL gamebook text opens with the FORMATION -- '(Punt formation)', '(Field Goal formation)',
+# '(Kick formation)' -- which names how the team lined up, not what the play was. Run the
+# college hints over it and three separate things go wrong, measured over all 3,297 games:
+#
+#   148 TOUCHDOWNS become kickoffs.  '(Kick formation)' lowercases to '(kick formation)',
+#       which CONTAINS the substring 'kick for'. Every touchdown whose folded-in PAT text
+#       mentions the kick formation was pulled out of the scrimmage fact and written to the
+#       kicks fact as a kickoff.
+#   1,077 penalties on a kick down become kicks. '(Punt formation) PENALTY ... - No Play'
+#       has the word 'punt' in it and no punt in it.
+#   235 FAKES become kicks. '(Punt formation) T.Way pass deep middle to B.Sinnott' is a
+#       pass, and belongs in the scrimmage fact with the other passes.
+#
+# So the NFL hints match the VERB rather than the noun: a punt is a play where somebody
+# punts. The gamebook states the action literally and machine-generates it, so this is
+# precise in a way the college hints cannot be. It also RESCUES 65 real kicks the noun
+# hints missed -- kicks typed 'Penalty' or 'Fumble Recovery' whose text does say 'kicks'.
+#
+# Consequence worth stating: a '(Punt formation) PENALTY ... - No Play' row lands in
+# pbp.scrimmage_play typed 'penalty' for the NFL, where its college equivalent lands in
+# pbp.special_teams_play. The two leagues disagree here because the feeds do; play_type_espn
+# keeps the raw label on both sides so either choice is recoverable.
+NFL_TEXT_HINT = [
+    (re.compile(r"\bpunts?\s+(?:-?\d+\s+(?:yards?|Yrds?)|is\s+BLOCKED)", re.I), "punt"),
+    (re.compile(r"\bMUFFS\s+punt|\bmuffed\s+punt|\bpunt\s+for\s+\d+", re.I), "punt"),
+    (re.compile(r"\bkicks\s+(?:onside\s+)?-?\d+\s+yards?\s+from", re.I), "kickoff"),
+    (re.compile(r"\bkickoff\s+for\s+\d+|\bonside\s+kick\b", re.I), "kickoff"),
+    (re.compile(r"\d+\s+(?:yard|yd|yrd)s?\s+field\s+goal\b", re.I), "field_goal"),
+    (re.compile(r"\bfield\s+goal\s+is\s+(?:GOOD|No\s+Good|BLOCKED|Aborted)", re.I),
+     "field_goal"),
+    (re.compile(r"\d+\s+yds?\s+FG\b", re.I), "field_goal"),
+]
+HINTS_BY_LEAGUE = {lg.CFB: TEXT_HINT, lg.NFL: NFL_TEXT_HINT}
+# The one component that does NOT port between leagues. NFL play text is the official NFL
+# gamebook rendering -- "M.Bosher kicks 65 yards from ATL 35 to end zone, Touchback." --
+# which is a dialect st_parser_cfb.py has never seen: running it over 566 NFL kicks scored 14.1%
+# `exact` against 98.51% on college. scripts/st_parser_nfl.py is the NFL dialect; everything
+# else in this file is shared.
+PARSER_BY_LEAGUE = {
+    lg.CFB: {"punt": parse_punt, "kickoff": parse_kickoff, "field_goal": parse_field_goal},
+    lg.NFL: NFL_PARSER,
+}
+PAT_PARSER_BY_LEAGUE = {lg.CFB: parse_pat, lg.NFL: parse_nfl_pat}
+PARSER = PARSER_BY_LEAGUE[LEAGUE]
+PAT = PAT_PARSER_BY_LEAGUE[LEAGUE]
+
+
+def use(name):
+    """Point the module at one league: its raw directory and its kick-text dialect."""
+    global LEAGUE, ESPN, PARSER, PAT
+    LEAGUE = name
+    ESPN = lg.data_dir(name)
+    PARSER = PARSER_BY_LEAGUE[name]
+    PAT = PAT_PARSER_BY_LEAGUE[name]
+
+
+COLUMNS = ["play_uid", "league", "source", "game_id", "season", "week", "season_type", "play_kind",
            "period", "clock_secs_period", "wallclock_utc", "down", "distance",
            "yards_to_goal", "kicking_team_id", "receiving_team_id", "is_home_kicking",
            "score_diff_kicking", "fg_distance_yds", "fg_made", "punt_gross_yds",
            "punt_net_yds", "kickoff_yds", "return_yds", "returned", "touchback", "onside",
            "fair_catch", "downed", "out_of_bounds", "kick_blocked", "returned_for_td",
            "converted", "two_point_type", "miss_reason", "negated_by_penalty",
-           "kicker_name", "returner_name", "blocker_name", "play_text", "parse_confidence"]
+           "kicker_name", "returner_name", "blocker_name",
+           # The NFL gamebook names the long snapper on every kick and the holder on every
+           # place kick; the college feed names neither, so these stay NULL for every
+           # college row. Added 2026-09-11 with the NFL -- see scripts/st_parser_nfl.py.
+           "snapper_name", "holder_name",
+           "play_text", "parse_confidence"]
 
 
 def same_team(a, b):
@@ -133,12 +202,28 @@ def advance_score(prev_home, prev_away, hs, aw):
     return nh, na, nh - prev_home, na - prev_away
 
 
-def classify(play_type, text):
+def classify(play_type, text, league=None):
+    """Which kick family this play belongs to, or None if it is not a kick.
+
+    THE definition of the boundary between the two fact tables: build_scrimmage.py calls
+    this function rather than re-listing its rules, so a play claimed here is excluded
+    there and the two facts stay disjoint by construction.
+
+    `league` defaults to whatever the module is currently pointed at, so every existing
+    caller keeps its meaning; build_scrimmage.py passes it explicitly because it runs in a
+    worker process that never saw use().
+    """
     k = KIND_BY_TYPE.get(play_type)
     if k:
         return k
+    hints = HINTS_BY_LEAGUE[league or LEAGUE]
+    if hints is NFL_TEXT_HINT:
+        for rx, kind in hints:
+            if rx.search(text or ""):
+                return kind
+        return None
     lo = (text or "").lower()
-    for needle, kind in TEXT_HINT:
+    for needle, kind in hints:
         if needle in lo:
             return kind
     return None
@@ -159,7 +244,7 @@ def finish(row, kind, text, parsed):
 
 
 def emit_pat(base, uid, text, scoring_team, after_home=None, after_away=None):
-    p = parse_pat(text)
+    p = PAT(text)
     if not p:
         return None
     r = dict(base)
@@ -169,6 +254,10 @@ def emit_pat(base, uid, text, scoring_team, after_home=None, after_away=None):
     r["two_point_type"] = p.get("two_point_type")
     r["kick_blocked"] = p.get("kick_blocked")
     r["kicker_name"] = p.get("kicker_name")
+    # NFL only: the conversion clause names the long snapper and the holder. parse_pat (the
+    # college dialect) returns neither key, so this is None there by construction.
+    r["snapper_name"] = p.get("snapper_name")
+    r["holder_name"] = p.get("holder_name")
     r["parse_confidence"] = p.get("parse_confidence")
     r["play_text"] = text
     # A conversion belongs to the team that just scored, which is read off the scoreboard:
@@ -274,7 +363,9 @@ def main(path=None, seasons=None):
     seasons = seasons or SEASONS
     stats = collections.Counter()
     seen = set()
-    path = path or f"{OUT}/st_plays.csv"
+    # Per-league default so an NFL run cannot silently overwrite the college extract.
+    path = path or (f"{OUT}/st_plays.csv" if LEAGUE == lg.CFB
+                    else f"{OUT}/st_plays_{LEAGUE}.csv")
 
     with open(path, "w", newline="") as fh:
         wr = csv.DictWriter(fh, fieldnames=COLUMNS, extrasaction="ignore")
@@ -339,6 +430,7 @@ def main(path=None, seasons=None):
                         seq = p.get("sequenceNumber") or p.get("id")
                         uid = f"espn:{gid}:{seq}"
                         base = {**blank(),
+                                "league": LEAGUE,
                                 "source": "espn", "game_id": gid, "season": season,
                                 "week": g["week"],
                                 "season_type": "postseason" if g["season_type"] == 3 else "regular",
@@ -402,5 +494,6 @@ if __name__ == "__main__":
     # `--out somewhere.csv` writes elsewhere, so a change can be diffed against the live
     # extract before anything goes near Postgres.
     a = sys.argv[1:]
+    use(lg.from_argv(a))
     main(a[a.index("--out") + 1] if "--out" in a else None,
          [int(x) for x in a[a.index("--seasons") + 1].split(",")] if "--seasons" in a else None)

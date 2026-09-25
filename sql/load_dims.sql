@@ -6,12 +6,43 @@
 -- fact_game_venue_id_fkey rejects the whole batch.
 --
 -- Usage (from the repository root, so the relative CSV paths resolve):
---     psql -d cfb -f sql/load_dims.sql
+--     psql -d pbp -f sql/load_dims.sql
 --
 -- All five are full replacements, not merges. They are small -- 200 venues, 246 teams,
 -- 3.4k team-seasons, 10.4k games -- and build_dims.py always writes the entire window, so a
 -- wholesale swap cannot leave a stale row behind. pbp.special_teams_play has no foreign key
 -- to any of them, so nothing here cascades into the fact table.
+
+
+-- ---------------------------------------------------------------------------------------
+-- SUPERSEDED 2026-09-11, and it REFUSES TO RUN once a second league is loaded.
+--
+-- This script is single-league by construction: it TRUNCATEs (or deletes without a league
+-- predicate), which was exactly right when the warehouse held one corpus and is destructive
+-- now that it holds two -- running it would delete the NFL to make room for college, or the
+-- reverse, and report success.
+--
+-- Use sql/load_league.sql instead:
+--     psql -d pbp -v league=nfl -f sql/load_league.sql               a whole league
+--     psql -d pbp -v league=nfl -v season=2026 -f sql/load_league.sql  one season of it
+--
+-- Kept rather than deleted because the comments in it explain decisions the replacement
+-- inherited. The guard below is what makes keeping it safe -- but a RAISE only stops psql
+-- when ON_ERROR_STOP is set, and several of these files never set it. Without the line
+-- below the exception is printed and the very next statement TRUNCATEs anyway, which is
+-- not a hypothetical: it is how this guard was found to be insufficient.
+\set ON_ERROR_STOP on
+DO $guard$
+BEGIN
+  IF (SELECT count(DISTINCT league) FROM pbp.special_teams_play) > 1
+     OR (SELECT count(DISTINCT league) FROM pbp.scrimmage_play) > 1 THEN
+    RAISE EXCEPTION
+      'This is a single-league loader and the warehouse holds more than one league. '
+      'It would delete the other one. Use sql/load_league.sql -v league=<cfb|nfl>.';
+  END IF;
+END
+$guard$;
+-- ---------------------------------------------------------------------------------------
 
 \set ON_ERROR_STOP on
 BEGIN;
@@ -26,7 +57,7 @@ DELETE FROM pbp.dim_team;
 \copy pbp.dim_venue       (venue_id, venue_name, city, state, zip, country, surface, indoor) FROM 'data/out/dim_venue.csv' WITH (FORMAT csv, HEADER true)
 \copy pbp.dim_team        (team_id, display_name) FROM 'data/out/dim_team.csv' WITH (FORMAT csv, HEADER true)
 \copy pbp.dim_conference  (conference_id, conference_name, short_name) FROM 'data/out/dim_conference.csv' WITH (FORMAT csv, HEADER true)
-\copy pbp.dim_team_season (team_id, season, conference_id, conference_name, division) FROM 'data/out/dim_team_season.csv' WITH (FORMAT csv, HEADER true)
+\copy pbp.dim_team_season (team_id, season, conference_id, conference_name, ncaa_division) FROM 'data/out/dim_team_season.csv' WITH (FORMAT csv, HEADER true)
 \copy pbp.fact_game       (game_id, season, week, season_type, kickoff_utc, home_team_id, away_team_id, venue_id, attendance, neutral_site, conference_game) FROM 'data/out/fact_game.csv' WITH (FORMAT csv, HEADER true)
 
 COMMIT;
@@ -54,5 +85,5 @@ FROM pbp.dim_venue;
 \echo '=== games and FBS team-seasons by season (a new season should appear in both)'
 SELECT g.season, count(*) AS games,
        (SELECT count(*) FROM pbp.dim_team_season ts
-         WHERE ts.season = g.season AND ts.division = 'FBS') AS fbs_teams
+         WHERE ts.season = g.season AND ts.ncaa_division = 'FBS') AS fbs_teams
 FROM pbp.fact_game g GROUP BY g.season ORDER BY g.season;
