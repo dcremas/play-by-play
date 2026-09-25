@@ -1,0 +1,9 @@
+mcp[cli]>=1.2
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+
+# run_sql's guard: parses model-generated SQL to prove it is a single read-only
+# statement before it reaches the planner. Not optional -- run_sql refuses to
+# execute anything at all if sqlglot is missing, rather than falling back to a
+# regex, which is how SQL guards get bypassed.
+sqlglot>=25

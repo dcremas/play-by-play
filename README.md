@@ -40,11 +40,11 @@ implementation notes) are kept, but nothing here depends on them.
 | **Grain** | one row per play, per league. Kicks: `kickoff` \| `punt` \| `field_goal` \| `pat` \| `two_point` \| `defensive_conversion`. Scrimmage: `rush` \| `pass` \| `sack` \| `penalty` \| `other` |
 | **Window** | 2014–2026 in both leagues. 2026 is in progress in both and flagged as such |
 | **Source** | ESPN site API (play text, venue) + ESPN core API (per-play athlete ids, athlete identity), under `college-football` and `nfl`. No API key, no other feed |
-| **Warehouse** | PostgreSQL 18.6, database `pbp`, schema `pbp`, 11 tables |
+| **Warehouse** | PostgreSQL 18.6, database `pbp`, schema `pbp`, 11 tables. Mirrored to PostgreSQL 16.15 on the EC2 box ([runbook H](#h-push-the-warehouse-to-the-ec2-mirror)), where three derived serving tables bring it to 14 |
 | **Read path** | `data/out/pbp.duckdb` — wide `play` and `scrimmage` tables plus `drive`, 373 MB, rebuilt from Postgres in one command |
 | **Parse quality** | kicks: **98.04% `exact` college, 98.19% NFL**. Two different dialects, two parser modules. Scrimmage needs no parser in either league — `statYardage` and `down` are structured fields at 100% coverage |
 | **People** | one shared `dim_athlete` of 66,426 athletes, 100% named and positioned from ESPN; 32,582 appear in both facts and 2,779 in both leagues. 98.7% of college kicks and 99.9% of NFL kicks carry a kicker id |
-| **Apps** | Dash instance explorer (all 2.37M plays, through a League toggle and an Offense / Defense / Special teams lens) · Excel reports (kicks) · one-page ERD (both facts) |
+| **Apps** | Dash instance explorer (all 2.37M plays, through a League toggle and an Offense / Defense / Special teams lens) · Excel reports (kicks) · one-page ERD (both facts) · a 25-tool read-only MCP server over the EC2 mirror |
 
 Does it behave like football? These come out of the data, not out of a reference book, and
 the two leagues are checked separately because they are different sports at the margin:
@@ -86,7 +86,7 @@ reversed would produce the touchdown curve backwards in both.
 - [Known limits](#known-limits) — read this before quoting a number
 - [The pipeline](#the-pipeline) — the DAG, what owns what
 - [Runbooks](#runbooks) — the nine procedures, and which loader is right when
-- [The applications](#the-applications) — explorer, reports, ERD
+- [The applications](#the-applications) — explorer, reports, ERD, the MCP server
 - [Query recipes](#query-recipes)
 - [Changelog](#changelog) — every material fix, dated
 - [Not built](#not-built) — what was decided against or deferred, and what it would take
@@ -122,6 +122,8 @@ pbp/
 │   ├── build_dims.py          conf | venue | athlete       -> the dimension CSVs
 │   ├── build_snapshot.py      Postgres                     -> data/out/pbp.duckdb
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
+│   ├── sync_ec2.py            local Postgres -> the EC2 mirror, then the serving
+│   │                          layer, the grants and the comments. Runbook H.
 │   └── build_erd.py           live Postgres                -> reports/pbp_erd.pdf (2 sheets)
 │
 ├── sql/               DDL and loaders
@@ -133,6 +135,10 @@ pbp/
 │   │                                               -v season=. Dims + both facts + bridge
 │   │                                               + drives + enrichment, one transaction
 │   ├── load_athletes_league.sql                  ★ the shared dimension + both bridges
+│   ├── wide_tables.sql                           the EC2 serving layer: play_wide,
+│   │                                             scrimmage_wide, season_status. The
+│   │                                             Postgres twins of the DuckDB snapshot's
+│   │                                             tables -- change one, change the other
 │   ├── reparse.sql                               re-derive parser columns in place
 │   ├── enrich_game_context.sql                   standalone form of what load_league does
 │   ├── verify.sql  verify_phase4.sql             assertion suites (incl. cross-league)
@@ -143,6 +149,7 @@ pbp/
 │
 ├── web/               Dash instance explorer — every play, three lenses
 ├── reports/           formatted Excel workbooks + the ERD output
+├── mcp_server/        read-only MCP over the EC2 mirror — 25 tools, its own README
 │
 └── data/              ~1.2 GB, all of it re-derivable from ESPN
     ├── espn/                            COLLEGE. The NFL is data/espn_nfl/, same shape,
@@ -188,11 +195,12 @@ explorer's header shows how old the snapshot is.
 
 | | |
 |---|---|
-| **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts in BOTH leagues; both applications, with a league toggle; the weekly in-season update per league; the ERD |
+| **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts in BOTH leagues; both applications, with a league toggle; the weekly in-season update per league; the ERD; the EC2 mirror and the MCP server over it |
+| **Where the data lives** | **local Postgres is the system of record.** `data/out/pbp.duckdb` is the local read path for both apps; the EC2 box carries a full mirror, refreshed by [runbook H](#h-push-the-warehouse-to-the-ec2-mirror), which is what `mcp_server/` reads. Three copies, one direction of travel |
 | **In progress right now** | the 2026 season in both leagues — 99 college games and 2 NFL. `scripts/update_season.py 2026 [--league nfl]` pulls both facts forward, one league per run |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
-| **Open follow-ups** | A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
+| **Open follow-ups** | The EC2 mirror is refreshed by hand — `update_season.py` does not call `sync_ec2.py`, so the weekly run leaves the mirror a week stale until someone pushes it; A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 
@@ -1588,6 +1596,54 @@ confidence, athlete coverage on the right denominators, the team-only versus tea
 conference comparison run side by side, field goals by surface (empty if the enrichment was
 skipped), and four referential-integrity counts.
 
+### H. Push the warehouse to the EC2 mirror
+
+Local Postgres stays the system of record. The EC2 box carries a **mirror** of it, so the
+MCP server — and anything else without a tunnel to this laptop — can read the same corpus.
+
+```bash
+.venv/bin/python scripts/sync_ec2.py                  # both leagues, whole window (~1 hour)
+.venv/bin/python scripts/sync_ec2.py --season 2026    # the weekly push, after runbook A
+.venv/bin/python scripts/sync_ec2.py --league nfl     # one league
+.venv/bin/python scripts/sync_ec2.py --dry-run        # print the plan, change nothing
+```
+
+It stages the CSV extracts on the box, replays `load_league.sql` and
+`load_athletes_league.sql` there, rebuilds `sql/wide_tables.sql`, re-applies the grants and
+the comments, and finishes by **reconciling every table's row count against local Postgres
+and failing if any differ**. That last step is the one that makes it a mirror rather than an
+approximation — everything before it can succeed and still leave a silent shortfall.
+
+Four things about it are worth knowing before the first run:
+
+1. **It syncs the extracts, not Postgres.** Local runs PostgreSQL 18 and the box runs 16, so
+   a `pg_dump` from here cannot be restored there — dumping a newer server and restoring
+   into an older one is the unsupported direction. Replaying the same CSVs the local load
+   read reproduces the tables rather than approximating them. **So run the local pipeline
+   first and confirm it; if `data/out/` is stale, this faithfully mirrors stale data.**
+
+2. **The load runs on the box, not through the tunnel**, because `load_league.sql` uses
+   server-side `COPY ... FROM '<path>'`. No loader needed changing — they already take
+   `-v root=`. The staging directory is `/var/lib/pgsql/staging`, on the Postgres EBS volume
+   rather than the root volume, which only has ~8 GB free.
+
+3. **A full run takes about an hour**, nearly all of it in the closing enrichment `UPDATE`
+   on `scrimmage_play` — 1.5M rows against ten indexes on 2 vCPU. A `--season` run is quick.
+
+4. **`wide_tables.sql` DROPs the three serving tables**, and privileges and comments go with
+   a dropped table. `sync_ec2.py` re-runs `setup_role_pbp.sql` and `comment_tables.sql`
+   immediately afterwards for exactly that reason. Reorder those steps and the next sync
+   silently revokes the MCP server's access to the tables it depends on most.
+
+The schema itself was applied once, from `pg_dump --schema-only` with the single PG17+ line
+(`SET transaction_timeout`) stripped. Nothing else in the DDL was version-sensitive.
+
+Verify the mirror end to end:
+
+```bash
+cd mcp_server && ./.venv/bin/python -m pbp_mcp.selftest
+```
+
 ### Rollback points currently in Postgres
 
 **None.** The four the 2026-09-08 expansion created — `dim_athlete_prestage3`,
@@ -1814,6 +1870,41 @@ no derivable margin — **6.4% in 2021** and 4.8% in 2022, under 1% in most seas
 rate is the metric to quote**; `team_record.missing` is exposed so a caller can restrict to
 complete schedules. 1,240 of 1,513 team-seasons are complete.
 
+### `mcp_server/` — read-only MCP over the EC2 mirror
+
+**Twenty-five tools against `pbp` on the EC2 box**, so the corpus is reachable from Claude
+Desktop, claude.ai and mobile rather than only from this laptop. It has its own README
+(`mcp_server/README.md`); what matters here is why it is shaped the way it is.
+
+It is a close adaptation of `ec2-nginx/weather-sql-explorer/mcp_server`, which has run
+against the same Postgres instance since 2026-08-20 — same `mcp_ro` role, same four-layer
+read-only model, same `sqlglot` guard over the one SQL passthrough. Reusing that rather than
+inventing was deliberate: the security model there had already been thought through and
+tested, and a second half-considered version of it would be strictly worse.
+
+**The tools encode the traps.** That is the part specific to this warehouse and the reason
+the surface is twenty-five tools rather than just `run_sql`:
+
+- Every tool reads `pbp.play_wide` / `pbp.scrimmage_wide`, where the `(team_id, season)`
+  conference join is already resolved. A caller cannot make the 2018 Pac-12 mistake.
+- No tool coalesces a NULL flag. `fg_by_distance` and `leaderboard` exclude
+  `fg_made IS NULL` from the denominator; `kick_outcomes` returns `pct_unstated` beside every
+  rate, so the 9.9% of kicks with no stated outcome are visible rather than silently
+  averaged in.
+- `leaderboard` takes a `min_attempts` and defaults it to 20, because an unqualified rate
+  leaderboard is the fastest way to a confidently wrong answer here.
+- Everything player-grain groups by `athlete_id`, never by name.
+- `known_limits()` returns [Known limits](#known-limits) as structured rows, and the NULL
+  semantics are stored as Postgres `COMMENT`s (`mcp_server/comment_tables.sql`) so
+  `describe_table` returns them at the moment a caller is deciding what to write. A prompt
+  carrying the same text would drift from the schema and nothing would catch it.
+
+**The selftest asserts the football, not just the plumbing** — the monotonic field-goal
+curve in both leagues, NFL yards-per-carry *below* college, the 2018 college touchback step
+and the NFL's two-stage 2024/2025 collapse. Those are the cheapest available proof that a
+mirror load landed correctly, and they are the same properties the [opening](#play-by-play--college-football-and-the-nfl)
+uses to argue the corpus behaves like football.
+
 ### The ERD
 
 **Two sheets since 2026-09-08, one per fact family.** Eleven tables and two forty-column
@@ -2000,15 +2091,18 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-11 | **One loader replaced five** | the in-season scripts `TRUNCATE`, which was right for one corpus and would now delete the other league to make room | `sql/load_league.sql` is scoped to `(league, season)` and folds the game-context enrichment into the same transaction, so it can no longer be forgotten. Proven by reloading the **college** corpus through it end to end: identical counts, NFL untouched |
 | 2026-09-11 | **The NFL workbook said FBS** | `reports/fg_by_distance.py` was scoped by league in its **queries** from the start but not in its **prose**, so `fg_by_distance_nfl.xlsx` was titled "FBS field goals by distance" over NFL kicks and reported "1,019 FBS attempts" per season | a `TIER` term per league drives every heading and note, and the non-FBS exclusion paragraph is replaced for the NFL by one saying there is no second division to exclude. Found by reading the generated workbook, not the code |
 | 2026-09-11 | **A shadowed name in the same file** | `build()` took the corpus as a parameter named `league` and then rebound it to `rollup()`'s all-teams dict. It worked only because the query ran before the rebind | the dict is `all_teams`; `league` means the corpus and nothing else |
+| 2026-09-25 | **The warehouse mirrored to EC2, and an MCP server over it** | the corpus existed only on this laptop, so nothing without a tunnel to it could read the data — Claude Desktop, claude.ai and mobile included. Phase 6 had been costed as "a small job" on the strength of the weather-warehouse pattern porting, which was true of the server and ignored the mirroring | `pbp` on the EC2 box: 11 tables loaded through the existing loaders, plus `play_wide`, `scrimmage_wide` and `season_status` as a materialised serving layer. `scripts/sync_ec2.py` is the refresh path and **reconciles every row count against local, failing on any difference**. `mcp_server/` is 25 read-only tools over it |
+| 2026-09-25 | **PG18 → PG16 is the unsupported direction** | the first plan was `pg_dump` from local to the box. Local runs PostgreSQL 18.6 and the box 16.15, and dumping a newer server to restore into an older one is not supported. Only the schema turned out to be portable, and only after one line | the data path replays the CSV extracts through `load_league.sql` on the box instead — no version skew, and it reuses code `verify.sql` already trusts. The schema went across as `pg_dump --schema-only` with `SET transaction_timeout` (PG17+) stripped; nothing else in the DDL was version-sensitive |
+| 2026-09-25 | **`\copy` cannot load a remote target, and `load_league.sql` already knew** | converting the loaders' server-side `COPY` to `\copy` looked like the obvious way to load across the tunnel. psql's `\copy` does **not** interpolate `:'variables'` — it takes `:'st_csv'` as a literal filename and loads **zero rows without erroring**, which for a loader is the worst possible failure. Confirmed empirically, then found already written in the loader's own header | no loader changed. The CSVs are staged on the box and `-v root=` — which every loader already took — points them there. The lesson is the cheaper one: the header was right, and reading it first would have saved the experiment |
 
 ---
 
 ## Not built
 
-Four things are deliberately absent, plus one that was built. None is blocked; each is a
+Three things are deliberately absent, plus two that were built. None is blocked; each is a
 fresh decision rather than a re-derivation, and what each would need is written down so
-picking it up does not start from scratch. The NFL section is kept below as a record of an
-estimate against its outcome.
+picking it up does not start from scratch. The NFL and MCP sections are kept below as
+records of an estimate against its outcome.
 
 ### Weather — tabled, but both halves of the join key already exist
 
@@ -2140,12 +2234,36 @@ Both are the user's words and both are currently unstarted:
    Carrying no models at all is what lets every number on the explorer's pages trace
    directly to a column, with nothing to calibrate or defend.
 
-### An MCP server
+### ~~An MCP server~~ — built 2026-09-25, with the warehouse mirrored to EC2
 
-The original Phase 6 was a read-only MCP server over the schema, or a browsable view over
-it. The view half was built and has since been retired; the MCP server was never started.
-The pattern is already proven elsewhere on this machine against a different warehouse, so
-this is a small job whenever it is wanted.
+**Kept as a record of an estimate against its outcome.** The original Phase 6 was a
+read-only MCP server over the schema. This section used to end "the pattern is already
+proven elsewhere on this machine against a different warehouse, so this is a small job
+whenever it is wanted."
+
+That was right about the pattern and wrong about the size, because it costed only half the
+job. The MCP server *was* small — `mcp_server/` is a close adaptation of
+`ec2-nginx/weather-sql-explorer/mcp_server`, with the same four-layer read-only model, the
+same `sqlglot` guard and the same "caveats live in the database as `COMMENT`s, not in a
+prompt" discipline. What the estimate missed is that **the warehouse was on this laptop and
+the MCP had to read it from anywhere**, which meant mirroring 4.5 GB to the EC2 box first.
+That half was the work. See [Runbook H](#h-push-the-warehouse-to-the-ec2-mirror) and
+`mcp_server/README.md`.
+
+| predicted | actual |
+|---|---|
+| the weather-warehouse pattern ports | **right**, almost verbatim — `db.py`, `guard.py` and the four-layer security model needed only the table allow-list changed |
+| "a small job" | **right for the server, wrong for the job.** The server is ~1,900 lines; getting the data reachable was the larger half |
+| *(not considered)* | **local runs PostgreSQL 18, the EC2 box runs 16.** `pg_dump` from here cannot be restored there — that is the unsupported direction. Mirroring replays the CSV extracts through the existing loaders instead, which sidesteps version skew entirely and reuses code `verify.sql` already trusts |
+| *(not considered)* | **the loaders were already remote-ready and nobody knew.** `load_league.sql` takes `-v root=`, so pointing it at a staging directory on the box needed no change to any loader. Its own header had already worked out why `\copy` cannot be used, which is the thing that would otherwise have been rediscovered the hard way |
+| *(not considered)* | **a view over the facts is too slow on a 2-vCPU box.** `sql/wide_tables.sql` materialises the two wide tables instead, ~2 GB, mirroring what `build_snapshot.py` does for DuckDB |
+
+**The one live cost worth knowing.** `load_league.sql`'s closing enrichment `UPDATE` rewrites
+every row of `scrimmage_play` with ten indexes on it, which takes ~2 minutes locally and
+**~20 minutes on the EC2 box**. A full two-league mirror is therefore an hour-ish job, not a
+five-minute one. A season-scoped sync (`--season 2026`, the weekly case) touches a fraction
+of the rows and is quick. If the full path ever needs to be faster, dropping and recreating
+the indexes around the load is the obvious fix and has not been done.
 
 ### ~~The NFL, as a league toggle~~ — built 2026-09-11
 
