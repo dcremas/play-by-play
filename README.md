@@ -41,7 +41,7 @@ implementation notes) are kept, but nothing here depends on them.
 | **Window** | 2014–2026 in both leagues. 2026 is in progress in both and flagged as such |
 | **Source** | ESPN site API (play text, venue) + ESPN core API (per-play athlete ids, athlete identity), under `college-football` and `nfl`. No API key, no other feed |
 | **Warehouse** | PostgreSQL 18.6, database `pbp`, schema `pbp`, 11 tables — **the system of record**. Mirrored to PostgreSQL 16.15 on the EC2 box ([runbook H](#h-push-the-warehouse-to-the-ec2-mirror)), where `sql/split_leagues.sql` projects it into two per-league serving schemas, `cfb` and `nfl`, of 14 tables each. `pbp-mcp@cfb` and `pbp-mcp@nfl` read one corpus apiece over the loopback |
-| **Read path** | `data/out/pbp.duckdb` — wide `play` and `scrimmage` tables plus `drive`, 373 MB, rebuilt from Postgres in one command |
+| **Read path** | `data/out/pbp_cfb.duckdb` (246 MB) and `pbp_nfl.duckdb` (82 MB) — **one snapshot per league**, wide `play` and `scrimmage` plus `drive`, rebuilt from Postgres in one command. No `league` column in either |
 | **Parse quality** | kicks: **98.04% `exact` college, 98.19% NFL**. Two different dialects, two parser modules. Scrimmage needs no parser in either league — `statYardage` and `down` are structured fields at 100% coverage |
 | **People** | one shared `dim_athlete` of 66,426 athletes, 100% named and positioned from ESPN; 32,582 appear in both facts and 2,779 in both leagues. 98.7% of college kicks and 99.9% of NFL kicks carry a kicker id |
 | **Apps** | Dash instance explorer (all 2.37M plays, through a League toggle and an Offense / Defense / Special teams lens) · Excel reports (kicks) · one-page ERD (both facts) · a 25-tool read-only MCP server over the EC2 mirror |
@@ -120,7 +120,7 @@ pbp/
 │   ├── build_scrimmage.py     ESPN JSON, no parser         -> scrimmage_plays.csv,
 │   │                                                          scrimmage_athlete.csv, drives.csv
 │   ├── build_dims.py          conf | venue | athlete       -> the dimension CSVs
-│   ├── build_snapshot.py      Postgres                     -> data/out/pbp.duckdb
+│   ├── build_snapshot.py      Postgres cfb.*/nfl.*         -> data/out/pbp_<league>.duckdb
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
 │   ├── sync_ec2.py            local Postgres -> the EC2 mirror, then the serving
 │   │                          layer, the grants and the comments. Runbook H.
@@ -176,7 +176,8 @@ pbp/
         ├── scrimmage_athlete.csv  drives.csv
         ├── *_2026.csv                   the current in-progress season, per artifact
         ├── dim_*.csv  fact_game.csv  play_athlete*.csv
-        ├── pbp.duckdb                   251 MB — what every app reads
+        ├── pbp_cfb.duckdb               246 MB — what the apps read, college
+        ├── pbp_nfl.duckdb                82 MB — …and the NFL
         └── fg_by_distance.xlsx
 ```
 
@@ -192,7 +193,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt   # first time
 machine were compiled without `blake2`, which breaks `hashlib` and therefore pip. The venv
 runs 3.14.7.
 
-Nothing in either app talks to Postgres at runtime. They open `data/out/pbp.duckdb`
+Nothing in either app talks to Postgres at runtime. They open `data/out/pbp_<league>.duckdb`
 read-only, so the explorer starts cold in about a second, any number of readers can share
 the file without contending for it, and both keep working when the database is down. The
 explorer's header shows how old the snapshot is.
@@ -202,7 +203,7 @@ explorer's header shows how old the snapshot is.
 | | |
 |---|---|
 | **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts in BOTH leagues; both applications, with a league toggle; the weekly in-season update per league; the ERD; the EC2 mirror and the MCP server over it |
-| **Where the data lives** | **local Postgres is the system of record.** `data/out/pbp.duckdb` is the local read path for both apps; the EC2 box carries a full mirror, refreshed by [runbook H](#h-push-the-warehouse-to-the-ec2-mirror), which is what `mcp_server/` reads. Three copies, one direction of travel |
+| **Where the data lives** | **local Postgres is the system of record.** `data/out/pbp_cfb.duckdb` and `pbp_nfl.duckdb` are the local read path for both apps; the EC2 box carries a full mirror, refreshed by [runbook H](#h-push-the-warehouse-to-the-ec2-mirror), which is what `mcp_server/` reads. Three copies, one direction of travel |
 | **In progress right now** | the 2026 season in both leagues — 99 college games and 2 NFL. `scripts/update_season.py 2026 [--league nfl]` pulls both facts forward, one league per run |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
@@ -1220,7 +1221,7 @@ pattern. The columns needed to reconcile it — `is_complete`, `is_turnover`, `p
                     │  build_snapshot.py — DuckDB postgres extension,
                     │  read-only ATTACH, one CREATE TABLE AS per table
                     v
-             data/out/pbp.duckdb  (251 MB)
+             data/out/pbp_cfb.duckdb + pbp_nfl.duckdb
                     │
           ┌────────┴────────┐
           v                 v
@@ -1245,7 +1246,7 @@ snapshot is a build artifact — delete it and rebuild rather than repairing it.
 | the kicks fact | `build_table.py` | summaries + `st_parser_cfb` | `st_plays.csv` — 40 columns, 80 MB | a few minutes for the full window |
 | the scrimmage fact | `build_scrimmage.py` | summaries + participants, **no parser** | `scrimmage_plays.csv`, `scrimmage_athlete.csv`, `drives.csv` | 50 s for the full window, 8 workers |
 | the athlete link | `build_dims.py athlete` | participants + both fact extracts + `athletes.json.gz` | `dim_athlete.csv`, `play_athlete.csv`, `play_athlete_wide.csv` | reads all participants files; the scrimmage half is rolled up in DuckDB |
-| the snapshot | `build_snapshot.py` | Postgres | `pbp.duckdb` | ~15 s |
+| the snapshot | `build_snapshot.py` | Postgres `cfb.*`/`nfl.*` | `pbp_cfb.duckdb`, `pbp_nfl.duckdb` | ~20 s |
 
 Two properties hold across every stage and are worth relying on:
 
@@ -2024,7 +2025,7 @@ travel to a y.
 
 ## Query recipes
 
-All of these run against the DuckDB snapshot (`data/out/pbp.duckdb`), where the dimensions
+All of these run against a DuckDB snapshot (`data/out/pbp_<league>.duckdb`), where the dimensions
 are already flattened onto `play`.
 
 **The conference trap — the same 2018 punt count, two ways**
@@ -2441,7 +2442,7 @@ answer that did not look wrong.
     anything new.
 
 **Regenerating the figures in this document.** Every number above came from the snapshot at
-`data/out/pbp.duckdb`, and the queries are the ones in [Query recipes](#query-recipes) plus
+`data/out/pbp_<league>.duckdb`, and the queries are the ones in [Query recipes](#query-recipes) plus
 `sql/verify.sql` and `sql/verify_phase4.sql`. `snapshot_meta` records when the snapshot was
 built and how many rows it holds; `season_status` records what was finished at that moment.
 If a figure here disagrees with the database, the database is right and this file is stale —

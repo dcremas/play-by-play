@@ -39,7 +39,13 @@ import pandas as pd
 
 from . import league, lens
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "out" / "pbp.duckdb"
+OUT_DIR = Path(__file__).resolve().parent.parent / "data" / "out"
+LEAGUES = ("cfb", "nfl")
+
+
+def db_path(league_key: str) -> Path:
+    """One snapshot per corpus. scripts/build_snapshot.py writes both."""
+    return OUT_DIR / f"pbp_{league_key}.duckdb"
 
 # A play cannot gain or lose more than the field is long. 100-yard interception
 # returns are real -- 45 of them -- so the window sits above them at 110 and catches
@@ -76,10 +82,9 @@ YARD_LIMIT = 110
 # failure and still is -- and the drawer's "Blocked: yes" line, written for a value
 # this view never produced, now fires.
 _ST_VIEW = """
-CREATE OR REPLACE VIEW st_play AS
+CREATE OR REPLACE VIEW {lg}_st_play AS
 SELECT
     p.play_uid,
-    p.league,
     p.game_id,
     p.season,
     p.week,
@@ -210,8 +215,8 @@ SELECT
     p.play_text,
     p.parse_confidence,
     p.source
-FROM snap.play p
-LEFT JOIN snap.dim_athlete ta ON ta.athlete_id = p.tackler_athlete_id
+FROM {lg}.play p
+LEFT JOIN {lg}.dim_athlete ta ON ta.athlete_id = p.tackler_athlete_id
 """
 
 # --------------------------------------------------------------------- scrimmage views
@@ -256,7 +261,6 @@ _SCRIM_VIEW = """
 CREATE OR REPLACE VIEW {view} AS
 SELECT
     s.play_uid,
-    s.league,
     s.game_id,
     s.season,
     s.week,
@@ -352,7 +356,7 @@ SELECT
     -- provenance
     s.play_text,
     s.source
-FROM snap.scrimmage s
+FROM {lg}.scrimmage s
 """
 
 _SUBJECT = {
@@ -367,8 +371,8 @@ _SUBJECT = {
 }
 
 
-def _scrim_sql(key: str) -> str:
-    return _SCRIM_VIEW.format(view=lens.VIEW[key], limit=YARD_LIMIT,
+def _scrim_sql(key: str, lg: str) -> str:
+    return _SCRIM_VIEW.format(view=lens.view(key, lg), lg=lg, limit=YARD_LIMIT,
                               outcome=_SCRIM_OUTCOME[key].strip(), **_SUBJECT[key])
 
 
@@ -377,19 +381,32 @@ _con: duckdb.DuckDBPyConnection | None = None
 
 
 def con() -> duckdb.DuckDBPyConnection:
-    """Process-wide connection. Callers get a cursor, so this is thread-safe."""
+    """Process-wide connection with BOTH corpora attached. Callers get a cursor,
+    so this is thread-safe -- which matters here because Dash serves callbacks
+    concurrently and two users can be looking at different leagues.
+
+    ONE FILE PER LEAGUE, attached under its own name, and one set of views per
+    league on top. The league is therefore part of the view NAME -- `cfb_st_play`,
+    `nfl_st_play` -- and not a WHERE clause anyone can forget. Before the corpora
+    were split, `league = 'cfb'` was a predicate the filter builder had to add to
+    every query, and a missed one silently mixed Auburn with the Buffalo Bills,
+    whose team ids collide.
+    """
     global _con
     with _lock:
         if _con is None:
-            if not DB_PATH.exists():
+            missing = [str(db_path(lg)) for lg in LEAGUES if not db_path(lg).exists()]
+            if missing:
                 raise FileNotFoundError(
-                    f"{DB_PATH} not found -- run scripts/build_snapshot.py first"
+                    "snapshot(s) not found -- run scripts/build_snapshot.py first:\n  "
+                    + "\n  ".join(missing)
                 )
             c = duckdb.connect(":memory:")
-            c.execute(f"ATTACH '{DB_PATH}' AS snap (READ_ONLY)")
-            c.execute(_ST_VIEW)
-            c.execute(_scrim_sql("off"))
-            c.execute(_scrim_sql("def"))
+            for lg in LEAGUES:
+                c.execute(f"ATTACH '{db_path(lg)}' AS {lg} (READ_ONLY)")
+                c.execute(_ST_VIEW.format(lg=lg))
+                c.execute(_scrim_sql("off", lg))
+                c.execute(_scrim_sql("def", lg))
             _con = c
         return _con
 
@@ -404,8 +421,13 @@ def scalar(sql: str):
 
 
 def view(f: dict | None) -> str:
-    """The view the current filter state reads."""
-    return lens.VIEW[lens.resolve((f or {}).get("lens"))]
+    """The view the current filter state reads: one lens, in one corpus.
+
+    Both halves come out of the same filter dict, so a query cannot read a lens
+    from one league and a filter from the other.
+    """
+    f = f or {}
+    return lens.view(lens.resolve(f.get("lens")), f.get("league"))
 
 
 # --------------------------------------------------------------------------- SQL literals
@@ -465,7 +487,8 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
     # answers a question about 1.9M plays that was asked about 447k. `ignore` cannot
     # drop it either -- a chart showing "the distribution of the thing you filtered on"
     # still means within one league.
-    parts.append(f"league = {lit(league.resolve(f.get('league')))}")
+    # No league predicate: the corpus is chosen by which view this query reads.
+    # See con(). Keeping one here would be a second, redundant source of truth.
 
     if use("phases"):
         parts.append(in_list("play_kind", lens.kinds_for(key, f["phases"])))
@@ -643,8 +666,8 @@ def count_rows(view_name: str, where: str) -> int:
 # --------------------------------------------------------------------------- option lists
 @functools.lru_cache(maxsize=1)
 def snapshot_meta() -> dict:
-    row = con().cursor().sql("SELECT built_at, rows FROM snap.snapshot_meta").fetchone()
-    rows = {k: int(scalar(f"SELECT count(*) FROM {lens.VIEW[k]}") or 0)
+    row = con().cursor().sql("SELECT built_at, play_rows FROM cfb.snapshot_meta").fetchone()
+    rows = {k: int(scalar(f"SELECT count(*) FROM {lens.view(k, league_key)}") or 0)
             for k in lens.KEYS}
     return {"built_at": row[0] if row else None,
             "snapshot_rows": row[1] if row else None,
@@ -658,7 +681,7 @@ def snapshot_meta() -> dict:
 def season_bounds() -> tuple[int, int]:
     """The corpus window. Both facts span it identically, so one table answers it."""
     lo, hi = con().cursor().sql(
-        "SELECT min(season), max(season) FROM snap.season_status").fetchone()
+        "SELECT min(season), max(season) FROM cfb.season_status").fetchone()
     return int(lo), int(hi)
 
 
@@ -678,7 +701,7 @@ def in_progress_seasons(league_key: str | None = None) -> list[dict]:
     """
     try:
         df = q(f"""SELECT season, games, plays, last_regular_week AS week
-                   FROM snap.season_status
+                   FROM {league.resolve(league_key)}.season_status
                    WHERE is_in_progress AND {_lg(league_key)}
                    ORDER BY season""")
     except Exception:
@@ -692,7 +715,13 @@ def in_progress_seasons(league_key: str | None = None) -> list[dict]:
 # a picked id means whichever team the query happens to match. `_lg()` is the predicate;
 # the lru_caches are keyed on the league for the same reason.
 def _lg(league_key: str | None) -> str:
-    return f"league = {lit(league.resolve(league_key))}"
+    """Retained as a no-op so the surrounding WHERE clauses stay readable.
+
+    Each option list already reads a league-qualified view, so scoping it again
+    would be redundant. Kept rather than deleted because `WHERE x AND TRUE` reads
+    better than hunting every clause for a dangling AND.
+    """
+    return "TRUE"
 
 
 @functools.lru_cache(maxsize=8)
@@ -704,11 +733,22 @@ def dist_bounds(league_key: str | None = None) -> tuple[int, int]:
     (whose three impossible parsed kickoffs of 108, 125 and 127 yards set the ceiling)
     and then switching to the NFL would leave the handle above every NFL kick; scoping it
     to the NFL would silently drop the college tail.
+
+    Spanning both now takes an explicit UNION, because there is no combined view left to
+    read. That is the point -- and it makes this the ONE place in the app that reads both
+    corpora at once, so it says so out loud rather than doing it by omission. It returns a
+    single scalar pair, never rows, and nothing downstream joins the two.
     """
-    where = "TRUE" if league_key is None else _lg(league_key)
-    lo, hi = con().cursor().sql(
-        f"SELECT min(kick_yds), max(kick_yds) FROM st_play WHERE {where}"
-    ).fetchone()
+    if league_key is None:
+        union = " UNION ALL ".join(
+            f"SELECT min(kick_yds) AS lo, max(kick_yds) AS hi FROM {lens.view('st', lg)}"
+            for lg in LEAGUES
+        )
+        lo, hi = con().cursor().sql(f"SELECT min(lo), max(hi) FROM ({union})").fetchone()
+    else:
+        view = lens.view("st", league.resolve(league_key))
+        lo, hi = con().cursor().sql(
+            f"SELECT min(kick_yds), max(kick_yds) FROM {view}").fetchone()
     return int(lo), int(hi)
 
 
@@ -716,7 +756,7 @@ def dist_bounds(league_key: str | None = None) -> tuple[int, int]:
 def team_options(key: str, league_key: str | None = None) -> list[dict]:
     df = q(f"""
         SELECT team_id, any_value(team) AS team, count(*) AS n
-        FROM {lens.VIEW[lens.resolve(key)]}
+        FROM {lens.view(lens.resolve(key), league_key)}
         WHERE team_id IS NOT NULL AND {_lg(league_key)}
         GROUP BY team_id ORDER BY team
     """)
@@ -726,7 +766,7 @@ def team_options(key: str, league_key: str | None = None) -> list[dict]:
 
 @functools.lru_cache(maxsize=16)
 def conference_options(key: str, league_key: str | None = None) -> list[str]:
-    return q(f"""SELECT DISTINCT conference FROM {lens.VIEW[lens.resolve(key)]}
+    return q(f"""SELECT DISTINCT conference FROM {lens.view(lens.resolve(key), league_key)}
                  WHERE conference IS NOT NULL AND {_lg(league_key)}
                  ORDER BY 1""")["conference"].tolist()
 
@@ -736,21 +776,21 @@ def division_options(key: str, league_key: str | None = None) -> list[str]:
     """FBS/FCS for college, AFC East and its siblings for the NFL -- two columns, one
     facet. See web/league.py."""
     col = league.division_column(league_key)
-    return q(f"""SELECT DISTINCT {col} AS d FROM {lens.VIEW[lens.resolve(key)]}
+    return q(f"""SELECT DISTINCT {col} AS d FROM {lens.view(lens.resolve(key), league_key)}
                  WHERE {col} IS NOT NULL AND {_lg(league_key)}
                  ORDER BY 1""")["d"].tolist()
 
 
 @functools.lru_cache(maxsize=16)
 def surface_options(key: str, league_key: str | None = None) -> list[str]:
-    return q(f"""SELECT DISTINCT surface FROM {lens.VIEW[lens.resolve(key)]}
+    return q(f"""SELECT DISTINCT surface FROM {lens.view(lens.resolve(key), league_key)}
                  WHERE surface IS NOT NULL AND {_lg(league_key)}
                  ORDER BY 1""")["surface"].tolist()
 
 
 @functools.lru_cache(maxsize=16)
 def outcome_options(key: str, league_key: str | None = None) -> list[str]:
-    return q(f"SELECT DISTINCT outcome FROM {lens.VIEW[lens.resolve(key)]} "
+    return q(f"SELECT DISTINCT outcome FROM {lens.view(lens.resolve(key), league_key)} "
              f"WHERE {_lg(league_key)} ORDER BY 1")["outcome"].tolist()
 
 
@@ -763,7 +803,7 @@ def zone_options(key: str, league_key: str | None = None) -> list[str]:
     key = lens.resolve(key)
     if not lens.is_scrimmage(key):
         return []
-    return q(f"""SELECT DISTINCT field_zone FROM {lens.VIEW[key]}
+    return q(f"""SELECT DISTINCT field_zone FROM {lens.view(key, league_key)}
                  WHERE field_zone IS NOT NULL AND {_lg(league_key)}
                  ORDER BY 1""")["field_zone"].tolist()
 
@@ -782,7 +822,7 @@ def player_options(key: str, phases: tuple[str, ...] = (),
     why its list is thin -- see lens.player_hint().
     """
     key = lens.resolve(key)
-    v = lens.VIEW[key]
+    v = lens.view(key, league_key)
     kinds = lens.kinds_for(key, list(phases)) if phases else None
     where = (in_list("play_kind", kinds) if kinds else "TRUE") + " AND " + _lg(league_key)
     floor = (league.kicker_floor(league_key) if key == "st"

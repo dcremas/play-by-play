@@ -31,7 +31,7 @@ def _profile(team_id: int, lg: str) -> dict:
                count(DISTINCT player_id) AS kickers,
                arg_max(conference, season) AS conference,
                arg_max(COALESCE(nfl_division, ncaa_division), season) AS division
-        FROM st_play WHERE team_id = {team_id} AND league = {data.lit(lg)}
+        FROM {lens.view("st", lg)} WHERE team_id = {team_id}
     """)
     if df.empty or not int(df.iloc[0]["kicks"] or 0):
         raise LookupError(team_id)
@@ -54,8 +54,8 @@ def layout(team_id: int, lg: str = league.DEFAULT, mode: str = "dark"):
     lg = league.resolve(lg)
     p = _profile(team_id, lg)
     conf_hist = data.q(f"""
-        SELECT DISTINCT season, conference FROM st_play
-        WHERE team_id = {team_id} AND league = {data.lit(lg)} ORDER BY season
+        SELECT DISTINCT season, conference FROM {lens.view("st", lg)}
+        WHERE team_id = {team_id} ORDER BY season
     """)
     moved = conf_hist["conference"].nunique() > 1
 
@@ -107,7 +107,7 @@ def layout(team_id: int, lg: str = league.DEFAULT, mode: str = "dark"):
 def _kpis(ent, flt, mode):
     if not ent or ent.get("kind") != "team":
         raise PreventUpdate
-    rows = common.agg_frame("st", "team", common.entity_where(ent, flt))
+    rows = common.agg_frame("st", "team", common.entity_where(ent, flt), lg)
     if not rows:
         return dmc.Alert("No kicks for this team under the current filters.",
                          color="gray", variant="light")
@@ -214,7 +214,7 @@ def _people(ent, flt, mode):
     if not ent or ent.get("kind") != "team":
         raise PreventUpdate
     mode = mode or "dark"
-    rows = common.agg_frame("st", "player", common.entity_where(ent, flt))
+    rows = common.agg_frame("st", "player", common.entity_where(ent, flt), lg)
     ps = common.st_chips(flt)
     # Its own id, not the explorer's `grid-kickers`: sharing the id would have been
     # free row-click navigation, but it also pulls in the explorer's rowData callback,

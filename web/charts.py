@@ -145,21 +145,21 @@ def _stacked_share(df, xcol, mode, phases, title, height=300, xtype=None,
 
 
 # --------------------------------------------------------------------------- explorer
-def outcome_mix_by_season(where: str, phases, mode: str, height: int = 300):
+def outcome_mix_by_season(where: str, lg: str, phases, mode: str, height: int = 300):
     df = data.q(f"""
         SELECT season, outcome, count(*) AS n
-        FROM st_play WHERE {where} GROUP BY 1, 2
+        FROM {lens.view("st", lg)} WHERE {where} GROUP BY 1, 2
     """)
     return _stacked_share(df, "season", mode, phases,
                           "Outcome mix by season", height, xtype="category",
                           key="st", noun="kicks")
 
 
-def outcome_by_distance(where: str, phases, mode: str, height: int = 300):
+def outcome_by_distance(where: str, lg: str, phases, mode: str, height: int = 300):
     """Where each outcome lives along the distance axis, in 5-yard bands."""
     df = data.q(f"""
         SELECT kick_bucket, outcome, count(*) AS n
-        FROM st_play WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1, 2
+        FROM {lens.view("st", lg)} WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1, 2
     """)
     unit = {"field_goal": "attempt distance", "punt": "gross punt",
             "kickoff": "kick distance"}.get(theme_key(phases), "kick distance")
@@ -168,7 +168,7 @@ def outcome_by_distance(where: str, phases, mode: str, height: int = 300):
                           xtype="linear", key="st", noun="kicks")
 
 
-def conversion_by_type(where: str, mode: str, height: int = 300):
+def conversion_by_type(where: str, lg: str, mode: str, height: int = 300):
     """Outcome share by how the conversion was attempted.
 
     The distance chart's replacement on the conversion chip. A conversion has no
@@ -185,7 +185,7 @@ def conversion_by_type(where: str, mode: str, height: int = 300):
                     WHEN two_point_type = 'rush'            THEN 'Rush (2pt)'
                     ELSE 'Unstated (2pt)' END AS attempt_type,
                outcome, count(*) AS n
-        FROM st_play WHERE {where} GROUP BY 1, 2
+        FROM {lens.view("st", lg)} WHERE {where} GROUP BY 1, 2
     """)
     return _stacked_share(df, "attempt_type", mode, ["conversion"],
                           "Outcome by attempt type", height, xtype="category",
@@ -197,11 +197,11 @@ def theme_key(phases) -> str:
     return p[0] if len(p) == 1 else "mixed"
 
 
-def volume_by_distance(where: str, phases, mode: str, height: int = 300):
+def volume_by_distance(where: str, lg: str, phases, mode: str, height: int = 300):
     """Single-series distribution -- how many kicks at each distance. No legend needed."""
     df = data.q(f"""
         SELECT kick_bucket AS b, count(*) AS n
-        FROM st_play WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1 ORDER BY 1
+        FROM {lens.view("st", lg)} WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1 ORDER BY 1
     """)
     if df.empty:
         return empty_fig(mode, height=height)
@@ -218,7 +218,7 @@ def volume_by_distance(where: str, phases, mode: str, height: int = 300):
     return fig
 
 
-def phase_detail(where: str, phases, mode: str, height: int = 300):
+def phase_detail(where: str, lg: str, phases, mode: str, height: int = 300):
     """The measure that actually matters for the selected phase."""
     key = theme_key(phases)
     t = theme.TOKENS[mode]
@@ -228,7 +228,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
         df = data.q(f"""
             SELECT kick_bucket AS b, count(*) n,
                    sum(CASE WHEN outcome = 'Made' THEN 1 ELSE 0 END) made
-            FROM st_play WHERE {where} AND kick_bucket IS NOT NULL AND outcome <> 'Negated'
+            FROM {lens.view("st", lg)} WHERE {where} AND kick_bucket IS NOT NULL AND outcome <> 'Negated'
             GROUP BY 1 HAVING count(*) >= 10 ORDER BY 1
         """)
         if df.empty:
@@ -255,7 +255,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
         df = data.q(f"""
             SELECT (yards_to_goal / 10)::INT * 10 AS b,
                    avg(punt_gross_yds) gross, avg(punt_net_yds) net, count(*) n
-            FROM st_play WHERE {where} AND yards_to_goal IS NOT NULL
+            FROM {lens.view("st", lg)} WHERE {where} AND yards_to_goal IS NOT NULL
             GROUP BY 1 HAVING count(*) >= 200 ORDER BY 1
         """)
         if df.empty:
@@ -290,7 +290,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
                    count(*) FILTER (play_kind = 'two_point')              two,
                    count(*) FILTER (play_kind = 'two_point'
                                     AND outcome = 'Converted')            two_good
-            FROM st_play WHERE {where} GROUP BY 1 ORDER BY 1
+            FROM {lens.view("st", lg)} WHERE {where} GROUP BY 1 ORDER BY 1
         """)
         if df.empty:
             return empty_fig(mode, height=height)
@@ -322,7 +322,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
                    sum(CASE WHEN outcome = 'Touchback' THEN 1 ELSE 0 END) tb,
                    sum(CASE WHEN outcome = 'Returned'  THEN 1 ELSE 0 END) ret,
                    sum(CASE WHEN outcome = 'Unknown'   THEN 1 ELSE 0 END) unk
-            FROM st_play WHERE {where} AND NOT COALESCE(onside, FALSE)
+            FROM {lens.view("st", lg)} WHERE {where} AND NOT COALESCE(onside, FALSE)
             GROUP BY 1 ORDER BY 1
         """)
         if df.empty:
@@ -349,7 +349,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
     # mixed: mean kick distance per phase. All three series are yards.
     df = data.q(f"""
         SELECT season, phase, avg(kick_yds) d, count(*) n
-        FROM st_play WHERE {where} AND kick_yds IS NOT NULL GROUP BY 1, 2 ORDER BY 1
+        FROM {lens.view("st", lg)} WHERE {where} AND kick_yds IS NOT NULL GROUP BY 1, 2 ORDER BY 1
     """)
     if df.empty:
         return empty_fig(mode, height=height)
@@ -373,7 +373,7 @@ def phase_detail(where: str, phases, mode: str, height: int = 300):
 
 
 # --------------------------------------------------------------------------- profiles
-def season_trend(where: str, mode: str, kind: str, height: int = 260):
+def season_trend(where: str, lg: str, mode: str, kind: str, height: int = 260):
     """One measure across seasons for a single player or team, per phase."""
     t, s = theme.TOKENS[mode], theme.SLOTS[mode]
     # Each spec carries its own play_kind predicate rather than taking `kind` as one:
@@ -400,7 +400,7 @@ def season_trend(where: str, mode: str, kind: str, height: int = 260):
     title, expr, fmt, hexv, kind_where = spec
     df = data.q(f"""
         SELECT season, {expr} AS v, count(*) n
-        FROM st_play WHERE {where} AND {kind_where} GROUP BY 1 ORDER BY 1
+        FROM {lens.view("st", lg)} WHERE {where} AND {kind_where} GROUP BY 1 ORDER BY 1
     """)
     df = df[df["v"].notna()]
     if df.empty:
@@ -454,17 +454,17 @@ def _phase_stack(df, xcol, mode, title, height, xtype=None, phases=None,
     return fig
 
 
-def kicks_by_phase_season(where: str, mode: str, height: int = 300):
+def kicks_by_phase_season(where: str, lg: str, mode: str, height: int = 300):
     df = data.q(f"""
-        SELECT season, phase, count(*) AS n FROM st_play WHERE {where} GROUP BY 1, 2
+        SELECT season, phase, count(*) AS n FROM {lens.view("st", lg)} WHERE {where} GROUP BY 1, 2
     """)
     return _phase_stack(df, "season", mode, "Kicks by phase and season", height,
                         xtype="category")
 
 
-def kicks_by_phase_distance(where: str, mode: str, height: int = 300):
+def kicks_by_phase_distance(where: str, lg: str, mode: str, height: int = 300):
     df = data.q(f"""
-        SELECT kick_bucket AS b, phase, count(*) AS n FROM st_play
+        SELECT kick_bucket AS b, phase, count(*) AS n FROM {lens.view("st", lg)}
         WHERE {where} AND kick_bucket IS NOT NULL GROUP BY 1, 2
     """)
     return _phase_stack(df, "b", mode,
@@ -490,29 +490,29 @@ def _grouped(view: str, where: str, key: str, xexpr: str, xname: str,
     return df.groupby([xname, "outcome"], as_index=False, observed=True)["n"].sum()
 
 
-def scrim_outcome_by_season(where: str, key: str, chips, mode: str, height: int = 300):
-    df = _grouped(lens.VIEW[key], where, key, "season", "season")
+def scrim_outcome_by_season(where: str, lg: str, key: str, chips, mode: str, height: int = 300):
+    df = _grouped(lens.view(key, lg), where, key, "season", "season")
     return _stacked_share(df, "season", mode, chips, "Outcome mix by season", height,
                           xtype="category", key=key)
 
 
-def scrim_outcome_by_down(where: str, key: str, chips, mode: str, height: int = 300):
-    df = _grouped(lens.VIEW[key], where, key, "down", "down",
+def scrim_outcome_by_down(where: str, lg: str, key: str, chips, mode: str, height: int = 300):
+    df = _grouped(lens.view(key, lg), where, key, "down", "down",
                   extra="down BETWEEN 1 AND 4")
     return _stacked_share(df, "down", mode, chips, "Outcome mix by down", height,
                           xtype="category", key=key)
 
 
-def scrim_phase_by_season(where: str, key: str, mode: str, height: int = 300):
+def scrim_phase_by_season(where: str, lg: str, key: str, mode: str, height: int = 300):
     df = data.q(f"""
         SELECT season, phase, count(*) AS n
-        FROM {lens.VIEW[key]} WHERE {where} GROUP BY 1, 2
+        FROM {lens.view(key, lg)} WHERE {where} GROUP BY 1, 2
     """)
     return _phase_stack(df, "season", mode, "Plays by kind and season", height,
                         xtype="category", phases=_SCRIM_PHASES, noun="plays")
 
 
-def scrim_yards_by_down(where: str, key: str, mode: str, height: int = 300):
+def scrim_yards_by_down(where: str, lg: str, key: str, mode: str, height: int = 300):
     """Mean yards by down, one series per play kind. One y-axis, grouped bars.
 
     Turnover rows are excluded and the title says so. ESPN puts the *defense's
@@ -522,7 +522,7 @@ def scrim_yards_by_down(where: str, key: str, mode: str, height: int = 300):
     """
     df = data.q(f"""
         SELECT down, phase, avg(yards_gained) AS y, count(*) AS n
-        FROM {lens.VIEW[key]}
+        FROM {lens.view(key, lg)}
         WHERE {where} AND down BETWEEN 1 AND 4 AND NOT COALESCE(is_turnover, FALSE)
               AND yards_gained IS NOT NULL
         GROUP BY 1, 2
@@ -560,7 +560,7 @@ def scrim_yards_by_down(where: str, key: str, mode: str, height: int = 300):
 
 
 # --------------------------------------------------------------------------- dispatch
-def explorer_figs(key: str, where: str, chips, mode: str, height: int = 300):
+def explorer_figs(key: str, where: str, lg: str, chips, mode: str, height: int = 300):
     """The charts for a selection, whichever lens and phases it spans.
 
     Always a 3-tuple, but the third may be None -- the multi-phase kicks view has two.
@@ -574,25 +574,25 @@ def explorer_figs(key: str, where: str, chips, mode: str, height: int = 300):
     ps = sorted(chips or [])
     if lens.is_scrimmage(key):
         if len(ps) == 1:
-            return (scrim_outcome_by_season(where, key, ps, mode, height),
-                    scrim_outcome_by_down(where, key, ps, mode, height),
-                    scrim_yards_by_down(where, key, mode, height))
-        return (scrim_phase_by_season(where, key, mode, height),
-                scrim_outcome_by_season(where, key, ps, mode, height),
-                scrim_yards_by_down(where, key, mode, height))
+            return (scrim_outcome_by_season(where, lg, key, ps, mode, height),
+                    scrim_outcome_by_down(where, lg, key, ps, mode, height),
+                    scrim_yards_by_down(where, lg, key, mode, height))
+        return (scrim_phase_by_season(where, lg, key, mode, height),
+                scrim_outcome_by_season(where, lg, key, ps, mode, height),
+                scrim_yards_by_down(where, lg, key, mode, height))
     if len(ps) == 1:
         # The middle slot is the distance chart on every chip but one. Conversions
         # have no distance, so they get attempt type instead of an empty panel.
-        middle = (conversion_by_type(where, mode, height) if ps[0] == "conversion"
-                  else outcome_by_distance(where, ps, mode, height))
-        return (outcome_mix_by_season(where, ps, mode, height), middle,
-                phase_detail(where, ps, mode, height))
+        middle = (conversion_by_type(where, lg, mode, height) if ps[0] == "conversion"
+                  else outcome_by_distance(where, lg, ps, mode, height))
+        return (outcome_mix_by_season(where, lg, ps, mode, height), middle,
+                phase_detail(where, lg, ps, mode, height))
     # Two charts, not three. The third used to be the unreadable-outcome share by
     # season -- removed 2026-09-09 at the user's request. `None` rather than an empty
     # figure so the caller can collapse the slot and let these two have the width;
     # an empty figure would hold a third of the row to say nothing. The 8.6% of kicks
     # that state no outcome are still an `Unknown` value in the Outcome column and in
     # the mix chart, and the note under the tiles still explains them.
-    return (kicks_by_phase_season(where, mode, height),
-            kicks_by_phase_distance(where, mode, height),
+    return (kicks_by_phase_season(where, lg, mode, height),
+            kicks_by_phase_distance(where, lg, mode, height),
             None)

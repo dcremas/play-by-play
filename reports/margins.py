@@ -41,7 +41,17 @@ import os
 import duckdb
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB = os.path.join(HOME, "data", "out", "pbp.duckdb")
+LEAGUES = ("cfb", "nfl")
+
+
+def db_path(league: str) -> str:
+    """One snapshot per corpus -- scripts/build_snapshot.py writes both.
+
+    The league selects the FILE. It used to be a `WHERE league = ...` predicate over a
+    combined snapshot; with the corpora split there is no combined table to filter, and
+    a predicate that could be forgotten is replaced by a path that cannot be.
+    """
+    return os.path.join(HOME, "data", "out", f"pbp_{league}.duckdb")
 
 # `try_cast` + `regexp_extract` rather than a plain cast: a reused sequenceNumber carries a
 # `#n` suffix and a derived conversion row carries `:pat`, so the third colon-field is not
@@ -50,14 +60,14 @@ SEQ = "try_cast(regexp_extract(split_part(play_uid, ':', 3), '^[0-9]+') AS BIGIN
 
 SQL = f"""
 CREATE OR REPLACE TEMP VIEW _score_event AS
-  SELECT game_id, league, play_uid, {SEQ} AS seq,
+  SELECT game_id, play_uid, {SEQ} AS seq,
          offense_team_id            AS ref_team,
          score_diff_offense         AS diff_before,
          coalesce(points_scored, 0) AS pts_ref,     -- already signed from the OFFENCE's side
          'scrimmage'                AS fact
   FROM scrimmage
   UNION ALL
-  SELECT game_id, league, play_uid, {SEQ} AS seq,
+  SELECT game_id, play_uid, {SEQ} AS seq,
          kicking_team_id            AS ref_team,
          score_diff_kicking         AS diff_before,
          CASE WHEN play_kind = 'field_goal' AND fg_made   THEN  3 ELSE 0 END
@@ -70,45 +80,45 @@ CREATE OR REPLACE TEMP VIEW _score_event AS
   FROM play;
 
 CREATE OR REPLACE TEMP VIEW _last_play AS
-SELECT game_id, league,
+SELECT game_id,
        arg_max(ref_team,    seq) AS ref_team,
        arg_max(diff_before, seq) AS diff_before,
        arg_max(pts_ref,     seq) AS pts_ref,
        arg_max(fact,        seq) AS fact
-FROM _score_event WHERE seq IS NOT NULL GROUP BY game_id, league;
+FROM _score_event WHERE seq IS NOT NULL GROUP BY game_id;
 
 CREATE OR REPLACE TEMP VIEW game_margin AS
-SELECT l.game_id, l.league, g.season, g.week, g.season_type, l.fact,
+SELECT l.game_id, g.season, g.week, g.season_type, l.fact,
        g.home_team_id, g.away_team_id,
        CASE WHEN l.ref_team = g.home_team_id THEN  (l.diff_before + l.pts_ref)
                                              ELSE -(l.diff_before + l.pts_ref) END AS home_margin
-FROM _last_play l JOIN fact_game g USING (game_id, league);
+FROM _last_play l JOIN fact_game g USING (game_id);
 
 -- One row per team per game. A 0 margin is an unresolved derivation, not a tie, and leaves.
 CREATE OR REPLACE TEMP VIEW team_game AS
-SELECT league, season, week, season_type, home_team_id AS team_id,  home_margin AS margin,
+SELECT season, week, season_type, home_team_id AS team_id,  home_margin AS margin,
        away_team_id AS opponent_id, true  AS at_home FROM game_margin WHERE home_margin <> 0
 UNION ALL
-SELECT league, season, week, season_type, away_team_id, -home_margin,
+SELECT season, week, season_type, away_team_id, -home_margin,
        home_team_id, false FROM game_margin WHERE home_margin <> 0;
 
 -- Scheduled vs resolved, so a caller can tell a 6-win season from a 6-win season missing games.
 CREATE OR REPLACE TEMP VIEW team_schedule AS
-SELECT league, season, team_id, count(*) AS scheduled,
+SELECT season, team_id, count(*) AS scheduled,
        count(*) FILTER (WHERE resolved) AS played,
        count(*) - count(*) FILTER (WHERE resolved) AS missing
 FROM (
-  SELECT g.league, g.season, g.home_team_id AS team_id,
+  SELECT g.season, g.home_team_id AS team_id,
          (m.game_id IS NOT NULL AND m.home_margin <> 0) AS resolved
-  FROM fact_game g LEFT JOIN game_margin m USING (game_id, league)
+  FROM fact_game g LEFT JOIN game_margin m USING (game_id)
   UNION ALL
-  SELECT g.league, g.season, g.away_team_id,
+  SELECT g.season, g.away_team_id,
          (m.game_id IS NOT NULL AND m.home_margin <> 0)
-  FROM fact_game g LEFT JOIN game_margin m USING (game_id, league))
-GROUP BY 1, 2, 3;
+  FROM fact_game g LEFT JOIN game_margin m USING (game_id))
+GROUP BY 1, 2;
 
 CREATE OR REPLACE TEMP VIEW team_record AS
-SELECT t.league, t.season, t.team_id, s.scheduled, s.played, s.missing,
+SELECT t.season, t.team_id, s.scheduled, s.played, s.missing,
        sum((t.margin > 0)::int)                                   AS wins,
        count(*) - sum((t.margin > 0)::int)                        AS losses,
        100.0 * avg((t.margin > 0)::int)                           AS win_pct,
@@ -116,8 +126,8 @@ SELECT t.league, t.season, t.team_id, s.scheduled, s.played, s.missing,
        count(*) FILTER (WHERE t.season_type = 'postseason')        AS postseason_games,
        count(*) FILTER (WHERE abs(t.margin) <= 8)                  AS close_games,
        sum((t.margin > 0)::int) FILTER (WHERE abs(t.margin) <= 8)  AS close_wins
-FROM team_game t JOIN team_schedule s USING (league, season, team_id)
-GROUP BY 1, 2, 3, 4, 5, 6;
+FROM team_game t JOIN team_schedule s USING (season, team_id)
+GROUP BY 1, 2, 3, 4, 5;
 """
 
 
@@ -127,38 +137,50 @@ def install(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def main() -> None:
+    import argparse
     import pandas as pd
+    # --league is REQUIRED-with-a-default rather than absent: this file used to read a
+    # combined snapshot and scope its demo queries with `WHERE league = 'cfb'`, which
+    # meant the NFL numbers were never printed by anything. One corpus per file makes the
+    # choice explicit.
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--league", choices=LEAGUES, default="cfb")
+    args = ap.parse_args()
     pd.set_option("display.width", 200)
-    con = duckdb.connect(DB, read_only=True)
+    print(f"corpus: {args.league}")
+    con = duckdb.connect(db_path(args.league), read_only=True)
     install(con)
-    print("\n--- Derivation error rate: a 0 margin is impossible in college since 1996 ---")
+    print("\n--- Derivation error rate: a 0 margin is impossible in college since 1996 (and in the NFL since 1974) ---")
     print(con.execute("""
-        SELECT league, count(*) AS games,
+        SELECT count(*) AS games,
                count(*) FILTER (WHERE home_margin = 0) AS zero_margin,
                round(100.0 * avg((home_margin = 0)::int), 2) AS pct,
                round(100.0 * avg((home_margin > 0)::int), 1) AS home_win_pct,
                round(avg(home_margin), 2) AS avg_home_margin
-        FROM game_margin GROUP BY 1 ORDER BY 1""").df().to_string(index=False))
+        FROM game_margin""").df().to_string(index=False))
     print("\n--- Margin distribution: football scores cluster at 3 and 7 ---")
     print(con.execute("""
-        SELECT abs(home_margin) AS margin, count(*) AS games FROM game_margin
-        WHERE league = 'cfb' AND home_margin <> 0 GROUP BY 1 ORDER BY 2 DESC LIMIT 8
+        SELECT abs(home_margin) AS margin, count(*) AS games FROM game_margin WHERE home_margin <> 0 GROUP BY 1 ORDER BY 2 DESC LIMIT 8
         """).df().to_string(index=False))
-    print("\n--- Coverage: games in fact_game with no plays, by season (college) ---")
+    print("\n--- Coverage: games in fact_game with no plays, by season ---")
     print(con.execute("""
         SELECT g.season, count(*) AS scheduled,
                count(*) FILTER (WHERE m.game_id IS NULL) AS no_plays,
                count(*) FILTER (WHERE m.home_margin = 0) AS unresolved,
                round(100.0 * count(*) FILTER (WHERE m.game_id IS NULL OR m.home_margin = 0)
                      / count(*), 2) AS pct_lost
-        FROM fact_game g LEFT JOIN game_margin m USING (game_id, league)
-        WHERE g.league = 'cfb' AND g.season BETWEEN 2014 AND 2025
+        FROM fact_game g LEFT JOIN game_margin m USING (game_id) WHERE g.season BETWEEN 2014 AND 2025
         GROUP BY 1 ORDER BY 1""").df().to_string(index=False))
+    # The spot-check list is college programmes. Under --league nfl it would match
+    # nothing and print an empty frame that reads like a failure, so it is skipped with
+    # a reason rather than run vacuously.
+    if args.league != "cfb":
+        print("\n--- Spot check skipped: the known-record list is college programmes ---")
+        return
     print("\n--- Spot check: seasons whose record is independently known ---")
     print(con.execute("""
         SELECT r.season, t.display_name AS team, r.wins, r.losses, r.missing
-        FROM team_record r JOIN dim_team t USING (team_id)
-        WHERE r.league = 'cfb' AND (r.season, t.display_name) IN (
+        FROM team_record r JOIN dim_team t USING (team_id) WHERE (r.season, t.display_name) IN (
           (2017,'UCF Knights'), (2018,'Clemson Tigers'), (2019,'LSU Tigers'),
           (2020,'Alabama Crimson Tide'), (2021,'Georgia Bulldogs'), (2022,'Georgia Bulldogs'),
           (2023,'Michigan Wolverines'), (2024,'Ohio State Buckeyes'))

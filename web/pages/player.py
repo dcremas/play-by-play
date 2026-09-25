@@ -41,8 +41,8 @@ def _profile(athlete_id: int, lg: str) -> dict:
     means the SEC in one corpus and the AFC in the other, and `count(DISTINCT team_id)`
     across both is not a count of anything.
 
-    The cross-league career is not lost -- `also_in` below surfaces it as a link to the
-    same person's other page, which is the honest way to show it.
+    A career that spans both corpora is simply two careers here, one per page, and
+    they are not linked. That is the split, not an omission.
     """
     lg = league.resolve(lg)
     df = data.q(f"""
@@ -55,31 +55,28 @@ def _profile(athlete_id: int, lg: str) -> dict:
                arg_max(team_id, season) AS last_team_id,
                arg_max(team, season) AS last_team,
                avg(player_conf) AS conf
-        FROM st_play WHERE player_id = {athlete_id} AND league = {data.lit(lg)}
+        FROM {lens.view("st", lg)} WHERE player_id = {athlete_id}
     """)
     if df.empty or not int(df.iloc[0]["kicks"] or 0):
         raise LookupError(athlete_id)
     row = df.iloc[0]
     phases = data.q(f"""
-        SELECT play_kind, count(*) n FROM st_play
-        WHERE player_id = {athlete_id} AND league = {data.lit(lg)} GROUP BY 1
+        SELECT play_kind, count(*) n FROM {lens.view("st", lg)}
+        WHERE player_id = {athlete_id} GROUP BY 1
     """)
     counts = dict(zip(phases["play_kind"], phases["n"].astype(int)))
-    # The same man in the other corpus, if he is there. This is the payoff of the shared
-    # id space and the reason dim_athlete is not keyed by league.
-    other = next(k for k in league.KEYS if k != lg) if len(league.KEYS) == 2 else None
-    also = 0
-    if other:
-        also = int(data.q(f"""
-            SELECT count(*) n FROM st_play
-            WHERE player_id = {athlete_id} AND league = {data.lit(other)}
-        """).iloc[0]["n"])
+    # NO CROSS-LEAGUE LOOKUP. This page used to carry an `also_in` link to the same
+    # athlete_id in the other corpus -- the payoff of ESPN's shared id space. It is gone
+    # with the split, deliberately: the two corpora are separate schemas in separate
+    # DuckDB files, each career is scoped to its own league, and a link that reached
+    # across them would be the last thing in this app that did. It was also less reliable
+    # than it looked: 928 athletes carry a DIFFERENT id in each feed, so a quarter of
+    # cross-league careers never linked at all and the absence of a link meant nothing.
     return {"name": row["name"], "league": lg, "s0": int(row["s0"]), "s1": int(row["s1"]),
             "kicks": int(row["kicks"]), "games": int(row["games"]),
             "teams": row["teams"], "n_teams": int(row["n_teams"]),
             "last_team": row["last_team"], "last_team_id": row["last_team_id"],
-            "conf": row["conf"], "counts": counts,
-            "also_in": other if also else None, "also_kicks": also}
+            "conf": row["conf"], "counts": counts}
 
 
 def crumb(athlete_id: int, lg: str = league.DEFAULT):
@@ -124,13 +121,6 @@ def layout(athlete_id: int, lg: str = league.DEFAULT, mode: str = "dark"):
                                     size="compact-xs"),
                          href=f"/team/{p['league']}/{int(p['last_team_id'])}")
                 if p["last_team_id"] == p["last_team_id"] else None,
-                # The same athlete id in the other corpus. Only rendered when he is
-                # actually there -- 2,779 of 66,426 athletes are.
-                dcc.Link(dmc.Button(
-                    f"{league.LABEL[p['also_in']]} career · {p['also_kicks']:,} kicks",
-                    variant="light", size="compact-xs", color="grape"),
-                    href=f"/player/{p['also_in']}/{int(athlete_id)}")
-                if p["also_in"] else None,
                 dcc.Link(dmc.Button("Back to explorer", variant="subtle",
                                     size="compact-xs"), href="/"),
             ]),
@@ -160,7 +150,7 @@ def _kpis(ent, flt, mode):
     if not ent or ent.get("kind") != "player":
         raise PreventUpdate
     where = common.entity_where(ent, flt)
-    rows = common.agg_frame("st", "player", where)
+    rows = common.agg_frame("st", "player", where, lg)
     if not rows:
         return dmc.Alert("This player has no kicks under the current filters.",
                          color="gray", variant="light")
@@ -258,9 +248,9 @@ def _register_panel(kind: str):
         scoped = f"{where} AND {lens.kind_sql(_kind)}"
         # The second panel is the distance chart everywhere but the conversions,
         # which have no distance to plot -- see charts.conversion_by_type.
-        second = (charts.conversion_by_type(scoped, mode, 320) if _kind == "conversion"
-                  else charts.outcome_by_distance(scoped, [_kind], mode, 320))
-        return charts.season_trend(where, mode, _kind, 320), second
+        second = (charts.conversion_by_type(scoped, lg, mode, 320) if _kind == "conversion"
+                  else charts.outcome_by_distance(scoped, lg, [_kind], mode, 320))
+        return charts.season_trend(where, lg, mode, _kind, 320), second
 
 
 for _k in common.SEASON_KINDS:

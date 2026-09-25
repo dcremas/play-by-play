@@ -59,7 +59,7 @@ def layout(mode: str = "dark"):
 
 
 # --------------------------------------------------------------------------- kpis
-def _kick_kpis(flt, where, chips):
+def _kick_kpis(flt, where, lg: str, chips):
     key = columns.key_for(chips)
     r = data.q(f"""
         SELECT count(*) n,
@@ -79,7 +79,7 @@ def _kick_kpis(flt, where, chips):
                sum(CASE WHEN play_kind = 'kickoff' AND NOT COALESCE(onside, FALSE)
                         THEN 1 ELSE 0 END) ko,
                count(player_id) linked
-        FROM st_play WHERE {where}
+        FROM {lens.view("st", lg)} WHERE {where}
     """).iloc[0]
 
     n = int(r.n)
@@ -123,7 +123,7 @@ def _kick_kpis(flt, where, chips):
     return tiles, note
 
 
-def _scrim_kpis(key, where, chips):
+def _scrim_kpis(key, where, lg: str, chips):
     h = common.SCRIM_HEADERS[key]
     r = data.q(f"""
         SELECT count(*) n,
@@ -136,7 +136,7 @@ def _scrim_kpis(key, where, chips):
                count(*) FILTER (COALESCE(is_turnover, FALSE)) turn,
                count(*) FILTER (COALESCE(is_touchdown, FALSE)) td,
                count(*) FILTER (yards_impossible) bad
-        FROM {lens.VIEW[key]} WHERE {where}
+        FROM {lens.view(key, lg)} WHERE {where}
     """).iloc[0]
 
     n = int(r.n)
@@ -174,9 +174,9 @@ def _kpi_row(flt, mode):
     where = data.where_from_filters(flt)
     chips = data.chip_set(flt)
     if lens.is_scrimmage(key):
-        tiles, notes = _scrim_kpis(key, where, chips)
+        tiles, notes = _scrim_kpis(key, where, league.resolve((flt or {}).get("league")), chips)
     else:
-        tiles, notes = _kick_kpis(flt, where, chips)
+        tiles, notes = _kick_kpis(flt, where, league.resolve((flt or {}).get("league")), chips)
     if tiles is None:
         return dmc.Alert(f"No {lens.NOUN[key]} match these filters.", color="gray",
                          variant="light")
@@ -356,7 +356,7 @@ def _kickers(flt, minimum):
     key = lens.resolve((flt or {}).get("lens"))
     if lens.is_scrimmage(key):
         return []
-    return _floor(common.agg_frame(key, "player", data.where_from_filters(flt)),
+    return _floor(common.agg_frame(key, "player", data.where_from_filters(flt), league.resolve((flt or {}).get("league"))),
                   minimum)
 
 
@@ -367,7 +367,7 @@ def _kickers(flt, minimum):
 )
 def _teams(flt, minimum):
     key = lens.resolve((flt or {}).get("lens"))
-    return _floor(common.agg_frame(key, "team", data.where_from_filters(flt)), minimum)
+    return _floor(common.agg_frame(key, "team", data.where_from_filters(flt), league.resolve((flt or {}).get("league"))), minimum)
 
 
 @callback(

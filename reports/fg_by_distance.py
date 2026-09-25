@@ -41,7 +41,17 @@ from xlsxwriter.utility import xl_rowcol_to_cell
 from .workbook import F, MEASURES, Style, abs_range, heading, stamp, write_grid, write_notes
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB = os.path.join(HOME, "data", "out", "pbp.duckdb")
+LEAGUES = ("cfb", "nfl")
+
+
+def db_path(league: str) -> str:
+    """One snapshot per corpus -- scripts/build_snapshot.py writes both.
+
+    The league selects the FILE. It used to be a `WHERE league = ...` predicate over a
+    combined snapshot; with the corpora split there is no combined table to filter, and
+    a predicate that could be forgotten is replaced by a path that cannot be.
+    """
+    return os.path.join(HOME, "data", "out", f"pbp_{league}.duckdb")
 OUT = os.path.join(HOME, "data", "out", "fg_by_distance.xlsx")
 
 # Keyed by lower bound so the rows sort numerically; 999 is the unparseable bucket.
@@ -64,8 +74,7 @@ FACTS_SQL = f"""
 SELECT kicking_team AS team, season, {BAND_EXPR} AS band,
        count(*) AS att, sum(fg_made::int) AS made
 FROM play
-WHERE play_kind = 'field_goal' AND fg_made IS NOT NULL
-  AND league = '{{league}}' {{div}}
+WHERE play_kind = 'field_goal' AND fg_made IS NOT NULL {{div}}
 {{extra}}
 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
 """
@@ -75,7 +84,7 @@ SELECT count(*) FILTER (WHERE fg_made IS NULL)                                AS
        count(*) FILTER (WHERE fg_made IS NOT NULL {{div}}
                           AND ({BAND_EXPR}) = 999)                            AS unparsed,
        count(*) FILTER (WHERE fg_made IS NOT NULL AND {{non_top}})            AS non_fbs
-FROM play WHERE play_kind = 'field_goal' AND league = '{{league}}' {{extra}}
+FROM play WHERE play_kind = 'field_goal' {{extra}}
 """
 
 HID = "_data"          # hidden sheet holding the team x season x band facts
@@ -122,7 +131,10 @@ TIER = {"cfb": "FBS", "nfl": "NFL"}
 
 
 def build(con, out_path: str, default_team: str | None, seasons,
-          league: str = "cfb") -> str:
+          league: str = "cfb", db: str | None = None) -> str:
+    # The stamp names the snapshot the workbook was cut from, which is now one FILE per
+    # corpus rather than a league column inside a shared one.
+    db = db or db_path(league)
     tier = TIER[league]
     facts, excluded = load(con, seasons, league)
     if not facts:
@@ -146,7 +158,7 @@ def build(con, out_path: str, default_team: str | None, seasons,
 
     write_hidden(ws_hid, facts, teams)
     span = 1 + (len(years) + 1) * len(MEASURES)
-    sub = stamp(os.path.relpath(DB, HOME), os.path.getmtime(DB))
+    sub = stamp(os.path.relpath(db, HOME), os.path.getmtime(db))
 
     totals_sheet(ws_tot, style, years, all_teams, span, sub, tier)
     team_sheet(ws_team, style, years, mine, span, sub, teams, team, len(facts), tier)
@@ -286,12 +298,13 @@ def notes_sheet(ws, style, years, all_teams, excluded, team, sub, tier, league) 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--db", default=DB)
+    ap.add_argument("--db", default=None)
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--team", default=None, help="team the By Team sheet opens on")
     ap.add_argument("--seasons", default=None, help="e.g. 2019-2025")
-    ap.add_argument("--league", default="cfb", choices=["cfb", "nfl"],
-                    help="which corpus (default college). The snapshot holds both.")
+    ap.add_argument("--league", default="cfb", choices=list(LEAGUES),
+                    help="which corpus (default college). One snapshot FILE per corpus; "
+                         "--db overrides the path it implies.")
     a = ap.parse_args()
 
     seasons = None
@@ -299,7 +312,8 @@ def main() -> None:
         lo, _, hi = a.seasons.partition("-")
         seasons = (int(lo), int(hi or lo))
 
-    con = duckdb.connect(a.db, read_only=True)
+    db = a.db or db_path(a.league)
+    con = duckdb.connect(db, read_only=True)
     out = a.out
     if a.league != "cfb" and out == OUT:
         root, ext = os.path.splitext(out)

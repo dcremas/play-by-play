@@ -53,7 +53,17 @@ import pandas as pd
 from .margins import install as install_margins
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB = os.path.join(HOME, "data", "out", "pbp.duckdb")
+LEAGUES = ("cfb", "nfl")
+
+
+def db_path(league: str) -> str:
+    """One snapshot per corpus -- scripts/build_snapshot.py writes both.
+
+    The league selects the FILE. It used to be a `WHERE league = ...` predicate over a
+    combined snapshot; with the corpora split there is no combined table to filter, and
+    a predicate that could be forgotten is replaced by a path that cannot be.
+    """
+    return os.path.join(HOME, "data", "out", f"pbp_{league}.duckdb")
 
 P4 = ("'Atlantic Coast Conference'", "'Big Ten Conference'",
       "'Big 12 Conference'", "'Southeastern Conference'")
@@ -84,7 +94,7 @@ def build(con, league: str, scope: str, seasons: tuple[int, int],
     SELECT season, kicking_team_id AS team_id, kicking_team AS team,
            kicking_conference AS conf, kicker_athlete_id AS aid, play_kind
     FROM play
-    WHERE league = '{league}' AND play_kind IN {KINDS}
+    WHERE play_kind IN {KINDS}
       AND season BETWEEN {lo} AND {hi} AND ({where});
 
     CREATE OR REPLACE TEMP VIEW athlete_season AS
@@ -149,8 +159,7 @@ def build(con, league: str, scope: str, seasons: tuple[int, int],
                 WHEN p.kicker_athlete_id = e.p1  THEN 'punter'
                 WHEN p.kicker_athlete_id = e.ko1 THEN 'kickoff specialist'
                 ELSE 'someone else' END AS who
-    FROM play p JOIN eligible e ON e.season = p.season AND e.team_id = p.kicking_team_id
-    WHERE p.league = '{league}' AND p.play_kind = 'kickoff'
+    FROM play p JOIN eligible e ON e.season = p.season AND e.team_id = p.kicking_team_id WHERE p.play_kind = 'kickoff'
       AND p.kicker_athlete_id IS NOT NULL;
 
     -- What a kickoff actually produced. The bottom line is where the receiving team then
@@ -163,13 +172,13 @@ def build(con, league: str, scope: str, seasons: tuple[int, int],
            k.returned_for_td, 100 - f.yards_to_goal AS opp_start
     FROM (SELECT p.*, try_cast(regexp_extract(split_part(p.play_uid, ':', 3), '^[0-9]+')
                                 AS BIGINT) AS seq
-          FROM play p WHERE p.league = '{league}' AND p.play_kind = 'kickoff'
+          FROM play p WHERE p.play_kind = 'kickoff'
             AND NOT p.onside AND p.kicker_athlete_id IS NOT NULL) k
     LEFT JOIN LATERAL (
       SELECT s.yards_to_goal FROM (
         SELECT game_id, offense_team_id, yards_to_goal,
                try_cast(regexp_extract(split_part(play_uid, ':', 3), '^[0-9]+') AS BIGINT) AS seq
-        FROM scrimmage WHERE league = '{league}') s
+        FROM scrimmage) s
       WHERE s.game_id = k.game_id AND s.offense_team_id = k.receiving_team_id
         AND s.seq > k.seq ORDER BY s.seq LIMIT 1) f ON true;
 
@@ -217,7 +226,7 @@ def build_success(con, league: str, min_scheduled: int = 9) -> None:
                 WHEN r.win_pct >= 30 THEN 'd. .300-.499'
                 ELSE                      'e. under .300' END AS tier
     FROM eligible e
-    JOIN team_record r ON r.league = '{league}' AND r.season = e.season
+    JOIN team_record r ON r.season = e.season
                       AND r.team_id = e.team_id
     WHERE r.scheduled >= {min_scheduled};
     """)
@@ -505,7 +514,7 @@ def main() -> None:
     pd.set_option("display.max_rows", 200)
     pd.set_option("display.max_colwidth", 60)
 
-    con = duckdb.connect(DB, read_only=True)
+    con = duckdb.connect(db_path(args.league), read_only=True)
     seasons = (args.from_season, args.to_season)
     floors = (args.min_ko, args.min_pk, args.min_punt)
 

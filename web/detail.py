@@ -56,7 +56,7 @@ def _conf_badge(conf):
     return dmc.Badge(f"name {label} · {conf:.2f}", variant="light", size="xs", radius="sm")
 
 
-def _prior_line(row) -> str | None:
+def _prior_line(row, lg: str) -> str | None:
     """The kicker's season-to-date line immediately before this kick."""
     pid, season, kind = row["player_id"], int(row["season"]), row["play_kind"]
     if _na(pid):
@@ -70,13 +70,13 @@ def _prior_line(row) -> str | None:
     if kind == "field_goal":
         r = data.q(f"""SELECT count(*) n,
                               sum(CASE WHEN outcome='Made' THEN 1 ELSE 0 END) made
-                       FROM st_play WHERE {where} AND outcome <> 'Negated'""").iloc[0]
+                       FROM {lens.view("st", lg)} WHERE {where} AND outcome <> 'Negated'""").iloc[0]
         if not r.n:
             return "first field goal attempt of the season"
         return f"{int(r.made)} of {int(r.n)} on the season before this kick"
     if kind == "punt":
         r = data.q(f"""SELECT count(*) n, avg(punt_gross_yds) g, avg(punt_net_yds) net
-                       FROM st_play WHERE {where}""").iloc[0]
+                       FROM {lens.view("st", lg)} WHERE {where}""").iloc[0]
         if not r.n:
             return "first punt of the season"
         net = "" if _na(r.net) else f", {r.net:.1f} net"
@@ -85,13 +85,13 @@ def _prior_line(row) -> str | None:
         noun = "extra point" if kind == "pat" else "two-point try"
         r = data.q(f"""SELECT count(*) n,
                               sum(CASE WHEN outcome='Converted' THEN 1 ELSE 0 END) made
-                       FROM st_play WHERE {where}""").iloc[0]
+                       FROM {lens.view("st", lg)} WHERE {where}""").iloc[0]
         if not r.n:
             return f"first {noun} of the season"
         return f"{int(r.made)} of {int(r.n)} on the season before this one"
     r = data.q(f"""SELECT count(*) n,
                           sum(CASE WHEN outcome='Touchback' THEN 1 ELSE 0 END) tb
-                   FROM st_play WHERE {where}""").iloc[0]
+                   FROM {lens.view("st", lg)} WHERE {where}""").iloc[0]
     if not r.n:
         return "first kickoff of the season"
     return (f"{int(r.n)} kickoffs on the season before this one · "
@@ -147,18 +147,18 @@ def _headline(row) -> str:
     return f"{'?' if _na(k) else int(k)} yd {tag.lower()} · {row['outcome']}"
 
 
-def render(uid: str, key: str = "st", mode: str = "dark"):
+def render(uid: str, lg: str, key: str = "st", mode: str = "dark"):
     """Dispatch to the drawer the lens's rows deserve."""
     key = lens.resolve(key)
     if lens.is_scrimmage(key):
-        return _render_scrimmage(uid, key, mode)
-    return _render_kick(uid, mode)
+        return _render_scrimmage(uid, key, lg, mode)
+    return _render_kick(uid, lg, mode)
 
 
-def _render_kick(uid: str, mode: str = "dark"):
+def _render_kick(uid: str, lg: str, mode: str = "dark"):
     df = data.q(f"""
         SELECT {', '.join(columns.detail_fields("st"))}
-        FROM st_play WHERE play_uid = {data.lit(uid)}
+        FROM {lens.view("st", lg)} WHERE play_uid = {data.lit(uid)}
     """)
     if df.empty:
         return dmc.Text("That play is no longer in the snapshot.", size="sm"), ""
@@ -171,7 +171,7 @@ def _render_kick(uid: str, mode: str = "dark"):
     # ---------------------------------------------------------------- people
     people = [
         _person(_ROLE[row["play_kind"]], v("player"), athlete_id=v("player_id"),
-                conf=v("player_conf"), sub=_prior_line(row), mode=mode,
+                conf=v("player_conf"), sub=_prior_line(row, lg), mode=mode,
                 lg=row.get("league")),
         _person("Returner", v("returner_name"), athlete_id=v("returner_athlete_id"),
                 sub="No profile page — this app profiles the kicking side only",
@@ -333,10 +333,10 @@ def _bridge_people(uid: str) -> dict[str, list[str]]:
 _NO_PROFILE = "No profile page yet — profiles are kicking-side only"
 
 
-def _render_scrimmage(uid: str, key: str, mode: str = "dark"):
+def _render_scrimmage(uid: str, lg: str, key: str, mode: str = "dark"):
     df = data.q(f"""
         SELECT {', '.join(columns.detail_fields(key))}
-        FROM {lens.VIEW[key]} WHERE play_uid = {data.lit(uid)}
+        FROM {lens.view(key, lg)} WHERE play_uid = {data.lit(uid)}
     """)
     if df.empty:
         return dmc.Text("That play is no longer in the snapshot.", size="sm"), ""

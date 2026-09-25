@@ -7,7 +7,8 @@ instances, by player and by team, and let me take them apart."
 .venv/bin/python -m web.app          # http://127.0.0.1:8060
 ```
 
-It reads `data/out/pbp.duckdb` **read-only**, attached to an in-memory database, so it
+It reads `data/out/pbp_cfb.duckdb` and `data/out/pbp_nfl.duckdb` **read-only** — one file
+per corpus, both attached to an in-memory database — so it
 runs alongside any other reader of the snapshot without contending for the file.
 
 ## Two choices: which league, then which side

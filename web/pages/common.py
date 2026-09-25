@@ -116,11 +116,11 @@ def txt(field, header, width=150, pinned=None):
 
 
 # --------------------------------------------------------------------------- aggregates
-def agg_frame(key: str, grain: str, where: str) -> list[dict]:
+def agg_frame(key: str, grain: str, where: str, lg: str) -> list[dict]:
     """One row per player or per team over the given selection."""
     key = lens.resolve(key)
     if lens.is_scrimmage(key):
-        return _scrim_agg_frame(key, grain, where)
+        return _scrim_agg_frame(key, grain, where, lg)
     if grain == "player":
         col, name_expr = "player_id", "any_value(player) AS player"
         extra = """,
@@ -136,20 +136,21 @@ def agg_frame(key: str, grain: str, where: str) -> list[dict]:
             count(DISTINCT player_id) AS kickers,
             arg_max(conference, season) AS conference"""
         guard = "team_id IS NOT NULL"
-    # `league` rides along so a row can link to the right profile. Every row in the frame
-    # is already one league -- `where` carries the predicate -- so any_value is exact here
+    # `league` rides along so a row can link to the right profile. It is a LITERAL now:
+    # the frame reads one corpus's view, so the corpus is `lg` and there is no column to
+    # take it from. Emitting it keeps every downstream link builder unchanged
     # rather than a pick among differing values.
     df = data.q(f"""
         WITH agg AS (
-            SELECT {col}, {name_expr}, any_value(league) AS league, {METRICS} {extra}
-            FROM st_play WHERE {where} AND {guard} GROUP BY {col}
+            SELECT {col}, {name_expr}, {data.lit(lg)} AS league, {METRICS} {extra}
+            FROM {lens.view("st", lg)} WHERE {where} AND {guard} GROUP BY {col}
         )
         SELECT *, {DERIVED} FROM agg ORDER BY kicks DESC
     """)
     return data.records(df)
 
 
-def _scrim_agg_frame(key: str, grain: str, where: str) -> list[dict]:
+def _scrim_agg_frame(key: str, grain: str, where: str, lg: str) -> list[dict]:
     """Team rollups on a scrimmage lens. Player grain is not offered yet -- see
     lens.GRAINS for why -- so anything but `team` comes back empty rather than
     guessing a role."""
@@ -157,10 +158,10 @@ def _scrim_agg_frame(key: str, grain: str, where: str) -> list[dict]:
         return []
     df = data.q(f"""
         WITH agg AS (
-            SELECT team_id, any_value(team) AS team, any_value(league) AS league,
+            SELECT team_id, any_value(team) AS team, {data.lit(lg)} AS league,
                    {SCRIM_METRICS},
                    arg_max(conference, season) AS conference
-            FROM {lens.VIEW[key]} WHERE {where} AND team_id IS NOT NULL
+            FROM {lens.view(key, lg)} WHERE {where} AND team_id IS NOT NULL
             GROUP BY team_id
         )
         SELECT *, {SCRIM_DERIVED} FROM agg ORDER BY plays DESC
@@ -238,7 +239,7 @@ _SEASON_SQL = {
                                 AND outcome = 'Made')                     AS m_40,
                count(*) FILTER (fg_distance_yds >= 50 AND outcome <> 'Negated') AS a_50,
                count(*) FILTER (fg_distance_yds >= 50 AND outcome = 'Made')     AS m_50
-        FROM st_play WHERE {w} AND play_kind = 'field_goal' GROUP BY 1 ORDER BY 1 DESC
+        FROM {lens.view("st", lg)} WHERE {w} AND play_kind = 'field_goal' GROUP BY 1 ORDER BY 1 DESC
     """, "made::DOUBLE / nullif(att,0) AS rate"),
 
     "punt": ("""
@@ -255,7 +256,7 @@ _SEASON_SQL = {
                count(*) FILTER (outcome = 'Returned')             AS returned,
                count(*) FILTER (outcome = 'Blocked')              AS blocked,
                count(*) FILTER (outcome = 'Unknown')              AS unknown
-        FROM st_play WHERE {w} AND play_kind = 'punt' GROUP BY 1 ORDER BY 1 DESC
+        FROM {lens.view("st", lg)} WHERE {w} AND play_kind = 'punt' GROUP BY 1 ORDER BY 1 DESC
     """, "unknown::DOUBLE / nullif(punts,0) AS unk_share"),
 
     "kickoff": ("""
@@ -271,7 +272,7 @@ _SEASON_SQL = {
                avg(return_yds) FILTER (outcome = 'Returned')      AS ret_allowed,
                count(*) FILTER (returned_for_td)                  AS ret_td,
                count(*) FILTER (outcome = 'Unknown')              AS unknown
-        FROM st_play WHERE {w} AND play_kind = 'kickoff' GROUP BY 1 ORDER BY 1 DESC
+        FROM {lens.view("st", lg)} WHERE {w} AND play_kind = 'kickoff' GROUP BY 1 ORDER BY 1 DESC
     """, "touchback::DOUBLE / nullif(denom,0) AS tb_rate, "
          "returned::DOUBLE / nullif(denom,0) AS ret_rate, "
          "unknown::DOUBLE / nullif(kickoffs,0) AS unk_share"),
@@ -300,7 +301,7 @@ _SEASON_SQL = {
                count(*) FILTER (play_kind = 'defensive_conversion')  AS def_conv,
                count(*)                                              AS attempts,
                count(*) FILTER (outcome = 'Unknown')                 AS unknown
-        FROM st_play WHERE {w}
+        FROM {lens.view("st", lg)} WHERE {w}
           AND play_kind IN ('pat', 'two_point', 'defensive_conversion')
         GROUP BY 1 ORDER BY 1 DESC
     """, "pat_made::DOUBLE / nullif(pat_att,0) AS pat_rate, "
@@ -457,7 +458,7 @@ def play_grid(mode: str, phases, extra=None, height: str = "480px"):
     State("ent", "data"), State("flt", "data"),
     prevent_initial_call=True,
 )
-def _ent_rows(req, ent, flt):
+def _ent_rows(req, ent, flt, lg: str):
     if not req or not ent:
         raise PreventUpdate
     where = (f"{entity_where(ent, flt)} AND "
@@ -466,7 +467,7 @@ def _ent_rows(req, ent, flt):
     start = int(req.get("startRow") or 0)
     end = int(req.get("endRow") or (start + ui.BLOCK))
     df = data.q(f"""
-        SELECT * FROM st_play WHERE {where}
+        SELECT * FROM {lens.view("st", lg)} WHERE {where}
         ORDER BY {order} LIMIT {max(end - start, 1)} OFFSET {start}
     """)
     return {"rowData": data.records(df),

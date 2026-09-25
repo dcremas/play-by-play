@@ -604,13 +604,19 @@ def _not_found(path):
     Output("detail-drawer", "title"),
     Input("detail-uid", "data"),
     State("lens", "data"),
+    # The corpus the drawer must read. play_uid does not collide between the two
+    # (checked: zero shared ids), so reading the wrong one finds NOTHING rather
+    # than the wrong play -- an empty drawer, not a lie. Passed explicitly anyway,
+    # because "it happens to be safe" is not a property to rely on.
+    State("league", "data"),
     State("mode", "data"),
     prevent_initial_call=True,
 )
-def _open_detail(uid, key, mode):
+def _open_detail(uid, key, lg, mode):
     if not uid:
         return False, no_update, no_update
-    body, title = detail.render(uid, lens.resolve(key), mode or "dark")
+    body, title = detail.render(uid, league.resolve(lg), lens.resolve(key),
+                                mode or "dark")
     return True, body, title
 
 

@@ -28,7 +28,20 @@ KEYS = ["off", "def", "st"]
 DEFAULT = "off"
 
 LABEL = {"off": "Offense", "def": "Defense", "st": "Special teams"}
+# Base view names. They are PREFIXED BY LEAGUE at creation -- cfb_st_play,
+# nfl_st_play -- because there is now one DuckDB file per corpus and the league
+# selects the view, not a WHERE clause. See web/data.py's con().
 VIEW = {"off": "off_play", "def": "def_play", "st": "st_play"}
+
+
+def view(key: str, league_key: str | None = None) -> str:
+    """The view for one lens in one corpus.
+
+    The league is part of the NAME rather than a predicate, which is the whole
+    point of the split: there is no combined table left to forget to filter.
+    """
+    from . import league as _league
+    return f"{_league.resolve(league_key)}_{VIEW[key]}"
 
 # What one row is, for counts and prose. "1,510,679 plays selected".
 NOUN = {"off": "plays", "def": "plays", "st": "kicks"}
