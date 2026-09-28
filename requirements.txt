@@ -6,3 +6,9 @@ numpy==2.5.2
 pandas==3.0.5
 plotly==7.0.0
 xlsxwriter==3.2.9
+
+# Not imported anywhere, and required anyway: DuckDB builds the tz-aware value
+# for snapshot_meta.built_at (TIMESTAMP WITH TIME ZONE) through pytz, and the
+# apps die at import without it. It used to arrive as a pandas dependency;
+# pandas 3.0 dropped it, so it has to be declared.
+pytz==2026.3.post1
