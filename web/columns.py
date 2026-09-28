@@ -197,7 +197,13 @@ def catalogue(mode: str, key: str = "st") -> dict[str, dict]:
 
 # --------------------------------------------------------------------------- column sets
 _KICK_HEAD = ["game_date", "season", "player", "team", "opponent", "site"]
-_KICK_TAIL = ["qtr", "clock", "score_diff"]
+# Quarter, clock and score margin. Offered on every kick phase, default on none of
+# them. They answer "when in the game", which is a question you ask of a selection you
+# have already narrowed -- and as three permanent columns they pushed the measures the
+# phase is actually about toward the right edge. The scrimmage lenses have always
+# treated them as optional (see _OPT_SCRIM), so all three sides now agree. Add columns
+# brings them back.
+_CLOCK_COLS = ["qtr", "clock", "score_diff"]
 
 _OFF_HEAD = ["game_date", "season", "player", "team", "opponent"]
 _DEF_HEAD = ["game_date", "season", "team", "opponent"]
@@ -205,16 +211,14 @@ _SIT = ["down", "dist_to_go", "yards_to_goal"]
 
 DEFAULTS = {
     "st": {
-        "field_goal": _KICK_HEAD + ["fg_distance_yds", "outcome",
-                                    "miss_reason"] + _KICK_TAIL,
+        "field_goal": _KICK_HEAD + ["fg_distance_yds", "outcome", "miss_reason"],
         "punt": _KICK_HEAD + ["punt_gross_yds", "punt_net_yds", "return_yds", "outcome",
-                              "returner_name", "yards_to_goal"] + _KICK_TAIL[:1],
+                              "returner_name", "yards_to_goal"],
         "kickoff": _KICK_HEAD + ["kickoff_yds", "return_yds", "outcome",
-                                 "returner_name", "onside"] + _KICK_TAIL,
-        "conversion": _KICK_HEAD + ["phase", "outcome",
-                                    "two_point_type"] + _KICK_TAIL,
+                                 "returner_name", "onside"],
+        "conversion": _KICK_HEAD + ["phase", "outcome", "two_point_type"],
         "mixed": ["game_date", "season", "phase", "player", "team", "opponent",
-                  "kick_yds", "return_yds", "outcome"] + _KICK_TAIL,
+                  "kick_yds", "return_yds", "outcome"],
     },
     "off": {
         "rush": _OFF_HEAD + _SIT + ["yards_gained", "outcome", "tackler_name"],
@@ -275,12 +279,12 @@ _OPT_SCRIM = [
 
 OPTIONAL = {
     "st": {
-        "field_goal": ["blocker_name", "negated_by_penalty"] + _OPT_KICK,
-        "punt": ["blocker_name", "qtr", "clock", "score_diff"] + _OPT_KICK,
-        "kickoff": _OPT_KICK,
-        "conversion": _OPT_CONV,
+        "field_goal": ["blocker_name", "negated_by_penalty"] + _CLOCK_COLS + _OPT_KICK,
+        "punt": ["blocker_name"] + _CLOCK_COLS + _OPT_KICK,
+        "kickoff": _CLOCK_COLS + _OPT_KICK,
+        "conversion": _CLOCK_COLS + _OPT_CONV,
         "mixed": ["fg_distance_yds", "punt_gross_yds", "punt_net_yds", "kickoff_yds",
-                  "returner_name", "miss_reason", "onside"] + _OPT_KICK,
+                  "returner_name", "miss_reason", "onside"] + _CLOCK_COLS + _OPT_KICK,
     },
     "off": {k: _OPT_SCRIM for k in ("rush", "pass", "sack", "penalty", "other",
                                     "mixed")},
