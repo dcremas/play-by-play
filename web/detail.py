@@ -119,11 +119,11 @@ def _person(role, name, *, athlete_id=None, conf=None, sub=None, mode="dark",
                      ]))
 
 
-def _assists(uid: str) -> list[str]:
+def _assists(uid: str, lg: str) -> list[str]:
     df = data.q(f"""
         SELECT a.known_name AS name
-        FROM snap.play_athlete pa
-        JOIN snap.dim_athlete a ON a.athlete_id = pa.athlete_id
+        FROM {lg}.play_athlete pa
+        JOIN {lg}.dim_athlete a ON a.athlete_id = pa.athlete_id
         WHERE pa.play_uid = {data.lit(uid)} AND pa.role = 'assistedBy'
         ORDER BY pa.ordinal
     """)
@@ -151,7 +151,7 @@ def render(uid: str, lg: str, key: str = "st", mode: str = "dark"):
     """Dispatch to the drawer the lens's rows deserve."""
     key = lens.resolve(key)
     if lens.is_scrimmage(key):
-        return _render_scrimmage(uid, key, lg, mode)
+        return _render_scrimmage(uid, lg, key, mode)
     return _render_kick(uid, lg, mode)
 
 
@@ -172,21 +172,21 @@ def _render_kick(uid: str, lg: str, mode: str = "dark"):
     people = [
         _person(_ROLE[row["play_kind"]], v("player"), athlete_id=v("player_id"),
                 conf=v("player_conf"), sub=_prior_line(row, lg), mode=mode,
-                lg=row.get("league")),
+                lg=lg),
         _person("Returner", v("returner_name"), athlete_id=v("returner_athlete_id"),
                 sub="No profile page — this app profiles the kicking side only",
-                mode=mode, lg=row.get("league")),
+                mode=mode, lg=lg),
         _person("Tackler", v("tackler_name"), athlete_id=v("tackler_athlete_id"),
-                mode=mode, lg=row.get("league")),
-        _person("Got a hand on it", v("blocker_name"), mode=mode, lg=row.get("league")),
+                mode=mode, lg=lg),
+        _person("Got a hand on it", v("blocker_name"), mode=mode, lg=lg),
         # NFL only. The gamebook names the long snapper on every snapped kick and the
         # holder on every place kick; the college feed names neither, so these two cards
         # simply do not appear on a college row -- _person returns None on an empty name.
-        _person("Long snapper", v("snapper_name"), mode=mode, lg=row.get("league")),
-        _person("Holder", v("holder_name"), mode=mode, lg=row.get("league")),
+        _person("Long snapper", v("snapper_name"), mode=mode, lg=lg),
+        _person("Holder", v("holder_name"), mode=mode, lg=lg),
     ]
     people = [p for p in people if p is not None]
-    assists = _assists(uid)
+    assists = _assists(uid, lg)
     if assists:
         people.append(_person("Assisted by", ", ".join(assists), mode=mode))
 
@@ -268,11 +268,11 @@ def _render_kick(uid: str, lg: str, mode: str = "dark"):
         ]),
         dmc.Group(gap=8, children=[
             dcc.Link(dmc.Button(f"{row['team']} profile", variant="light", size="compact-xs"),
-                     href=routes.url(f"/team/{league.resolve(row.get('league'))}/{int(row['team_id'])}"))
+                     href=routes.url(f"/team/{league.resolve(lg)}/{int(row['team_id'])}"))
             if not _na(row["team_id"]) else None,
             dcc.Link(dmc.Button(f"{row['opponent']} profile", variant="subtle",
                                 size="compact-xs"),
-                     href=routes.url(f"/team/{league.resolve(row.get('league'))}/{int(row['opp_id'])}"))
+                     href=routes.url(f"/team/{league.resolve(lg)}/{int(row['opp_id'])}"))
             if not _na(row["opp_id"]) else None,
         ]),
         unknown_note,
@@ -315,11 +315,11 @@ _BRIDGE_ROLES = [
 ]
 
 
-def _bridge_people(uid: str) -> dict[str, list[str]]:
+def _bridge_people(uid: str, lg: str) -> dict[str, list[str]]:
     df = data.q(f"""
         SELECT sa.role, a.known_name AS name
-        FROM snap.scrimmage_athlete sa
-        JOIN snap.dim_athlete a ON a.athlete_id = sa.athlete_id
+        FROM {lg}.scrimmage_athlete sa
+        JOIN {lg}.dim_athlete a ON a.athlete_id = sa.athlete_id
         WHERE sa.play_uid = {data.lit(uid)}
         ORDER BY sa.role, sa.ordinal
     """)
@@ -350,7 +350,7 @@ def _render_scrimmage(uid: str, lg: str, key: str, mode: str = "dark"):
         p = v(name)
         return f"{p}" if p else None
 
-    bridge = _bridge_people(uid)
+    bridge = _bridge_people(uid, lg)
 
     # ---------------------------------------------------------------- people
     people = [

@@ -322,10 +322,13 @@ def optional_options(key: str, chips, mode: str = "dark") -> list[dict]:
 
 # Columns fetched for the play-detail drawer regardless of what the grid shows.
 _DETAIL_SHARED = [
-    # `league` is on every detail row, and not only for display: the drawer builds
-    # league-qualified profile links out of it, and a bare team or athlete id is ambiguous
-    # across the two corpora.
-    "play_uid", "league", "phase", "play_kind", "season", "week", "season_type", "game_id",
+    # No `league` here. The drawer does still need the corpus, and for the reason this
+    # comment used to give -- it builds league-qualified profile links, and a bare team
+    # or athlete id is ambiguous across the two. It takes it from the `lg` argument it is
+    # called with. There is no `league` COLUMN to take it from: the split put the corpus
+    # in the view NAME (see lens.view), and asking for one here made every single detail
+    # render raise a BinderException.
+    "play_uid", "phase", "play_kind", "season", "week", "season_type", "game_id",
     "game_date", "outcome", "outcome_unknown", "player", "player_id", "player_conf",
     "player_name_unparsed", "team", "team_id", "opponent", "opp_id", "site",
     "conference", "opp_conference", "qtr", "clock", "down", "dist_to_go",
