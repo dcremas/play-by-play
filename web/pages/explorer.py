@@ -331,7 +331,7 @@ def _count(flt):
     other route."""
     key = lens.resolve((flt or {}).get("lens"))
     n = data.count_rows(data.view(flt), data.where_from_filters(flt))
-    return f"{n:,} {lens.NOUN[key]} selected"
+    return f"{n:,} {lens.NOUN[key]}"
 
 
 @callback(

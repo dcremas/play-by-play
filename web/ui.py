@@ -91,6 +91,32 @@ def note(children, tone: str = "neutral"):
     ])
 
 
+def hint(text, tone: str = "neutral"):
+    """The same caveat as `note`, folded into a dot beside the control it is about.
+
+    A note is a line of prose that sits under its control forever. In the body that is
+    right -- a reader meets a number and the caveat is next to it. In the SIDEBAR it was
+    not: two of these blocks were 39% of the panel's height, permanently, long after they
+    had been read once, and they pushed the filters they explained below the fold.
+
+    So the text is unchanged and still attached to its own control; it is one hover away
+    rather than always open. `events` includes focus and touch, because a hover-only
+    affordance is unreachable by keyboard and on a tablet.
+
+    Returns None for empty text -- several of these are per-lens and one lens has nothing
+    to say -- and Dash renders None as nothing, so the dot is absent rather than present
+    and empty.
+    """
+    if not text:
+        return None
+    return dmc.Tooltip(
+        label=text, multiline=True, w=300, withArrow=True, position="right",
+        openDelay=100, closeDelay=80, zIndex=1500,
+        events={"hover": True, "focus": True, "touch": True},
+        children=dmc.Text("i", span=True, className=f"hint-dot hint-{tone}", tabIndex=0),
+    )
+
+
 def graph(gid: str, height: int = 300):
     """A Plotly panel.
 

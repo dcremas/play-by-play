@@ -142,3 +142,133 @@ body { background: var(--st-plane); }
 }
 a.st-link { color: inherit; text-decoration: none; border-bottom: 1px solid var(--st-axis); }
 a.st-link:hover { border-bottom-color: var(--st-ink); }
+
+/* ------------------------------------------------------------------ sidebar hints */
+/* The caveat dot. Sized to the uppercase filter label beside it rather than to body
+   text, so the pair reads as one line of chrome and not as a label with a bullet
+   after it. `cursor: help` is the only signal that it is interactive -- a button
+   ring here would out-weigh the control it annotates. */
+.hint-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--st-axis);
+  color: var(--st-muted);
+  font-size: 9px;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;  /* a legible 9px dotless-i */
+  line-height: 1;
+  cursor: help;
+  user-select: none;
+  flex: none;
+}
+.hint-dot:hover, .hint-dot:focus-visible {
+  border-color: var(--st-ink2);
+  color: var(--st-ink);
+  outline: none;
+}
+.hint-info { border-color: color-mix(in srgb, #3987e5 55%, transparent); }
+.hint-info:hover, .hint-info:focus-visible { border-color: #3987e5; }
+
+/* ------------------------------------------------------------------ filter drawer */
+/* The three groups inside `More filters`. Mantine's default accordion pads each
+   control generously for a page; nested two deep in a 296px panel that padding is
+   what pushed the groups apart in the first place, so it is pulled back here and the
+   left inset is dropped entirely -- the outer card already provides one. */
+.f-subgroups .mantine-Accordion-control { padding: 7px 0; }
+.f-subgroups .mantine-Accordion-content { padding: 0 0 8px 0; }
+.f-subgroups .mantine-Accordion-item { border-color: var(--st-border); }
+.f-subgroups .mantine-Accordion-item:first-of-type { border-top: none; }
+.f-subgroups .mantine-Accordion-item:last-of-type { border-bottom: none; }
+
+/* The `More filters` disclosure. Styled to match the Accordion cards it replaced --
+   it reads as the same control, it just does not measure its own height. */
+.f-drawer { background: transparent; border-color: var(--st-border); }
+.f-drawer-toggle { padding: 10px 12px; border-radius: var(--mantine-radius-sm); }
+.f-drawer-toggle:hover { background: color-mix(in srgb, var(--st-ink) 4%, transparent); }
+.f-drawer-toggle:focus-visible { outline: 1px solid var(--st-axis); outline-offset: -1px; }
+#f-drawer-body { padding: 0 12px 10px 12px; }
+.f-chevron {
+  color: var(--st-muted); font-size: 14px; line-height: 1;
+  transition: transform 150ms; transform-origin: center 40%;
+}
+.f-chevron-open { transform: rotate(180deg); }
+
+/* Tooltips carry this app's surfaces rather than Mantine's default light-grey chip.
+   Applies to every tooltip -- the caveat dots, the snapshot stamp, the partial-season
+   badges -- because a popover that inverts the palette reads as belonging to the
+   browser rather than to the page. The border is what separates a dark tooltip from
+   the dark surface under it, so it is not optional here the way a shadow would be. */
+.mantine-Tooltip-tooltip {
+  background: var(--st-surface) !important;
+  color: var(--st-ink) !important;
+  border: 1px solid var(--st-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mantine-Tooltip-arrow { background: var(--st-surface) !important; border: 1px solid var(--st-border); }
+
+/* ------------------------------------------------------------------ header type */
+/* The wordmark and its subtitle. The brand was `size="sm"` body text with a weight on
+   it; at 15px with tight tracking it reads as a title, which is what lets the corpus
+   line sit under it as a subtitle instead of competing with it. */
+.st-brand {
+  font-size: 15px; font-weight: 680; letter-spacing: -0.015em;
+  line-height: 1.1; color: var(--st-ink);
+}
+.st-brand-sub {
+  font-size: 10.5px; color: var(--st-muted); line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+/* Captions over the selectors and over the live count. One face for every small
+   uppercase label in the chrome -- the same one the sidebar's filter labels use, so
+   the header and the panel read as the same system. */
+.st-cap {
+  text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 9px; font-weight: 600; color: var(--st-muted); line-height: 1;
+}
+/* The one number on the header that moves with every click. Tabular so the row does
+   not jitter sideways as the count changes width. */
+.st-readout {
+  font-size: 15px; font-weight: 600; color: var(--st-ink);
+  line-height: 1.1; font-variant-numeric: tabular-nums;
+}
+.st-vrule { height: 34px; align-self: center; border-color: var(--st-border); }
+.st-header { padding: 0 18px; }
+
+/* ------------------------------------------------------------------ panel chrome */
+.st-panel-title {
+  text-transform: uppercase; letter-spacing: 0.08em;
+  font-size: 10px; font-weight: 700; color: var(--st-ink2);
+}
+/* Hairlines between the facets above the fold. Barely there on purpose: the job is to
+   group four questions, not to draw four boxes. */
+.st-facet-rule { margin: 14px 0 2px 0; border-color: var(--st-border); opacity: 0.6; }
+/* The filter labels grew with the controls under them. Still the smallest type in the
+   panel, but no longer at the size where the tracking closed the letters up. */
+.filter-label { font-size: 10.5px; letter-spacing: 0.05em; }
+
+/* ------------------------------------------------------------------ header fit */
+/* Both header groups are nowrap, and at full dress the row needs ~1150px. That is
+   fine on the machines this runs on and NOT fine on a 1024 laptop, so the row sheds
+   its optional parts on the way down rather than letting the two groups collide.
+   The right group is the one that must survive: it holds the live count and the
+   theme switch. So the left group is the one allowed to shrink and clip. */
+.st-head-left { min-width: 0; overflow: hidden; }
+.st-head-right { flex: none; }
+
+@media (max-width: 1280px) {
+  /* The corpus line is the widest thing in the brand block and the least urgent --
+     it is a constant, not a reading. It goes first. */
+  .st-brand-sub { display: none; }
+}
+@media (max-width: 1140px) {
+  .st-vrule { display: none; }
+  .st-header { padding: 0 12px; }
+  .st-cap { font-size: 8.5px; letter-spacing: 0.04em; }
+}
