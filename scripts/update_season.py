@@ -234,11 +234,27 @@ def main():
     # pbp.dim_athlete loads; split_leagues.sql loads dim_athlete_<league>.csv instead, and
     # those are a different computation, not a filter -- see sql/split_leagues.sql on why
     # filtering a combined career dimension puts Mahomes at Arizona.
+    #
+    # EACH LEAGUE IS BUILT FROM ITS OWN EXTRACTS, not from this run's. FULL_PLAYS and
+    # plays_csv carry the suffix of the league named on the command line, and build_dims
+    # applies explicit --plays/--scrim-* paths ONLY to the league it was pointed at -- see
+    # "Explicit --plays paths belong to the league this run was POINTED AT" in
+    # scripts/build_dims.py. So handing college's extracts to `--league nfl --leagues nfl`
+    # does not merely add college data, it REPLACES the NFL's: st_plays_nfl.csv is never
+    # opened, and nfl.dim_athlete comes out with 64,641 college careers in it, Mahomes at
+    # Texas Tech 2014-2016 instead of Kansas City 2017-2026. Observed 2026-09-27 on the
+    # first weekly run that drove this loop. It is the same wrong answer sql/split_leagues.sql
+    # warns about, arriving through the caller rather than through a filtered view -- and it
+    # is silent, because a dimension full of the wrong league still loads, still swaps and
+    # still passes every row-count check.
     for one in lg.SPEC:
+        ox = sfx(one)
         run([PY, "scripts/build_dims.py", "athlete", "--league", one, "--leagues", one,
-             "--plays", FULL_PLAYS, plays_csv,
-             "--scrim-fact", FULL_SCRIM, scrim_csv,
-             "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv])
+             "--plays", f"{OUT}/st_plays{ox}.csv", f"{OUT}/st_plays{ox}_{s}.csv",
+             "--scrim-fact", f"{OUT}/scrimmage_plays{ox}.csv",
+             f"{OUT}/scrimmage_plays{ox}_{s}.csv",
+             "--scrim-bridge", f"{OUT}/scrimmage_athlete{ox}.csv",
+             f"{OUT}/scrimmage_athlete{ox}_{s}.csv"])
         shutil.move(f"{OUT}/dim_athlete.csv", f"{OUT}/dim_athlete_{one}.csv")
     # Restore the combined extract the pbp loader owns: the loop above overwrote it.
     run([PY, "scripts/build_dims.py", "athlete", "--league", L, "--leagues", *lg.SPEC,
