@@ -10,7 +10,7 @@ import dash_mantine_components as dmc
 from dash import Input, Output, callback, dcc, html
 from dash.exceptions import PreventUpdate
 
-from .. import charts, data, league, lens, ui
+from .. import charts, data, league, lens, routes, ui
 from . import common
 
 
@@ -69,7 +69,7 @@ def layout(team_id: int, lg: str = league.DEFAULT, mode: str = "dark"):
              f"{p['kicks']:,} kicks in {p['games']:,} games",
              f"{p['kickers']:,} kickers and punters"],
             actions=dcc.Link(dmc.Button("Back to explorer", variant="subtle",
-                                        size="compact-xs"), href="/"),
+                                        size="compact-xs"), href=routes.url("/")),
         ),
         ui.note(
             ("This program changed conference inside the window — "
@@ -248,4 +248,4 @@ def _goto_player(rows):
     # League-qualified: an athlete id alone is not enough to name a career, because the
     # same id is one man's college AND pro plays.
     lg = league.resolve(rows[0].get("league"))
-    return f"/player/{lg}/{int(rows[0]['player_id'])}"
+    return routes.url(f"/player/{lg}/{int(rows[0]['player_id'])}")

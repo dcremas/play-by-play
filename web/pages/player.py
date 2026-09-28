@@ -18,7 +18,7 @@ import dash_mantine_components as dmc
 from dash import Input, Output, State, callback, dcc, html
 from dash.exceptions import PreventUpdate
 
-from .. import charts, data, league, lens, ui
+from .. import charts, data, league, lens, routes, ui
 from . import common
 
 # The badge under a player's name, per phase he actually appears in. "Conversions"
@@ -119,10 +119,10 @@ def layout(athlete_id: int, lg: str = league.DEFAULT, mode: str = "dark"):
             actions=dmc.Group(gap=8, children=[
                 dcc.Link(dmc.Button(f"{p['last_team']} profile", variant="light",
                                     size="compact-xs"),
-                         href=f"/team/{p['league']}/{int(p['last_team_id'])}")
+                         href=routes.url(f"/team/{p['league']}/{int(p['last_team_id'])}"))
                 if p["last_team_id"] == p["last_team_id"] else None,
                 dcc.Link(dmc.Button("Back to explorer", variant="subtle",
-                                    size="compact-xs"), href="/"),
+                                    size="compact-xs"), href=routes.url("/")),
             ]),
         ),
         ui.note("Every number on this page respects the sidebar filters, except the "

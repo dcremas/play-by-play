@@ -19,7 +19,7 @@ import dash
 import dash_mantine_components as dmc
 from dash import Input, Output, State, ctx, dcc, html, no_update
 
-from . import data, detail, league, lens, theme, ui
+from . import data, detail, league, lens, routes, theme, ui
 from .pages import explorer, player, team
 
 app = dash.Dash(
@@ -28,6 +28,11 @@ app = dash.Dash(
     external_stylesheets=dmc.styles.ALL,
     suppress_callback_exceptions=True,
     update_title=None,
+    # `/` locally, `/plays/` on the box, where the root of this host is the
+    # Streamlit agent. Sets BOTH prefixes, because nginx proxies the path through
+    # unchanged -- so the routes Flask registers and the URLs the browser asks
+    # for are the same strings. See web/routes.py.
+    url_base_pathname=routes.BASE,
 )
 server = app.server
 
@@ -214,7 +219,7 @@ def header():
     return dmc.Group(justify="space-between", w="100%", children=[
         dmc.Group(gap="sm", children=[
             dmc.Anchor(dmc.Text("Play-by-Play", className="st-brand", size="sm"),
-                       href="/", underline="never", c="inherit"),
+                       href=routes.url("/"), underline="never", c="inherit"),
             # WHICH corpus, then which perspective on it. Two selectors rather than one
             # combined list of six, because the two choices are independent: every lens
             # works in both leagues. League comes first because it is the outer scope --
@@ -263,10 +268,18 @@ app.layout = dmc.MantineProvider(
             children=[
                 dmc.AppShellHeader(header(), className="st-header"),
                 dmc.AppShellNavbar(dmc.Box(sidebar(), p="md"), className="st-navbar"),
-                dmc.AppShellMain(dcc.Loading(
-                    html.Div(id="page"), type="default", delay_show=250,
-                    color=theme.SLOTS["dark"]["blue"],
-                )),
+                # The WIP notice sits ABOVE the loader, not inside it: it is a
+                # property of the deployment rather than of the page being
+                # rendered, so it must not blink out every time a filter change
+                # swaps the body. `wip_banner()` returns None when the switch is
+                # off, and Dash renders None as nothing.
+                dmc.AppShellMain([
+                    ui.wip_banner(),
+                    dcc.Loading(
+                        html.Div(id="page"), type="default", delay_show=250,
+                        color=theme.SLOTS["dark"]["blue"],
+                    ),
+                ]),
             ],
         ),
         dmc.Drawer(id="detail-drawer", opened=False, position="right", size="46%",
@@ -573,7 +586,9 @@ def _split_profile(parts):
 )
 def _route(path, mode):
     mode = mode or "dark"
-    path = (path or "/").rstrip("/") or "/"
+    # `pathname` is the browser's address and carries the mount point; everything
+    # below this line works in in-app routes. See web/routes.py.
+    path = routes.strip(path).rstrip("/") or "/"
     parts = [p for p in path.split("/") if p]
 
     hit = _split_profile(parts)
@@ -593,7 +608,7 @@ def _not_found(path):
     return dmc.Stack(align="center", mt=80, children=[
         dmc.Text("Nothing at this address", fw=600),
         dmc.Text(path, size="xs", c="dimmed"),
-        dmc.Anchor("Back to the explorer", href="/", size="sm"),
+        dmc.Anchor("Back to the explorer", href=routes.url("/"), size="sm"),
     ])
 
 

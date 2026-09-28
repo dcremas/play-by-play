@@ -44,7 +44,7 @@ implementation notes) are kept, but nothing here depends on them.
 | **Read path** | `data/out/pbp_cfb.duckdb` (246 MB) and `pbp_nfl.duckdb` (82 MB) — **one snapshot per league**, wide `play` and `scrimmage` plus `drive`, rebuilt from Postgres in one command. No `league` column in either |
 | **Parse quality** | kicks: **98.04% `exact` college, 98.19% NFL**. Two different dialects, two parser modules. Scrimmage needs no parser in either league — `statYardage` and `down` are structured fields at 100% coverage |
 | **People** | one shared `dim_athlete` of 66,426 athletes, 100% named and positioned from ESPN; 32,582 appear in both facts and 2,779 in both leagues. 98.7% of college kicks and 99.9% of NFL kicks carry a kicker id |
-| **Apps** | Dash instance explorer (all 2.37M plays, through a League toggle and an Offense / Defense / Special teams lens) · Excel reports (kicks) · one-page ERD (both facts) · a 25-tool read-only MCP server over the EC2 mirror |
+| **Apps** | Dash instance explorer (all 2.37M plays, through a League toggle and an Offense / Defense / Special teams lens) — **live at [pbp.dustincremascoli.com/plays/](https://pbp.dustincremascoli.com/plays/)** · Excel reports (kicks) · one-page ERD (both facts) · a 25-tool read-only MCP server over the EC2 mirror · a Streamlit text-to-SQL agent at the root of the same host |
 
 Does it behave like football? These come out of the data, not out of a reference book, and
 the two leagues are checked separately because they are different sports at the margin:
@@ -209,7 +209,7 @@ explorer's header shows how old the snapshot is.
 | **In progress right now** | the 2026 season in both leagues — 99 college games and 2 NFL. `scripts/update_season.py 2026 [--league nfl]` pulls both facts forward, one league per run |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
-| **Open follow-ups** | The mirror is refreshed by hand — `update_season.py` does not call `sync_ec2.py`, so the weekly run leaves it stale until someone pushes. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
+| **Open follow-ups** | The mirror is refreshed by hand — `update_season.py` does not call `sync_ec2.py`, so the weekly run leaves it stale until someone pushes. **The same is now true of the deployed explorer's snapshot**, which is a third copy refreshed by `web/deploy/push.sh --data` and by nothing else. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 
@@ -1791,6 +1791,23 @@ Two front ends over the same snapshot, with deliberately different jobs, plus th
 ```bash
 .venv/bin/python -m web.app          # http://127.0.0.1:8060
 ```
+
+**It is also deployed**, at <https://pbp.dustincremascoli.com/plays/> — a path on the
+hostname the Streamlit agent already owns, rather than a subdomain of its own, because the
+two apps are two lenses on one warehouse and the certificate for that name already existed.
+`bash web/deploy/push.sh` ships it; `web/deploy/README-deploy.md` is the whole story,
+including what breaks when the `/plays/` prefix is set in one place and not the other.
+
+The deployed copy is the same code, with three things set by environment rather than
+branched on: `PBP_WEB_PREFIX` (where it is mounted — see `web/routes.py`),
+`PBP_WEB_DATA_DIR` (the snapshot lives outside the code tree on the box), and
+`PBP_WEB_WIP` (the work-in-progress banner). All three are unset locally, which is why
+`python -m web.app` is unchanged.
+
+**The deployed snapshot is a copy and goes stale.** Nothing refreshes it automatically —
+the same open follow-up the EC2 mirror has. After a weekly update, rebuild and reship:
+`build_snapshot.py`, then `push.sh --data`. The `snapshot` badge in the header reports the
+build time of whatever is being read, so the page says how stale it is.
 
 It answers "show me the actual instances and let me take them apart", over every play in
 the corpus. **The first choice is the side**, and it is the most prominent control on the

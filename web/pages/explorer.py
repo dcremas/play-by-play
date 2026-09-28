@@ -15,7 +15,7 @@ import dash_mantine_components as dmc
 from dash import Input, Output, State, callback, html, no_update
 from dash.exceptions import PreventUpdate
 
-from .. import charts, columns, data, league, lens, ui
+from .. import charts, columns, data, league, lens, routes, ui
 from . import common
 
 
@@ -384,7 +384,7 @@ def _teams(flt, minimum):
 def _goto_player(rows):
     if not rows or rows[0].get("player_id") is None:
         raise PreventUpdate
-    return f"/player/{league.resolve(rows[0].get('league'))}/{int(rows[0]['player_id'])}"
+    return routes.url(f"/player/{league.resolve(rows[0].get('league'))}/{int(rows[0]['player_id'])}")
 
 
 @callback(
@@ -401,4 +401,4 @@ def _goto_team(rows, key):
         raise PreventUpdate
     if not rows or rows[0].get("team_id") is None:
         raise PreventUpdate
-    return f"/team/{league.resolve(rows[0].get('league'))}/{int(rows[0]['team_id'])}"
+    return routes.url(f"/team/{league.resolve(rows[0].get('league'))}/{int(rows[0]['team_id'])}")

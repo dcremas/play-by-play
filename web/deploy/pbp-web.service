@@ -1,0 +1,216 @@
+# /etc/systemd/system/pbp-web.service
+#
+# The Dash instance explorer, mounted at https://pbp.dustincremascoli.com/plays/.
+#
+# Install to /etc/systemd/system/pbp-web.service (provision.sh does this).
+#
+# A FOURTH SERVICE USER ON THIS STACK, AND FOR A SIMPLER REASON THAN THE OTHERS.
+# `pbpmcp` owns the Postgres credential; `pbpapp` owns the LLM API key. `pbpweb`
+# owns NEITHER, and cannot reach the warehouse or the model at all. This app
+# reads two read-only DuckDB files off local disk and talks to nothing else -- no
+# database, no network egress, no API key, no per-request cost. It is the least
+# privileged process on the hostname and its unit should say so.
+
+[Unit]
+Description=Play-by-Play Instance Explorer (Dash over the DuckDB snapshot)
+Documentation=file:///opt/pbp-web/web/README.md
+After=network-online.target
+Wants=network-online.target
+
+# Deliberately NO dependency on pbp-mcp@ or postgresql. This app does not read
+# the warehouse -- it reads the snapshot files under /var/lib/pbp-web. It should
+# start and serve with Postgres stopped, and a dependency here would be a lie
+# that also makes the boot order worse.
+
+# StartLimit* BELONG IN [Unit], NOT [Service]. In [Service] systemd logs
+# "Unknown key name ... ignoring" and silently applies its default of 5 starts
+# per 10s, so Restart=always quietly is not always. Same trap documented on
+# pbp-explorer.service.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+User=pbpweb
+Group=pbpweb
+WorkingDirectory=/opt/pbp-web
+
+# Type=notify, not simple. Gunicorn supports sd_notify, so systemd learns the
+# service is READY when the workers are actually up rather than when the parent
+# process is forked. That matters more here than on the Streamlit units because
+# each worker ATTACHES 331 MB of DuckDB at import -- see below -- so there is a
+# real window where the process exists and the socket does not yet answer.
+
+# Where the app thinks it is mounted. web/routes.py normalises this and Dash is
+# constructed with it, so it must agree with the location blocks in
+# pbp-plays.inc. Changing one without the other half-loads the page.
+Environment=PBP_WEB_PREFIX=/plays
+
+# The snapshot, NOT under /opt. Code and data are pushed on different cadences:
+# push.sh reships the code on every deploy and the 331 MB of DuckDB only when
+# told to. Keeping them apart is what makes a code deploy cheap.
+Environment=PBP_WEB_DATA_DIR=/var/lib/pbp-web
+
+# The work-in-progress banner. `1` uses the default wording in web/ui.py; any
+# other non-empty value is used verbatim as the message, so re-wording it is a
+# drop-in and a restart rather than a redeploy. Unset it to remove the banner.
+Environment=PBP_WEB_WIP=1
+
+Environment=PYTHONUNBUFFERED=1
+
+# HOME MUST BE SET, IT MUST NOT BE UNDER /home, AND IT MUST BE WRITABLE.
+#
+# The service user is created --no-create-home, so $HOME defaults to
+# /home/pbpweb, and ProtectHome=true below makes all of /home inaccessible to
+# this unit. Anything that probes $HOME then fails with PermissionError rather
+# than the FileNotFoundError libraries actually handle. This bit both Streamlit
+# apps on this box.
+#
+# The writable part is this app's own version of the same trap. HOME first
+# pointed at /var/lib/pbp-web, which is correct on every count except that
+# ProtectSystem=strict makes it read-only -- and gunicorn's control server wants
+# a socket under $HOME:
+#
+#     [ERROR] Control server error: [Errno 30] Read-only file system:
+#             '/var/lib/pbp-web/.gunicorn'
+#
+# RuntimeDirectory gives it /run/pbp-web, created at start owned by this user,
+# writable, and removed on stop. That is the right lifetime: this app has no
+# state worth keeping across a restart, which is why there is no StateDirectory
+# here the way pbp-explorer.service needs one for its token ledger.
+RuntimeDirectory=pbp-web
+RuntimeDirectoryMode=0750
+Environment=HOME=/run/pbp-web
+
+# --bind 127.0.0.1:8061 IS LOAD-BEARING, exactly as --server.address is on the
+# Streamlit units. Gunicorn's default bind is 127.0.0.1:8000, but an explicit
+# 0.0.0.0 here -- or a later edit that "simplifies" this line -- would publish
+# 8061 on the public Elastic IP, past nginx, past its rate limits and past every
+# security header. provision.sh asserts the listener is loopback-only after start.
+#
+# TWO WORKERS, NOT FOUR.
+# Each worker is a separate process that ATTACHES both DuckDB files and builds
+# its own view set on first request -- web/data.py's connection is process-wide,
+# so the cost is per worker and does not amortise. On a 3.8 GB box already ~850 MB
+# into swap, workers are the expensive axis and threads are the cheap one.
+#
+# FOUR THREADS PER WORKER, and the app is built for it: data.con() hands every
+# caller its own cursor off one shared connection precisely because Dash serves
+# callbacks concurrently. `gthread` is therefore the right worker class; the
+# default `sync` class would serialise a slow grid block behind every other
+# request from the same worker.
+ExecStart=/opt/pbp-web/.venv/bin/gunicorn \
+    --pythonpath /opt/pbp-web \
+    --bind 127.0.0.1:8061 \
+    --workers 2 \
+    --threads 4 \
+    --worker-class gthread \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile - \
+    --error-logfile - \
+    --log-level info \
+    web.app:server
+
+# --timeout 120 matches proxy_read_timeout on the callback location. A worker
+# killed at 30s (the gunicorn default) while nginx is still waiting 120s turns a
+# slow query into a 502 with nothing useful in either log.
+#
+# --pythonpath is explicit rather than relying on WorkingDirectory. Gunicorn does
+# put the CWD on sys.path, but that behaviour is a side effect of how it loads
+# the app and not something to stake a boot on; naming the path says what is
+# meant and survives a future change to either.
+
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+Restart=always
+RestartSec=5s
+
+# ---------------------------------------------------------------------------
+# Resource ceilings
+# ---------------------------------------------------------------------------
+# Measured, not guessed -- see web/deploy/README-deploy.md §Resource budget, and
+# RE-MEASURE after real traffic:
+#     ssh awsvm 'systemctl show pbp-web -p MemoryCurrent'
+#
+# The caps exist so that a runaway query kills THIS service rather than letting
+# the kernel's OOM killer choose. On this box its choice would probably be the
+# website.
+#
+# DuckDB will use as much memory as it is allowed for a large sort or aggregate.
+# MemoryHigh throttles and reclaims; MemoryMax is the hard kill. The gap between
+# them is deliberate: a heavy query should be slowed down, not killed.
+MemoryHigh=560M
+MemoryMax=768M
+
+# CPU is the scarcer resource on this box: 2 vCPU shared with Postgres, nginx,
+# two Streamlit apps and three MCP servers. 80% of one core leaves the site
+# responsive while an unfiltered sort runs.
+CPUQuota=80%
+
+# ---------------------------------------------------------------------------
+# Sandbox
+# ---------------------------------------------------------------------------
+# This app needs: its own code (read), the snapshot (read), and a socket. That
+# is all, and the sandbox is written to allow exactly that.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+# @resources IS NOT DENIED HERE, unlike on pbp-mcp@.service, and removing it from
+# the deny list was not a concession -- it is required.
+#
+# DuckDB sizes its thread pool and its buffer manager against the machine it finds
+# itself on, which means sched_getaffinity/sched_setaffinity and the NUMA memory
+# policy calls. Those live in @resources. With them denied, seccomp answers with
+# SIGSYS and every worker dies the moment a request touches the snapshot:
+#
+#     gunicorn[...]: Worker (pid:...) was sent SIGSYS!
+#
+# which crash-loops forever while the unit reports `active` and the port stays
+# open, because the ARBITER is fine -- it just keeps booting replacements. The
+# journal names no syscall, so this is expensive to diagnose twice.
+#
+# The MCP server can deny @resources because it only ever talks to Postgres over
+# a socket; this app IS the query engine. Nothing else in the sandbox is relaxed
+# to compensate: egress is still denied outright and the filesystem is still
+# read-only.
+
+# ProtectSystem=strict makes the whole filesystem read-only, INCLUDING
+# /var/lib/pbp-web. That is correct and intentional: the snapshot is opened
+# READ_ONLY by web/data.py and this service has no business writing to it. A
+# corpus refresh is push.sh's job, running as a different user.
+#
+# StateDirectory would grant write access, so it is deliberately not used here --
+# unlike pbp-explorer.service, which needs it for the token ledger. This app has
+# no state to keep. HOME points at the same path only so that a library probing
+# $HOME finds a real directory; nothing writes there.
+ReadOnlyPaths=/var/lib/pbp-web
+
+# AF_UNIX is not needed -- gunicorn binds a TCP socket -- but logging to the
+# journal goes through one.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# NO IPAddressAllow. This app makes no outbound connections at all: no database,
+# no model API, no ESPN. Denying egress outright is the accurate policy and
+# catches a dependency that starts phoning home.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

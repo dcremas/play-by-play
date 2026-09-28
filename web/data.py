@@ -31,6 +31,7 @@ Two data properties are handled here rather than left to every caller:
 from __future__ import annotations
 
 import functools
+import os
 import threading
 from pathlib import Path
 
@@ -39,7 +40,14 @@ import pandas as pd
 
 from . import league, lens
 
-OUT_DIR = Path(__file__).resolve().parent.parent / "data" / "out"
+# Where the two snapshots are. The default is the repo's own `data/out`, which is
+# where scripts/build_snapshot.py writes them and is right for every local run.
+# PBP_WEB_DATA_DIR exists for the deployed copy, where the code lives under
+# /opt/pbp-web and the 331 MB of snapshot lives under /var/lib/pbp-web -- code and
+# data on different lifecycles, because a code push should not reship the corpus
+# and a corpus refresh should not touch the code.
+OUT_DIR = Path(os.environ.get("PBP_WEB_DATA_DIR")
+               or Path(__file__).resolve().parent.parent / "data" / "out")
 LEAGUES = ("cfb", "nfl")
 
 

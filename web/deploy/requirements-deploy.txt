@@ -1,0 +1,64 @@
+# What the Dash explorer is installed with ON THE BOX.
+#
+# Separate from the repo's requirements.txt, and the difference is exactly two
+# lines. Everything that shapes a number on the page is pinned identically:
+# duckdb and pandas do the arithmetic, dash and its component libraries only draw
+# it, so those are the pins that must not drift between the laptop and the box.
+#
+#   duckdb 1.5.5   same as local -- it is the query engine
+#   pandas 3.0.5   same as local -- every result set comes back through it
+#
+# THE ONE DELIBERATE DIVERGENCE: numpy.
+#
+# The repo pins numpy==2.5.2, which the laptop runs on Python 3.14. numpy 2.5
+# publishes no wheel for 3.11, which is the interpreter this box runs (the only
+# one available to a systemd unit here -- see the interpreter trap in
+# mcp_server/deploy/README-deploy.md). So the box gets 2.4.6, the newest release
+# that has one.
+#
+# That is safe HERE and would not be safe everywhere, so the reason matters:
+# nothing in web/ imports numpy. Not one module -- checked, and worth re-checking
+# if this file is ever revisited:
+#
+#     grep -rn --include='*.py' -e 'import numpy' -e 'np\.' web/
+#
+# numpy is present only because pandas depends on it, and pandas 3.0.5 resolves
+# against 2.4.6 without complaint. If web/ ever does import numpy directly, this
+# divergence stops being free and the right fix is to move the box to a newer
+# interpreter, not to widen the pin further.
+#
+# Installed with --only-binary=:all: -- see provision.sh for why a source build
+# on this box is not an option.
+
+dash==4.4.1
+dash-ag-grid==35.3.0
+dash-mantine-components==2.8.0
+duckdb==1.5.5
+pandas==3.0.5
+plotly==7.0.0
+numpy==2.4.6
+
+# REQUIRED, AND NOT OPTIONAL, THOUGH NOTHING IMPORTS IT.
+#
+# `snapshot_meta.built_at` is TIMESTAMP WITH TIME ZONE, and DuckDB builds a
+# tz-aware Python value for it through pytz. Without this, every worker dies at
+# import -- app.py calls data.snapshot_meta() at module level -- with:
+#
+#     Invalid Input Error: Required module 'pytz' failed to import
+#     ModuleNotFoundError: No module named 'pytz'
+#
+# It used to arrive on its own: pandas depended on pytz up to 2.x. pandas 3.0
+# dropped that dependency, so on a clean install it is simply absent, and the
+# laptop only keeps working because its virtualenv predates the change and still
+# has the old transitive copy. That makes this the one dependency the local
+# environment cannot be trusted to reveal.
+pytz==2026.3.post1
+
+# The WSGI server. Not in the repo's requirements.txt because nothing local needs
+# it: `python -m web.app` uses Dash's development server, which must never serve
+# this publicly.
+gunicorn==26.2.0
+
+# DELIBERATELY ABSENT: xlsxwriter. The repo pins it for scripts/ that write the
+# Excel reports; this app does not export spreadsheets and the box should not
+# carry a dependency it never imports.

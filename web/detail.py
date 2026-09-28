@@ -12,7 +12,7 @@ import dash_mantine_components as dmc
 import pandas as pd
 from dash import dcc, html
 
-from . import columns, data, league, lens, theme, ui
+from . import columns, data, league, lens, routes, theme, ui
 
 _ROLE = {"field_goal": "Placekicker", "punt": "Punter", "kickoff": "Kickoff",
          "pat": "Placekicker", "two_point": "Passer / rusher",
@@ -107,7 +107,7 @@ def _person(role, name, *, athlete_id=None, conf=None, sub=None, mode="dark",
         # League-qualified, because the same athlete id names a college career and a pro
         # one and the drawer knows which row it came from.
         heading = dcc.Link(heading,
-                           href=f"/player/{league.resolve(lg)}/{int(athlete_id)}",
+                           href=routes.url(f"/player/{league.resolve(lg)}/{int(athlete_id)}"),
                            className="st-link")
     badges = [b for b in [_conf_badge(conf)] if b is not None]
     return dmc.Paper(withBorder=True, radius="md", p="sm", className="person-card",
@@ -268,11 +268,11 @@ def _render_kick(uid: str, lg: str, mode: str = "dark"):
         ]),
         dmc.Group(gap=8, children=[
             dcc.Link(dmc.Button(f"{row['team']} profile", variant="light", size="compact-xs"),
-                     href=f"/team/{league.resolve(row.get('league'))}/{int(row['team_id'])}")
+                     href=routes.url(f"/team/{league.resolve(row.get('league'))}/{int(row['team_id'])}"))
             if not _na(row["team_id"]) else None,
             dcc.Link(dmc.Button(f"{row['opponent']} profile", variant="subtle",
                                 size="compact-xs"),
-                     href=f"/team/{league.resolve(row.get('league'))}/{int(row['opp_id'])}")
+                     href=routes.url(f"/team/{league.resolve(row.get('league'))}/{int(row['opp_id'])}"))
             if not _na(row["opp_id"]) else None,
         ]),
         unknown_note,
