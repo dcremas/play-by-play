@@ -685,11 +685,15 @@ def main() -> int:
             print(f"  - {item}")
         return 1
 
+    # No `league` column here, by design -- c8a38b1 removed it from the serving schemas
+    # and this line, in that same commit, kept selecting it. Every assertion above passed
+    # and then the summary raised UndefinedColumn, so the process exited 1 with "146/146
+    # checks passed" on its last line. The server IS the league; name it from the schema.
     latest = db.query(
-        "SELECT league, max(season) AS s, max(last_kickoff) AS k "
-        f"FROM {config.SCHEMA}.season_status GROUP BY league ORDER BY league")
+        "SELECT max(season) AS s, max(last_kickoff) AS k "
+        f"FROM {config.SCHEMA}.season_status")
     for row in latest:
-        print(f"{row['league']}: through season {row['s']}, last game {row['k']}")
+        print(f"{config.SCHEMA}: through season {row['s']}, last game {row['k']}")
     return 0
 
 
