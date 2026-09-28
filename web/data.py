@@ -664,8 +664,13 @@ def count_rows(view_name: str, where: str) -> int:
 
 
 # --------------------------------------------------------------------------- option lists
-@functools.lru_cache(maxsize=1)
-def snapshot_meta() -> dict:
+@functools.lru_cache(maxsize=8)
+def snapshot_meta(league_key: str | None = None) -> dict:
+    # league_key is a PARAMETER, not a free variable. 7675b99 made lens.view league-aware
+    # and passed it a name that exists in no scope here, so importing web.app raised
+    # NameError before Dash ever bound its port -- the app has not started since
+    # 2026-09-25. None resolves to the default corpus, which is what the one caller
+    # (app.py's module-level META) has always meant.
     row = con().cursor().sql("SELECT built_at, play_rows FROM cfb.snapshot_meta").fetchone()
     rows = {k: int(scalar(f"SELECT count(*) FROM {lens.view(k, league_key)}") or 0)
             for k in lens.KEYS}
@@ -685,7 +690,6 @@ def season_bounds() -> tuple[int, int]:
     return int(lo), int(hi)
 
 
-@functools.lru_cache(maxsize=1)
 @functools.lru_cache(maxsize=8)
 def in_progress_seasons(league_key: str | None = None) -> list[dict]:
     """Seasons still being played, straight off the snapshot's season_status table.

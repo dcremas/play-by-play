@@ -15,7 +15,7 @@ import dash_mantine_components as dmc
 from dash import Input, Output, State, callback, html
 from dash.exceptions import PreventUpdate
 
-from .. import columns, data, lens, ui
+from .. import columns, data, league, lens, ui
 
 # --------------------------------------------------------------------------- measures
 METRICS = """
@@ -239,7 +239,7 @@ _SEASON_SQL = {
                                 AND outcome = 'Made')                     AS m_40,
                count(*) FILTER (fg_distance_yds >= 50 AND outcome <> 'Negated') AS a_50,
                count(*) FILTER (fg_distance_yds >= 50 AND outcome = 'Made')     AS m_50
-        FROM {lens.view("st", lg)} WHERE {w} AND play_kind = 'field_goal' GROUP BY 1 ORDER BY 1 DESC
+        FROM {view} WHERE {w} AND play_kind = 'field_goal' GROUP BY 1 ORDER BY 1 DESC
     """, "made::DOUBLE / nullif(att,0) AS rate"),
 
     "punt": ("""
@@ -256,7 +256,7 @@ _SEASON_SQL = {
                count(*) FILTER (outcome = 'Returned')             AS returned,
                count(*) FILTER (outcome = 'Blocked')              AS blocked,
                count(*) FILTER (outcome = 'Unknown')              AS unknown
-        FROM {lens.view("st", lg)} WHERE {w} AND play_kind = 'punt' GROUP BY 1 ORDER BY 1 DESC
+        FROM {view} WHERE {w} AND play_kind = 'punt' GROUP BY 1 ORDER BY 1 DESC
     """, "unknown::DOUBLE / nullif(punts,0) AS unk_share"),
 
     "kickoff": ("""
@@ -272,7 +272,7 @@ _SEASON_SQL = {
                avg(return_yds) FILTER (outcome = 'Returned')      AS ret_allowed,
                count(*) FILTER (returned_for_td)                  AS ret_td,
                count(*) FILTER (outcome = 'Unknown')              AS unknown
-        FROM {lens.view("st", lg)} WHERE {w} AND play_kind = 'kickoff' GROUP BY 1 ORDER BY 1 DESC
+        FROM {view} WHERE {w} AND play_kind = 'kickoff' GROUP BY 1 ORDER BY 1 DESC
     """, "touchback::DOUBLE / nullif(denom,0) AS tb_rate, "
          "returned::DOUBLE / nullif(denom,0) AS ret_rate, "
          "unknown::DOUBLE / nullif(kickoffs,0) AS unk_share"),
@@ -301,7 +301,7 @@ _SEASON_SQL = {
                count(*) FILTER (play_kind = 'defensive_conversion')  AS def_conv,
                count(*)                                              AS attempts,
                count(*) FILTER (outcome = 'Unknown')                 AS unknown
-        FROM {lens.view("st", lg)} WHERE {w}
+        FROM {view} WHERE {w}
           AND play_kind IN ('pat', 'two_point', 'defensive_conversion')
         GROUP BY 1 ORDER BY 1 DESC
     """, "pat_made::DOUBLE / nullif(pat_att,0) AS pat_rate, "
@@ -322,9 +322,16 @@ _SEASON_SQL = {
 SEASON_KINDS = ["field_goal", "punt", "kickoff", "conversion"]
 
 
-def season_rows(kind: str, where: str) -> list[dict]:
+def season_rows(kind: str, where: str, lg: str | None = None) -> list[dict]:
+    """The per-season grid behind one phase tab, for one corpus.
+
+    _SEASON_SQL's bodies are PLAIN strings interpolated by str.format, not f-strings, so
+    the view has to arrive as a `{view}` placeholder. 7675b99 wrote `{lens.view("st", lg)}`
+    into them instead -- an expression str.format cannot evaluate -- and every phase tab on
+    both profile pages died with KeyError: 'lens'."""
     body, derived = _SEASON_SQL[kind]
-    df = data.q(f"SELECT *, {derived} FROM ({body.format(w=where)}) t ORDER BY season DESC")
+    sql = body.format(view=lens.view("st", league.resolve(lg)), w=where)
+    df = data.q(f"SELECT *, {derived} FROM ({sql}) t ORDER BY season DESC")
     return data.records(df)
 
 
@@ -458,20 +465,27 @@ def play_grid(mode: str, phases, extra=None, height: str = "480px"):
     State("ent", "data"), State("flt", "data"),
     prevent_initial_call=True,
 )
-def _ent_rows(req, ent, flt, lg: str):
+def _ent_rows(req, ent, flt):
     if not req or not ent:
         raise PreventUpdate
+    # `lg` used to be a fourth parameter with no matching Input/State, so Dash called this
+    # with three arguments and it raised TypeError before running. The league is the page's
+    # own, off `ent` -- the same rule entity_where() states.
+    lg = league.resolve(ent.get("league"))
+    view = lens.view("st", lg)
     where = (f"{entity_where(ent, flt)} AND "
              f"({data.filter_model_to_sql(req.get('filterModel'))})")
     order = data.sort_model_to_sql(req.get("sortModel"))
     start = int(req.get("startRow") or 0)
     end = int(req.get("endRow") or (start + ui.BLOCK))
     df = data.q(f"""
-        SELECT * FROM {lens.view("st", lg)} WHERE {where}
+        SELECT * FROM {view} WHERE {where}
         ORDER BY {order} LIMIT {max(end - start, 1)} OFFSET {start}
     """)
+    # The league-prefixed view, not the bare name: "st_play" is not a relation in either
+    # corpus, so the row count raised rather than merely counting the wrong thing.
     return {"rowData": data.records(df),
-            "rowCount": data.count_rows("st_play", where)}
+            "rowCount": data.count_rows(view, where)}
 
 
 @callback(

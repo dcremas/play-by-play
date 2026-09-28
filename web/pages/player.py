@@ -150,7 +150,8 @@ def _kpis(ent, flt, mode):
     if not ent or ent.get("kind") != "player":
         raise PreventUpdate
     where = common.entity_where(ent, flt)
-    rows = common.agg_frame("st", "player", where, lg)
+    rows = common.agg_frame("st", "player", where,
+                            league.resolve(ent.get("league")))
     if not rows:
         return dmc.Alert("This player has no kicks under the current filters.",
                          color="gray", variant="light")
@@ -197,7 +198,7 @@ def _kpis(ent, flt, mode):
 # --------------------------------------------------------------------------- phase panels
 def _panel(kind: str, ent, flt, mode):
     where = common.entity_where(ent, flt)
-    rows = common.season_rows(kind, where)
+    rows = common.season_rows(kind, where, league.resolve(ent.get("league")))
     if not rows:
         return common.empty_panel(kind, flt)
     caveat = None
@@ -245,6 +246,11 @@ def _register_panel(kind: str):
             raise PreventUpdate
         mode = mode or "dark"
         where = common.entity_where(ent, flt)
+        # `lg` was a free variable here: bound in layout() and _profile(), in neither of
+        # which this callback runs. It resolved to nothing at module scope, so every
+        # figure on a player page raised NameError. Same rule as the team page -- the
+        # profile's own league, off `ent`, not the header's.
+        lg = league.resolve(ent.get("league"))
         scoped = f"{where} AND {lens.kind_sql(_kind)}"
         # The second panel is the distance chart everywhere but the conversions,
         # which have no distance to plot -- see charts.conversion_by_type.

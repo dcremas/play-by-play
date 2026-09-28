@@ -107,7 +107,10 @@ def layout(team_id: int, lg: str = league.DEFAULT, mode: str = "dark"):
 def _kpis(ent, flt, mode):
     if not ent or ent.get("kind") != "team":
         raise PreventUpdate
-    rows = common.agg_frame("st", "team", common.entity_where(ent, flt), lg)
+    # The profile's own league, off `ent` -- see common.entity_where() on why the
+    # header's selector is the wrong source on a page whose identity is a team id.
+    rows = common.agg_frame("st", "team", common.entity_where(ent, flt),
+                            league.resolve(ent.get("league")))
     if not rows:
         return dmc.Alert("No kicks for this team under the current filters.",
                          color="gray", variant="light")
@@ -155,7 +158,11 @@ def _charts(ent, flt, mode):
     # Same two-or-three shape as the explorer: `explorer_figs` returns None in the
     # third slot for the multi-phase kicks view, which is this page's default. Hide the
     # slot AND drop the column count, or the two survivors keep a third of the width.
-    c1, c2, c3 = charts.explorer_figs("st", where, ps, mode, 330)
+    # The league is the PAGE's, off `ent`, never the header's -- team ids collide, so
+    # /team/2 with the header on NFL would draw the Bills' kicks under Auburn's name.
+    # Same argument common.entity_where() makes, and the same reason `lg` goes third.
+    c1, c2, c3 = charts.explorer_figs("st", where, league.resolve(ent.get("league")),
+                                      ps, mode, 330)
     if c3 is None:
         return c1, c2, charts.empty_fig(mode, height=330), \
             {"display": "none"}, {"base": 1, "lg": 2}
@@ -172,11 +179,16 @@ def _register_panel(kind: str):
     def _cb(ent, flt, mode, _kind=kind):
         if not ent or ent.get("kind") != "team":
             raise PreventUpdate
-        rows = common.season_rows(_kind, common.entity_where(ent, flt))
+        rows = common.season_rows(_kind, common.entity_where(ent, flt),
+                                  league.resolve(ent.get("league")))
         if not rows:
             return common.empty_panel(_kind, flt)
         caveats = []
-        live = {r["season"] for r in data.in_progress_seasons()}
+        # League-scoped like everything else on this page. Both corpora happen to have
+        # 2026 in progress today, so the bare call returned the right answer by
+        # coincidence -- which is not a property to rely on once one season ends first.
+        live = {r["season"] for r in
+                data.in_progress_seasons(league.resolve(ent.get("league")))}
         hit = sorted(live.intersection(r["season"] for r in rows))
         if hit:
             caveats.append(ui.note(
@@ -214,7 +226,8 @@ def _people(ent, flt, mode):
     if not ent or ent.get("kind") != "team":
         raise PreventUpdate
     mode = mode or "dark"
-    rows = common.agg_frame("st", "player", common.entity_where(ent, flt), lg)
+    rows = common.agg_frame("st", "player", common.entity_where(ent, flt),
+                            league.resolve(ent.get("league")))
     ps = common.st_chips(flt)
     # Its own id, not the explorer's `grid-kickers`: sharing the id would have been
     # free row-click navigation, but it also pulls in the explorer's rowData callback,

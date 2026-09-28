@@ -216,7 +216,13 @@ def _charts(flt, mode):
     its own: SimpleGrid would keep three columns and leave the two survivors at a third
     of the width each, so the column count moves with them."""
     key = lens.resolve((flt or {}).get("lens"))
+    # explorer_figs takes `lg` THIRD. 7675b99 inserted it and left this call at the old
+    # five-argument shape, which is not an arity error -- the chip list slid into `lg`,
+    # the mode into `chips`, the height into `mode` -- so it raised deep inside
+    # league.resolve ("unhashable type: 'list'") rather than here. The explorer reads the
+    # header's selector, which app.py puts on the filter store.
     c1, c2, c3 = charts.explorer_figs(key, data.where_from_filters(flt),
+                                      league.resolve((flt or {}).get("league")),
                                       data.chip_set(flt), mode or "dark", 320)
     if c3 is None:
         return c1, c2, charts.empty_fig(mode or "dark", height=320), \
