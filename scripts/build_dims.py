@@ -40,6 +40,13 @@ derived from the whole corpus even when only one season is being loaded:
 
 `--plays` accepts several extracts and de-duplicates on play_uid, so the frozen full CSV and
 a single-season one can be read together without re-running build_table over twelve seasons.
+Those paths belong to `--league` alone. On a `--leagues cfb nfl` rebuild, give each corpus
+its own with the repeatable per-league form, or the one not named by `--league` falls back
+to its frozen extract and contributes play ids ESPN has since renumbered away:
+
+    python build_dims.py athlete --league nfl --leagues cfb nfl \
+        --plays-for nfl data/out/st_plays_nfl.csv data/out/st_plays_nfl_2026.csv \
+        --plays-for cfb data/out/st_plays.csv     data/out/st_plays_2026.csv
 `--only-season` narrows the BRIDGE and WIDE outputs to that season while the dimension stays
 global. Scoping the dimension instead would give every returning kicker first_season=2026.
 
@@ -781,6 +788,28 @@ if __name__ == "__main__":
             csvs = []
             while i < len(a) and not a[i].startswith("--"):
                 csvs.append(a[i]); i += 1
+        # `--plays-for <league> <paths...>`, repeatable: the per-league form of --plays.
+        #
+        # stage_athlete has always accepted a {league: paths} dict, and nothing could
+        # produce one. A bare --plays list is attributed to --league alone, so on a
+        # both-league rebuild the OTHER league silently fell back to its frozen full
+        # extract with no in-season file behind it to supersede -- and a frozen extract
+        # holds play ids from before ESPN last renumbered a corrected game. That is
+        # exactly the orphan this file's comment above records on 2026-09-22, and it
+        # recurred on 2026-09-29 from the other direction: an NFL update was blocked by
+        # a college play ESPN had removed two days earlier.
+        per = {}
+        for idx, tok in enumerate(a):
+            if tok != "--plays-for":
+                continue
+            lname, j, paths = a[idx + 1], idx + 2, []
+            while j < len(a) and not a[j].startswith("--"):
+                paths.append(a[j]); j += 1
+            per[lname] = paths
+        if per:
+            if csvs:
+                per.setdefault(LEAGUE, csvs)
+            csvs = per
         # `--leagues cfb nfl` builds ONE dimension over both corpora, which is how it should
         # normally be run once the NFL is loaded. Without it the dimension covers only the
         # league named by --league, and a rebuild would drop every athlete from the other.

@@ -90,6 +90,26 @@ def csv_rows(path):
         return sum(1 for _ in f) - 1
 
 
+def plays_for_all(season):
+    """`--plays-for` arguments covering EVERY league, not just the one being updated.
+
+    dim_athlete is one row per person across both corpora, so a rebuild reads both. Each
+    corpus therefore has to arrive as its frozen full extract PLUS its own in-season file:
+    the second supersedes the first for the season it covers, and ESPN renumbers the plays
+    in a game it corrects. Passing only the updated league's season file left the other
+    league on a frozen extract alone, so the bridge named plays the fact table no longer
+    had and load_athletes_league.sql refused the load -- correctly. It cost an NFL update
+    on 2026-09-29, blocked by one college play ESPN had dropped from a week-3 game two
+    days earlier.
+    """
+    out = []
+    for one in lg.SPEC:
+        ox = sfx(one)
+        out += ["--plays-for", one,
+                f"{OUT}/st_plays{ox}.csv", f"{OUT}/st_plays{ox}_{season}.csv"]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -164,8 +184,7 @@ def main():
     # all 13,767 of them across both leagues -- and --only-season only ever filtered what
     # got WRITTEN. The dimension was always global, because it is a career aggregate.
     run([PY, "scripts/build_dims.py", "athlete", "--league", L,
-         "--leagues", *lg.SPEC,
-         "--plays", FULL_PLAYS, plays_csv,
+         "--leagues", *lg.SPEC, *plays_for_all(s),
          "--scrim-fact", FULL_SCRIM, scrim_csv,
          "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv])
 
@@ -258,7 +277,7 @@ def main():
         shutil.move(f"{OUT}/dim_athlete.csv", f"{OUT}/dim_athlete_{one}.csv")
     # Restore the combined extract the pbp loader owns: the loop above overwrote it.
     run([PY, "scripts/build_dims.py", "athlete", "--league", L, "--leagues", *lg.SPEC,
-         "--plays", FULL_PLAYS, plays_csv,
+         *plays_for_all(s),
          "--scrim-fact", FULL_SCRIM, scrim_csv,
          "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv])
 
