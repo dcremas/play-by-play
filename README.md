@@ -362,27 +362,63 @@ unset in January.
 
 ### One source, and why
 
-ESPN is the single spine for every season. Two endpoints, neither documented, neither
-requiring a key:
+ESPN is the single spine for every season and both leagues. Six endpoints, none
+documented, none requiring a key, none costing anything — verified unauthenticated
+2026-09-28, all six returning 200 with no `Authorization` header and no account.
 
-| endpoint | gives | used for |
-|---|---|---|
-| `site.api.../scoreboard?dates=<season>&seasontype=&week=&groups=80` | the completed-game list per week | `games_<season>.json`, `fact_game`, `dim_team` |
-| `site.api.../summary?event=<game_id>` | drives → plays: type id, start/end yard line, `statYardage`, `wallclock`, plus `gameInfo.venue` (name, city, state, zip, **`grass` boolean** — but **no roof**) and attendance | play text, `dim_venue` |
-| `site.api.../scoreboard` (same call as the games list) | `competitions[].venue.indoor` — **the only place ESPN states a roof.** Captured as `venue_indoor` per game by `fetch_espn.stage_games` and accumulated per venue by `build_dims.py venue` | `dim_venue.indoor` |
-| `sports.core.api.../events/<id>/competitions/<id>/plays` | `participants[]` with an athlete `$ref` per role | every athlete id in the warehouse |
-| `sports.core.api.../seasons/<y>/types/2/groups/{80,81}/children` | conference membership by season | `dim_team_season`, `dim_conference` |
+Two hosts, and one slug that carries the league (`scripts/league.py`):
 
-Three things about ESPN that will bite anyone who edits the fetchers:
+```
+SITE = https://site.api.espn.com/apis/site/v2/sports/football/{slug}
+CORE = https://sports.core.api.espn.com/v2/sports/football/leagues/{slug}
+slug = college-football | nfl
+```
+
+| # | endpoint | gives | used for |
+|---|---|---|---|
+| 1 | `SITE/scoreboard?dates=<season>&seasontype=<2\|3>&week=<w>&groups=80&limit=400` | the completed-game list per week, plus `competitions[].venue.indoor` — **the only place ESPN states a roof** | `games_<season>.json`, `fact_game`, `dim_team`, `dim_venue.indoor` |
+| 2 | `SITE/summary?event=<game_id>` | drives → plays: type id, start/end yard line, `statYardage`, `wallclock`, plus `gameInfo.venue` (name, city, state, zip, **`grass` boolean** — but **no roof**) and attendance | play text, `dim_venue` |
+| 3 | `CORE/events/<gid>/competitions/<gid>/plays?limit=<n>&page=<n>` | `participants[]` with an athlete `$ref` per role | every athlete id in the warehouse |
+| 4 | `CORE/athletes/<athlete_id>` | `displayName`, `fullName`, `shortName`, `jersey`, `position.abbreviation` | `dim_athlete` |
+| 5 | `CORE/seasons/<y>/types/2/groups?limit=60` | **NFL only** — the two conferences are the top-level groups; their children are the eight divisions | `dim_team_season`, `dim_conference` |
+| 6 | `CORE/seasons/<y>/types/2/groups/{80,81}/children?limit=60` | **college only** — conference membership by season under FBS (80) and FCS (81) | `dim_team_season`, `dim_conference` |
+
+The roof is captured as `venue_indoor` per game by `fetch_espn.stage_games` and
+accumulated per venue by `build_dims.py venue`, because endpoint 1 is game-grained and
+`dim_venue` is not — endpoint 2 carries `grass` but never a roof, so without that capture
+`dim_venue` would record surface and no roof, which is what blocked the weather phase.
+
+Endpoints 1–4 are the same call for both leagues with only the slug changed. The
+conference tree is the one place the two leagues call *different paths* — 5 against 6, not
+one path with two slugs — because the NFL has no division group above its conferences.
+Both then follow the `$ref` URLs that come back inline.
+
+Three per-league differences live in `scripts/league.py` and nowhere else:
+
+- **`&groups=80` is college-only.** It restricts the scoreboard to FBS. There is no NFL
+  equivalent and sending it returns nothing, so it is a per-league string.
+- **The week sweep is a function of the season.** College is 17 regular + 5 postseason
+  every year; the NFL went to an 18th regular week in 2021.
+- **Athlete ids are one id space but the lookup is not interchangeable.** A college-only id
+  404s against `/leagues/nfl/athletes/<id>` and vice versa. See *Athlete ids, not names*.
+
+Four things about ESPN that will bite anyone who edits the fetchers:
 
 1. **ESPN 403s browser-like User-Agent strings on these endpoints and serves urllib's
    default.** Counterintuitive, and do not "fix" it by adding a realistic UA.
 2. **The API is unofficial.** Rate limits are respected by keeping concurrency at 6 with
    exponential backoff, and every stage is resumable — already-downloaded files are
    skipped unless a refresh flag says otherwise.
-3. **Summaries are slimmed on the way to disk.** A full summary is ~1 MB; `fetch_espn.py`
+3. **No key also means no contract.** ESPN publishes no quota, so the only ceiling is the
+   one discovered by hitting it, and nothing owes this project the `venue.indoor` field or
+   the `$ref` shape the fetchers parse. The mitigation is that raw JSON is kept on disk
+   under `data/espn*/`, so a breaking change costs new games, not the corpus.
+4. **Summaries are slimmed on the way to disk.** A full summary is ~1 MB; `fetch_espn.py`
    keeps only `drives`, `gameInfo` and a trimmed `header`. 182 MB for 10,470 games instead
    of 10 GB.
+
+ESPN publishes a WADL describing these hosts — `https://sports.core.api.espn.com/v2/application.wadl`,
+416 resource paths — which makes the surface browsable without making it supported.
 
 **A bulk pre-parsed archive was used first and then removed from the pipeline entirely.**
 It looked like a shortcut for 2016–2021 and was in fact an *incomplete extract of ESPN*:
