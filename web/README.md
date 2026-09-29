@@ -155,6 +155,7 @@ onto the play grid would multiply a play by its defenders.
 | **Explorer** | `/` | One filter set, one lens, two or three grains. **Plays** is up to 1.5M rows on AG Grid's infinite row model. **Teams** is the same selection rolled up. **Kickers & punters** exists on the kicks lens only, because that is the only side with an honest player grain today. |
 | **Player** | `/player/<athlete_id>` | One page per athlete, with a section for each of the four kick phases he actually appears in. Kicking-side only. |
 | **Team** | `/team/<team_id>` | Decade roll-up on top, one row per season underneath, then who kicked, then every kick. Kicking-side only. |
+| **Experience curve** | `/experience` | Does a kicker improve with years in the job? One row per player-season, numbered by season in the role, read three ways: the naive cohort curve, the within-player paired curve, and the survivorship split that explains the gap between them. Kicking-side only, and the one surface that does **not** read the sidebar. |
 
 The two profile pages are **pinned to the kicks lens** whatever the header is set to
 (`common.entity_where`, `common.st_chips`) — they profile placekickers, punters and kickoff
@@ -208,6 +209,94 @@ the parser's name-match confidence and a link to their profile, and the kicker c
 line he had built that season *before* this kick. On a scrimmage play it is the passer,
 rusher and receiver off the row plus every role the participant bridge carries. Situation,
 environment and the verbatim ESPN `play_text` sit in collapsed sections underneath.
+
+## The experience curve, and why it ignores your filters
+
+`/experience` asks whether a kicker gets better the longer he does the job. It is the only
+view here that answers a question about **careers** rather than about a set of plays, and
+that difference is why it is a route rather than a fourth grain on the explorer: a career
+is not a selection you can filter without changing what "year one" means. Narrow the season
+band to 2018–2022 and a man who started in 2016 becomes a rookie. Filter to one team and
+every transfer becomes two rookie years. So the panel is always the whole corpus for the
+league on screen, `_chrome()` in `app.py` collapses the filter panel and hides the season
+band on this route rather than leaving two inert controls on screen, and the page says so
+in a note at the top.
+
+**Counts and rates over counts, and nothing else.** No fitted baseline, no significance
+test, no index, no smoothing, no chained or cumulative line. Every value is a total over a
+total, every chart point carries the number of players behind it, and every rate has its
+numerator and denominator in a column of the table below it — a reader can divide 6,774 by
+9,170 and get the 73.9% back. The page's job is to put the true numbers in front of
+someone in the order that lets them see what is going on. The conclusion is theirs.
+
+That order matters, because the obvious way to answer the question is wrong, and
+`web/career.py` is built around the three reasons:
+
+- **The year-two group is not the year-one group.** A kicker who misses in year one does
+  not get a year two, so comparing all of year two to all of year one compares the whole
+  intake against the survivors of it. No statistics are needed to see it: college year-one
+  placekickers who never appeared again made **69.6%**, and the ones who came back made
+  **75.6%** — both measured in year one, before either group gained a season. That split is
+  its own chart on the page. `paired_steps()` sidesteps it entirely by comparing each man
+  with himself a year later, so the one who left is missing from *both* columns.
+- **Left censoring.** The corpus starts in 2014, so a player whose first row is a 2014 row
+  may have been a fourth-year starter in 2013 — 29.7% of the college year-one cohort.
+  Dropped by default; the switch is on the page because it moves the answer.
+- **Degree of difficulty.** Attempt distance rises with experience. Rather than adjust for
+  it, mean attempt distance is a column beside the make rate in every table.
+
+The three roles give three different answers, which is why the page has a role selector
+rather than one curve. College, year 1 → year 2, the same men in both seasons:
+
+| Role, measure | Earlier | Later | Better | Worse | Level |
+|---|---|---|---|---|---|
+| Placekicker, make rate | 75.6% | 76.2% | 176 | 181 | 11 |
+| Punter, net yards | 39.4 | 40.3 | — | — | — |
+| Kickoff specialist, touchback rate | 46.1% | 51.8% | 226 | 148 | 0 |
+
+Read as a cohort, college placekickers climb from 73.9% to 77.0% across three years. Read
+as the same men, they go 75.6% → 76.2% with 176 better and 181 worse — and over those same
+years their mean attempt gets a yard and a half longer, which is in the column next to it.
+Kickoff specialists move 226-to-148 in one year, which is a different shape of number
+entirely.
+
+**The player table is one row per career, and its columns are read off the survival
+curve.** The long form — a row per player-season — is what everything above is added up
+from, but it is the wrong shape for the question a reader brings to the bottom of the
+page: *did this man get better?* Pivoted, a career is one line read left to right, and
+the per-column volume and seasons are in the cell's tooltip so a 100% column can say it
+rests on 14 kicks.
+
+College gets one column per season; the NFL gets four bands, and the bands are not evenly
+cut. The two corpora have different career shapes and the survival curves say so:
+
+| Share who get another season | yr 1 | yr 2 | yr 3 | yr 4 | yr 5 | yr 6 |
+|---|---|---|---|---|---|---|
+| College placekickers | 66% | 71% | 56% | **27%** | 0% | — |
+| NFL placekickers | **73%** | 87% | 90% | 100% | 77% | 94% |
+
+College has a wall in it — eligibility — and every year up to it is its own event, which
+is why every year is its own column. The NFL has no wall: after the rookie cull the
+continuation rate is flat at 85–95%, and the measure agrees, with make rate at .826 and
+.833 in years one and two before settling at .86–.87. So **year one keeps its own column**
+and the rest group as `2–3`, `4–6`, `7+`.
+
+The obvious alternative — even three-year bands — was rejected on the same evidence. It
+buries the single structural break in the data inside its first band, on a page whose
+entire subject is that the men who leave are not a random sample; and its top band `10+`
+holds 3 players and 5 seasons, which is a column of blanks. `7+` is open-ended because
+years 7 through 11 hold 15, 9, 7, 3 and 2 players and no honest split of that tail has two
+sides. The bands are one literal in `career.YEAR_BANDS`.
+
+**Two display floors, and they are not evidence rules — there are none on this page.**
+`MIN_SHOWN = 15` is the group size below which an average is a name rather than a level, so
+a thin year is kept out of the charts and kept *in* the tables, where its player count sits
+in the column beside it. `MIN_SPLIT = 5` is the smaller floor for the came-back split,
+because a 32-team league loses about five kickers a season and fifteen emptied the NFL
+panel completely. Both curves **stop** at the first year that fails rather than skipping
+it: cohorts shrink monotonically, so the first thin year is the last one worth drawing, and
+a line with a hole in it draws a straight segment from year 7 to year 10 and invites a
+reader to call it one season's change.
 
 ## Why the play grid is server-side
 
@@ -350,9 +439,20 @@ progress on its own.
 Descriptive only, by design. Two fitted baselines (`fg_exp.p_hat`, `punt_exp.exp_net`)
 once lived in the Streamlit console and were deliberately *not* carried over here — every
 number on these pages traces directly to a column, with nothing to calibrate or defend.
-The console was removed on 2026-09-09, so carrying them over is now a rebuild rather than a
-port; what they measured is recorded in the README's "Not built". Reversible, not
+The console was removed on 2026-09-09, so carrying them over is now a rebuild rather than
+a port; what they measured is recorded in the README's "Not built". Reversible, not
 permanent.
+
+`/experience` briefly broke this rule on 2026-09-29 and was rewritten the same day to
+respect it. A "make rate over expected" metric had subtracted a fitted logistic of make
+probability on distance from every placekicker season. It answered a real question —
+attempt distance rises about a yard a season, so a flat make rate over a longer kick is an
+improvement the raw rate cannot show — but it answered it with a number the reader could
+not reconstruct from anything on the page. **The distance column does the same job
+without the model**: mean attempt distance now sits beside the make rate in every table,
+the rate holds while the distance climbs, and the reader draws the conclusion. That is
+also the better outcome for this app, because the adjusted figure could only ever be
+taken on trust and the two raw columns can be added up by hand.
 
 Two data properties are handled in `data.py` rather than left to each caller, because both
 would otherwise produce a confidently wrong number:

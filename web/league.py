@@ -25,11 +25,29 @@ LONG = {"cfb": "D-I FBS college football", "nfl": "the NFL"}
 
 # What the corpus holds, per league. Used in prose, empty states and the header subtitle.
 # `kicks` is pbp.special_teams_play, `plays` is pbp.scrimmage_play.
+#
+# HAND-MAINTAINED, AND IT GOES STALE EVERY WEEK A LIVE SEASON IS PULLED FORWARD. These
+# were measured on 2026-09-11 and were wrong by 2026-09-29 in both corpora -- the header
+# was still reporting 3,297 NFL games against 3,343 actually loaded, and 10,470 college
+# against 10,702. Re-measure them after any run of scripts/update_season.py:
+#
+#   for lg in cfb nfl; do .venv/bin/python -c "
+#   import duckdb; c=duckdb.connect(f'data/out/pbp_$lg.duckdb', read_only=True)
+#   q=lambda s: c.execute(s).fetchone()[0]
+#   print('$lg', q('SELECT count(*) FROM play'), q('SELECT count(*) FROM scrimmage'),
+#         q('SELECT count(*) FROM fact_game'), q('SELECT count(*) FROM dim_team'),
+#         q('SELECT count(*) FROM drive'))"; done
+#
+# Reading them off the snapshot at import would end the drift, and is the obvious fix.
+# It is not done here because these numbers feed lens.py's generated PROSE as well as the
+# header, and that prose is written to read as a stable description of the corpus rather
+# than as a live counter -- a sentence about coverage that moves every Sunday is a
+# different design decision, not a bug fix. Measured 2026-09-29 against the snapshot.
 CORPUS = {
-    "cfb": {"kicks": 316_397, "plays": 1_510_679, "games": 10_470,
-            "teams": 249, "seasons": "2014-2026", "drives": 258_795},
-    "nfl": {"kicks": 90_819, "plays": 447_635, "games": 3_297,
-            "teams": 32, "seasons": "2014-2026", "drives": 73_580},
+    "cfb": {"kicks": 323_130, "plays": 1_543_171, "games": 10_702,
+            "teams": 250, "seasons": "2014-2026", "drives": 264_220},
+    "nfl": {"kicks": 92_068, "plays": 453_797, "games": 3_343,
+            "teams": 32, "seasons": "2014-2026", "drives": 74_568},
 }
 
 # The word for the top-level grouping a team belongs to. Both leagues have a column called

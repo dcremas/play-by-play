@@ -1834,11 +1834,11 @@ two apps are two lenses on one warehouse and the certificate for that name alrea
 `bash web/deploy/push.sh` ships it; `web/deploy/README-deploy.md` is the whole story,
 including what breaks when the `/plays/` prefix is set in one place and not the other.
 
-The deployed copy is the same code, with three things set by environment rather than
-branched on: `PBP_WEB_PREFIX` (where it is mounted — see `web/routes.py`),
-`PBP_WEB_DATA_DIR` (the snapshot lives outside the code tree on the box), and
-`PBP_WEB_WIP` (the work-in-progress banner). All three are unset locally, which is why
-`python -m web.app` is unchanged.
+The deployed copy is the same code, with two things set by environment rather than
+branched on: `PBP_WEB_PREFIX` (where it is mounted — see `web/routes.py`) and
+`PBP_WEB_DATA_DIR` (the snapshot lives outside the code tree on the box). Both are unset
+locally, which is why `python -m web.app` is unchanged. There was a third, `PBP_WEB_WIP`,
+behind a work-in-progress banner; the banner was removed on 2026-09-29 and so was it.
 
 **The deployed snapshot is a copy and goes stale.** Nothing refreshes it automatically —
 the same open follow-up the EC2 mirror has. After a weekly update, rebuild and reship:
@@ -1919,6 +1919,26 @@ average afterwards. The workbook's **About** sheet records the selection down to
 generated `WHERE` clause, the same habit as the drawer's Provenance panel, and a download
 is capped at `PBP_WEB_EXPORT_MAX` (100,000) rows with the cap named in the filename, so a
 truncated file cannot be mistaken for a total.
+
+`/experience` (added 2026-09-29) is the one surface that does **not** read the sidebar, and
+it is a route rather than a fourth grain for that reason. It asks whether a kicker improves
+with years in the job, which is a question about careers, and a career is not a selection
+you can filter without changing what "year one" means — narrow the season band and a man who
+started before it becomes a rookie; filter to one team and every transfer becomes two rookie
+years. So the filter panel and the season band are hidden on that route rather than left
+visible and inert. **Everything on it is a count or a rate over counts** — no fitted
+baseline, no significance test, no index, no chained line — with the player count on every
+chart point and the numerator and denominator in a column of the table below every rate.
+The analysis is in `web/career.py` and is built around three ways the obvious `GROUP BY`
+goes wrong: the year-two group is not the year-one group (a kicker who misses year one gets
+no year two, and the college split is 75.6% for the men who came back against 69.6% for the
+men who did not, both measured in year one), the corpus starts in 2014 so 29.7% of the
+year-one cohort actually began before it, and attempt distance rises with experience — which
+is handled by putting mean attempt distance in the column beside the make rate rather than
+by adjusting for it. Read as a cohort, college placekickers climb 73.9% → 77.0% over three
+years; read as the same men year to year they go 75.6% → 76.2%, with 176 better and 181
+worse, while their mean attempt gets a yard and a half longer. Punters and kickoff
+specialists move much further and in one direction.
 
 Design decisions in `web/` that are settled unless deliberately reopened: descriptive only,
 **no models**; the side is exclusive, never a union; profiles are kicking side only;
@@ -2288,6 +2308,7 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-25 | **The warehouse mirrored to EC2, and an MCP server over it** | the corpus existed only on this laptop, so nothing without a tunnel to it could read the data — Claude Desktop, claude.ai and mobile included. Phase 6 had been costed as "a small job" on the strength of the weather-warehouse pattern porting, which was true of the server and ignored the mirroring | `pbp` on the EC2 box: 11 tables loaded through the existing loaders, plus `play_wide`, `scrimmage_wide` and `season_status` as a materialised serving layer. `scripts/sync_ec2.py` is the refresh path and **reconciles every row count against local, failing on any difference**. `mcp_server/` is 25 read-only tools over it |
 | 2026-09-25 | **PG18 → PG16 is the unsupported direction** | the first plan was `pg_dump` from local to the box. Local runs PostgreSQL 18.6 and the box 16.15, and dumping a newer server to restore into an older one is not supported. Only the schema turned out to be portable, and only after one line | the data path replays the CSV extracts through `load_league.sql` on the box instead — no version skew, and it reuses code `verify.sql` already trusts. The schema went across as `pg_dump --schema-only` with `SET transaction_timeout` (PG17+) stripped; nothing else in the DDL was version-sensitive |
 | 2026-09-25 | **`\copy` cannot load a remote target, and `load_league.sql` already knew** | converting the loaders' server-side `COPY` to `\copy` looked like the obvious way to load across the tunnel. psql's `\copy` does **not** interpolate `:'variables'` — it takes `:'st_csv'` as a literal filename and loads **zero rows without erroring**, which for a loader is the worst possible failure. Confirmed empirically, then found already written in the loader's own header | no loader changed. The CSVs are staged on the box and `-v root=` — which every loader already took — points them there. The lesson is the cheaper one: the header was right, and reading it first would have saved the experiment |
+| 2026-09-29 | **`/experience` — the development question, with the arithmetic it actually needs** | "does a kicker improve with experience" is the question the kicker data is most often asked, and the one-line `GROUP BY` that answers it is wrong three ways over | `web/career.py` + `web/pages/experience.py`. The naive college placekicker curve climbs 73.9% → 77.0% across years one to three and the rise is mostly the washout: year-one kickers who never appeared again made 69.6% against 75.6% for the ones who came back, both measured in year one before either group gained a season. Compared with themselves a year later the same 368 men go 75.6% → 76.2%, 176 better and 181 worse. Counts and rates over counts only — a first version carried a fitted make-probability baseline and a sign test, and both were removed the same day: the reader cannot reconstruct an adjusted figure from anything on the page, and putting mean attempt distance in the next column does the same work out of two numbers they can add up. Two bugs caught while building it: 62 college field goals carry no distance and were being averaged over a denominator that counted them; and the came-back flag was written to a column named `returned`, which already held a punter's returned-punt count — `ret_rate` divided a boolean by a season of punts and reported 1.9% against a corpus that returns 25.5% |
 
 ---
 

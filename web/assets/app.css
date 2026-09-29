@@ -105,6 +105,33 @@ body { background: var(--st-plane); }
   font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
   color: var(--st-muted); text-transform: uppercase;
 }
+/* ONE header layout for every column in the app: name hard left, filter hard right,
+   sort arrow beside the name. Text columns get that from quartz for free. Numeric ones
+   do not -- `type: "rightAligned"` makes quartz flip `.ag-cell-label-container` to
+   `row`, which parks the filter icon to the LEFT of the name, so a grid whose first two
+   columns are text and whose next dozen are measures showed two header designs in one
+   row.
+
+   Both declarations are needed and they do different things. The container flip puts
+   the ICON back on the right. `justify-content: flex-start` on the label puts the NAME
+   back on the left: the label box grows to fill whatever the icon leaves, and quartz's
+   right-aligned variant pushes the text to the far end of it, which left the name
+   floating in the middle of the cell against the filter icon.
+
+   The trade is deliberate and worth naming: a numeric header no longer sits over its
+   own digits, because the cells stay right-aligned and the name does not. Consistency
+   across every header in the app was the ask, and a column's name is a label rather
+   than a value -- it is not something a reader scans down the way they scan the
+   numbers under it.
+
+   No gap is added between name and icon: 4px of it clipped `Season` and `<30 made` on
+   the season tables, the narrowest right-aligned headers here. */
+.st-grid .ag-right-aligned-header .ag-cell-label-container {
+  flex-direction: row-reverse;
+}
+.st-grid .ag-right-aligned-header .ag-header-cell-label {
+  flex-direction: row; justify-content: flex-start;
+}
 .st-grid .ag-row { cursor: pointer; }
 .st-grid .num-cell { font-variant-numeric: tabular-nums; }
 .st-grid .name-cell { font-weight: 550; }
@@ -273,6 +300,25 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
   .st-cap { font-size: 8.5px; letter-spacing: 0.04em; }
 }
 
+/* ------------------------------------------------------------------ page intro
+   The strip above the season band, where the work-in-progress alert used to be. It
+   is chrome, not content: the title sits a step under the tile values so it frames
+   the page rather than competing with the first number on it, and the line under it
+   is the same muted face as the header's corpus line. */
+.st-intro-title {
+  font-size: 15px; font-weight: 650; letter-spacing: -0.01em;
+  line-height: 1.2; color: var(--st-ink);
+}
+.st-intro-sub {
+  font-size: 12px; color: var(--st-muted); line-height: 1.35;
+}
+/* At the width where the header drops its corpus line, the intro is the widest
+   fixed text on the page. The title carries the page; the sentence under it is the
+   part a returning reader has already read. */
+@media (max-width: 900px) {
+  .st-intro-sub { display: none; }
+}
+
 /* ------------------------------------------------------ the season band
    The season range, promoted out of the sidebar on 2026-09-29. It is the filter
    most questions here start with and it had the least room to be one: the sidebar
@@ -317,4 +363,19 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
   .st-season-slider { flex: 1 0 100%; }
   .st-season-band .mantine-RangeSlider-markWrapper:nth-child(even)
   .mantine-RangeSlider-markLabel { display: none; }
+}
+
+/* ------------------------------------------------------------------ view tabs
+   Two routes the reader moves between, drawn as a tab strip. Underline rather than a
+   filled pill: the header already carries two SegmentedControls, and a third filled
+   control directly under them read as a filter rather than as a place. */
+.st-nav { display: flex; gap: 2px; align-items: flex-end; }
+.st-nav-item {
+  font-size: 12px; font-weight: 600; color: var(--st-muted);
+  text-decoration: none; padding: 5px 10px 6px 10px;
+  border-bottom: 2px solid transparent; line-height: 1.2;
+}
+.st-nav-item:hover { color: var(--st-ink); }
+.st-nav-item.is-active {
+  color: var(--st-ink); border-bottom-color: #3987e5;
 }

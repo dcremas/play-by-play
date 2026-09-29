@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 
-from . import data, lens, theme
+from . import career, data, lens, theme
 
 _MIN_LABEL_SHARE = 0.07  # below this a segment is too thin to hold a legible label
 
@@ -596,3 +596,145 @@ def explorer_figs(key: str, where: str, lg: str, chips, mode: str, height: int =
     return (kicks_by_phase_season(where, lg, mode, height),
             kicks_by_phase_distance(where, lg, mode, height),
             None)
+
+
+# ------------------------------------------------------------------- experience curves
+# The three figures behind web/pages/experience.py. They take DATAFRAMES rather than a
+# WHERE clause, unlike everything above: the experience panel is a career-shaped object
+# that web/career.py builds in one pass and all three draw different cuts of, and handing
+# each figure a predicate would rebuild it three times and let the three drift.
+#
+# Every value drawn here is a pooled count over a count. Nothing is fitted, smoothed,
+# chained or adjusted, and each point carries the number of players behind it -- so a
+# reader can check any mark on any of them against the tables underneath.
+def _exp_axis(fig, mode, metric, height, title, xtitle="Season in the role"):
+    fig.update_layout(**theme.plotly_layout(mode, height=height, legend=True,
+                                            title=dict(text=title)))
+    fig.update_yaxes(tickformat=career.tickformat(metric), title=None)
+    fig.update_xaxes(title=xtitle, dtick=1, type="category")
+    return fig
+
+
+def experience_cohort(cohort, metric: str, mode: str, height: int = 340):
+    """Everyone standing at each experience year.
+
+    One line, the naive one, drawn honestly: each point is labelled with its value and
+    carries its player count under the tick, because the group CHANGES from point to
+    point and that is the single thing a reader has to know before reading the slope.
+    The old version of this figure also drew a second, constructed line -- the paired
+    steps chained end to end -- which was a number nobody measured. The same-players
+    comparison is now its own figure, showing the two levels that were actually observed.
+    """
+    t, s = theme.TOKENS[mode], theme.SLOTS[mode]
+    if cohort is None or cohort.empty:
+        return empty_fig(mode, "No qualifying seasons", height)
+    fmt = career.value_format(metric)
+    ticks = [f"{int(e)}<br>{int(n):,} players"
+             for e, n in zip(cohort["exp"], cohort["players"])]
+    fig = go.Figure(go.Scatter(
+        x=cohort["exp"], y=cohort["value"], mode="lines+markers+text",
+        name="Everyone at that year",
+        line=dict(color=t["muted"], width=2, dash="dot"),
+        marker=dict(size=9, color=t["muted"], line=dict(color=t["surface"], width=2)),
+        text=[format(v, fmt) for v in cohort["value"]], textposition="top center",
+        textfont=dict(size=10, color=t["ink2"]),
+        customdata=cohort["players"],
+        hovertemplate="Year %{x}<br>%{y:" + fmt + "} · %{customdata:,} players"
+                      "<extra></extra>",
+    ))
+    fig = _exp_axis(fig, mode, metric, height,
+                    f"{career.METRICS[metric]['label']}: everyone at each year")
+    fig.update_xaxes(tickmode="array", tickvals=list(cohort["exp"]), ticktext=ticks)
+    fig.update_layout(showlegend=False)
+    return fig
+
+
+def experience_paired(steps, metric: str, mode: str, height: int = 340):
+    """The same players, the year before and the year after.
+
+    Two measured levels per step and a line between them -- no chain, no cumulative
+    construction, nothing carried forward. Each pair is a closed group of men who kicked
+    in both seasons, so the two dots are directly comparable and the segment between them
+    is the whole claim. Both ends are labelled with the value and the tick under them
+    carries how many players are in that pair.
+    """
+    t, s = theme.TOKENS[mode], theme.SLOTS[mode]
+    if steps is None or steps.empty:
+        return empty_fig(mode, "No player appears in two consecutive years", height)
+    drawn = steps[~steps["thin"]]
+    if drawn.empty:
+        return empty_fig(mode, "Too few players in any pair to draw", height)
+    fmt = career.value_format(metric)
+    better = career.METRICS[metric]["better"] or 1
+    fig = go.Figure()
+    for _, r in drawn.iterrows():
+        up = (r["change"] * better) > 0
+        hexv = s["aqua"] if up else s["orange"]
+        # Label the higher value above and the lower one below, per pair. Fixed
+        # left/right positions put the two labels side by side at the same height
+        # whenever the pair barely moved -- which on this page is most of them, and is
+        # exactly the case a reader most needs to be able to read.
+        rose = r["after"] >= r["before"]
+        fig.add_trace(go.Scatter(
+            x=[r["step"], r["step"]], y=[r["before"], r["after"]],
+            mode="lines+markers+text", showlegend=False,
+            line=dict(color=hexv, width=2.5),
+            marker=dict(size=[9, 13], color=[t["muted"], hexv],
+                        line=dict(color=t["surface"], width=2)),
+            text=[format(r["before"], fmt), format(r["after"], fmt)],
+            textposition=["bottom center", "top center"] if rose
+                         else ["top center", "bottom center"],
+            textfont=dict(size=10, color=t["ink2"]),
+            customdata=[[int(r["n"]), int(r["better"]), int(r["worse"])]] * 2,
+            hovertemplate="%{x}<br>%{y:" + fmt + "}<br>%{customdata[0]:,} players · "
+                          "%{customdata[1]} better, %{customdata[2]} worse"
+                          "<extra></extra>",
+        ))
+    # A legend built by hand, because the traces above are one per step and a real legend
+    # would list the same two things four times over.
+    for name, hexv in (("Earlier year", t["muted"]),
+                       ("Later year — better", s["aqua"]),
+                       ("Later year — worse", s["orange"])):
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=name,
+                                 marker=dict(size=9, color=hexv)))
+    # Two short lines. The first draft put "368 players · 176 better, 181 worse" under
+    # every tick; plotly rotated all four to fit, they ran diagonally into the legend,
+    # and none of it was readable. The counts a reader needs while looking at the chart
+    # are the group size; better-and-worse are one hover away and are a column each in
+    # the table below.
+    ticks = [f"{st}<br>{int(n):,} players" for st, n in zip(drawn["step"], drawn["n"])]
+    fig = _exp_axis(fig, mode, metric, height,
+                    "The same players, one year to the next", xtitle=None)
+    fig.update_xaxes(tickmode="array", tickvals=list(drawn["step"]), ticktext=ticks,
+                     dtick=None, tickangle=0)
+    return fig
+
+
+def experience_survivorship(surv, metric: str, mode: str, height: int = 340):
+    """At each year, the players who got another season against the ones who did not.
+
+    Every point is measured in the SAME season for both lines, so nothing here is a
+    development effect: neither group has gained a year yet. Whatever separates them is
+    who keeps the job.
+    """
+    t, s = theme.TOKENS[mode], theme.SLOTS[mode]
+    if surv is None or surv.empty:
+        return empty_fig(mode, "No season has both groups in it", height)
+    fmt = career.value_format(metric)
+    fig = go.Figure()
+    for col, name, hexv, cnt in (
+            ("stayed", "Got another season", s["blue"], "stayed_n"),
+            ("gone", "Last season in the role", s["orange"], "gone_n")):
+        fig.add_trace(go.Scatter(
+            x=surv["exp"], y=surv[col], mode="lines+markers+text",
+            name=name, line=dict(color=hexv, width=2.5),
+            marker=dict(size=9, color=hexv, line=dict(color=t["surface"], width=2)),
+            text=[format(v, fmt) for v in surv[col]],
+            textposition="top center" if col == "stayed" else "bottom center",
+            textfont=dict(size=10, color=t["ink2"]),
+            customdata=surv[cnt],
+            hovertemplate="Year %{x}<br>%{y:" + fmt + "} · %{customdata:,} players"
+                          "<extra>" + name + "</extra>",
+        ))
+    return _exp_axis(fig, mode, metric, height,
+                     "The same season, split by whether he came back")

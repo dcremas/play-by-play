@@ -51,11 +51,6 @@ Environment=PBP_WEB_PREFIX=/plays
 # told to. Keeping them apart is what makes a code deploy cheap.
 Environment=PBP_WEB_DATA_DIR=/var/lib/pbp-web
 
-# The work-in-progress banner. `1` uses the default wording in web/ui.py; any
-# other non-empty value is used verbatim as the message, so re-wording it is a
-# drop-in and a restart rather than a redeploy. Unset it to remove the banner.
-Environment=PBP_WEB_WIP=1
-
 Environment=PYTHONUNBUFFERED=1
 
 # HOME MUST BE SET, IT MUST NOT BE UNDER /home, AND IT MUST BE WRITABLE.

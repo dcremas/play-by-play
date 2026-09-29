@@ -219,26 +219,25 @@ nothing writes there.
 
 ---
 
-## The work-in-progress banner
+## The work-in-progress banner is gone
 
-The app is public and unauthenticated, and it carries a banner saying it is still
-being built. That is `PBP_WEB_WIP` in the unit:
+The app used to carry a yellow alert saying it was still being built, switched on by
+`PBP_WEB_WIP` in the unit. It was removed on 2026-09-29, along with the environment
+variable and `ui.wip_banner()`. In its place is a plain title and one line above the
+season band, in the page source rather than in the unit.
 
-```ini
-Environment=PBP_WEB_WIP=1        # default wording, from web/ui.py
-Environment=PBP_WEB_WIP=Some other sentence.
-```
-
-Any non-empty value other than `1` is used verbatim as the message, so re-wording
-it is a systemd drop-in and a restart rather than a redeploy:
+**If you are updating an existing box, drop the `Environment=PBP_WEB_WIP=` line** —
+from the unit here, and from any `systemctl edit pbp-web` drop-in that set it. Nothing
+reads it any more, so leaving it does no harm beyond being a lie about what the app
+does. Check for one with:
 
 ```bash
-ssh awsvm 'sudo systemctl edit pbp-web'    # add the Environment= line
-ssh awsvm 'sudo systemctl restart pbp-web'
+ssh awsvm 'systemctl cat pbp-web | grep -n PBP_WEB_WIP'
 ```
 
-Unset it to remove the banner entirely. It is deliberately **not dismissible** —
-see the docstring on `ui.wip_banner()` for why.
+The partial-season caveat it also carried did not live only there: the `2026 partial`
+badge in the header is still on the page, still per league, and still carries the full
+sentence in its tooltip.
 
 ---
 

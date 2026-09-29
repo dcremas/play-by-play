@@ -20,7 +20,7 @@ import dash_mantine_components as dmc
 from dash import Input, Output, State, ctx, dcc, html, no_update
 
 from . import data, detail, league, lens, routes, theme, ui
-from .pages import explorer, player, team
+from .pages import experience, explorer, player, team
 
 app = dash.Dash(
     __name__,
@@ -35,6 +35,10 @@ app = dash.Dash(
     url_base_pathname=routes.BASE,
 )
 server = app.server
+
+# The filter panel's geometry, held as a name because two places set it: the shell
+# constructor below and _chrome(), which collapses it on the routes it cannot filter.
+NAVBAR = {"width": 320, "breakpoint": "sm", "collapsed": {"mobile": True}}
 
 S0, S1 = data.season_bounds()
 D0, D1 = data.dist_bounds()
@@ -300,6 +304,73 @@ def _readout(caption: str, cid: str):
     ])
 
 
+def intro():
+    """What this page is, and what the controls around it reach.
+
+    It replaced the work-in-progress banner on 2026-09-29. That banner was an alert:
+    yellow, full width, and about the state of the DEPLOYMENT rather than about the
+    data. This says the one thing a reader actually needs before touching a control --
+    that the selection is global, so every tile, chart and table under it is computed
+    from whatever the season band and the sidebar currently hold.
+
+    Deliberately league- and lens-agnostic, and carrying no counts. It renders on the
+    profile routes too, where "1.8M college plays" would be false and the header's own
+    corpus line is already the per-league figure.
+    """
+    return dmc.Stack(gap=6, mb="sm", className="st-intro", children=[
+        dmc.Stack(gap=2, children=[
+            dmc.Text("Play-by-play explorer", className="st-intro-title"),
+            dmc.Text(id="intro-sub", className="st-intro-sub"),
+        ]),
+        nav(),
+    ])
+
+
+# What the intro says, per view. It is two sentences and not one because the second one
+# is a CLAIM ABOUT THE CONTROLS, and the two views do not have the same controls: the
+# explorer is driven by the sidebar and the season band, and the experience curve is
+# driven by neither. Leaving the explorer's sentence up on both was the page telling a
+# reader to reach for a filter that would not move a number on it.
+INTRO_SUB = {
+    "/": ("Set the season range below and the rest in the sidebar. Every tile, chart "
+          "and table on the page is computed from that selection."),
+    "/experience": ("Whole careers rather than a selection of plays, so the sidebar and "
+                    "the season range do not apply here — this view has its own "
+                    "controls."),
+}
+
+
+# The top-level views. Routes rather than tabs inside one page, because they do not
+# share a selection: the explorer answers a question about the rows the sidebar picked
+# and the experience curve answers one about whole careers, which no row filter can
+# express. Rendered as tabs anyway, because two routes a reader is meant to move
+# between are a tab strip to the reader whatever they are to the router.
+#
+# `dcc.Link` and not `dmc.Tabs`: a Tabs value would have to be driven from the URL and
+# then drive it back, and the round trip is a callback that fights the browser's own
+# back button. A link is already the control the router listens to.
+VIEWS = [("/", "Explorer"), ("/experience", "Experience curve")]
+
+
+def _nav_items(here: str):
+    """The tab strip, with the current view marked.
+
+    A profile page is reached FROM the explorer and shares its filters, so `/player/...`
+    and `/team/...` keep the explorer tab lit rather than lighting nothing. A strip with
+    no active tab reads as a third view the reader cannot see.
+    """
+    active = "/experience" if here.startswith("/experience") else "/"
+    return [
+        dcc.Link(label, href=routes.url(path),
+                 className="st-nav-item" + (" is-active" if path == active else ""))
+        for path, label in VIEWS
+    ]
+
+
+def nav():
+    return html.Div(id="view-nav", className="st-nav", children=_nav_items("/"))
+
+
 def season_band():
     """The season range, given the width it always needed.
 
@@ -318,7 +389,8 @@ def season_band():
     filter. The profile pages honour it too; a control that existed only on `/` would
     leave the store holding a season range with nothing on screen saying so.
     """
-    return dmc.Paper(withBorder=True, radius="sm", className="st-season-band", mb="md",
+    return dmc.Paper(id="season-band", withBorder=True, radius="sm",
+                     className="st-season-band", mb="md",
                      children=dmc.Group(align="center", wrap="nowrap", gap="xl",
                                         children=[
         dmc.Stack(gap=1, className="st-season-head", children=[
@@ -390,21 +462,21 @@ app.layout = dmc.MantineProvider(
         dcc.Store(id="mode", data="dark", storage_type="local"),
         dcc.Store(id="detail-uid"),
         dmc.AppShell(
+            id="shell",
             # 68 rather than 52: the header carries two lines now -- a caption over each
             # selector, and the corpus line under the wordmark -- and 52 clipped them.
             header={"height": 68},
-            navbar={"width": 320, "breakpoint": "sm", "collapsed": {"mobile": True}},
+            navbar=NAVBAR,
             padding="md",
             children=[
                 dmc.AppShellHeader(header(), className="st-header"),
                 dmc.AppShellNavbar(dmc.Box(sidebar(), p="md"), className="st-navbar"),
-                # The WIP notice sits ABOVE the loader, not inside it: it is a
-                # property of the deployment rather than of the page being
-                # rendered, so it must not blink out every time a filter change
-                # swaps the body. `wip_banner()` returns None when the switch is
-                # off, and Dash renders None as nothing.
                 dmc.AppShellMain([
-                    ui.wip_banner(),
+                    # Above the loader, not inside it, for the same reason the season
+                    # band is: it states what the whole app does and what its controls
+                    # reach, so it must not blink out every time a filter change swaps
+                    # the body under it.
+                    intro(),
                     # Above the loader, not inside it: the season range is a filter that
                     # OUTLIVES the page under it, and swapping it out on every route
                     # change would blink the control the reader is dragging.
@@ -824,9 +896,36 @@ def _route(path, mode):
             return page.layout(int(raw), lg, mode), page.crumb(int(raw), lg)
         except (ValueError, LookupError):
             return _not_found(path), None
+    if parts == ["experience"]:
+        return experience.layout(mode), experience.crumb()
     if parts:
         return _not_found(path), None
     return explorer.layout(mode), None
+
+
+@app.callback(
+    Output("view-nav", "children"),
+    Output("intro-sub", "children"),
+    Output("season-band", "style"),
+    Output("shell", "navbar"),
+    Input("url", "pathname"),
+)
+def _chrome(path):
+    """Everything on the frame whose relevance depends on which view is open.
+
+    One callback rather than four, because the four answers are one decision. The
+    experience curve reads whole careers straight out of the corpus -- see
+    web/career.py -- so the season band and the filter panel cannot reach it, and a
+    control that is visible, enabled, and inert is worse than an absent one: a reader
+    who drags the season slider and sees nothing move concludes the page is broken long
+    before they conclude the slider does not apply.
+    """
+    here = routes.strip(path).rstrip("/") or "/"
+    on_xp = here.startswith("/experience")
+    sub = INTRO_SUB["/experience" if on_xp else "/"]
+    band = {"display": "none"} if on_xp else {}
+    bar = dict(NAVBAR, collapsed={"mobile": True, "desktop": on_xp})
+    return _nav_items(here), sub, band, bar
 
 
 def _not_found(path):
