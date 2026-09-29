@@ -1845,8 +1845,14 @@ lens would apply scrimmage-only facets to a view with no such columns. Team rows
 scrimmage lenses therefore do not navigate, and the hint above the grid says so rather than
 silently changing the subject.
 
-Sidebar filters are **global** and the sidebar is **one static set of controls that
-relabels itself** rather than three. "Team" reads *Offense*, *Defense* or *Kicking team*;
+**Seasons sits in a full-width band at the top of the main pane rather than in the sidebar
+(moved 2026-09-29)** — it is the filter most questions start with and the sidebar gave it a
+264px track, too narrow for thirteen year marks, so it showed six two-digit ones. The band
+carries all thirteen as four-digit years on an 830px track. It lives in the app shell
+rather than on the explorer page because it is global like the rest.
+
+The other sidebar filters are **global** too, and the sidebar is **one static set of
+controls that relabels itself** rather than three. "Team" reads *Offense*, *Defense* or *Kicking team*;
 down and field zone appear only on the scrimmage lenses and kick distance only on the
 kicks; every filter that still means something keeps its value when the side changes. Two
 do not and are cleared — the player picker (a quarterback is not a tackler) and any outcome

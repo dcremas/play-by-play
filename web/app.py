@@ -102,16 +102,8 @@ def sidebar() -> list:
                 for k in lens.chips(key)
             ]),
         ),
-        dmc.Divider(className="st-facet-rule"),
-        _label(f"Seasons {S0}\u2013{S1}", "lbl-seasons"),
-        # Marks every other year. Thirteen of them at 10px in a 264px track ran the
-        # labels together; the live label above now carries the exact selection, which
-        # is what the marks were being read for.
-        dmc.RangeSlider(
-            id="f-seasons", min=S0, max=S1, step=1, value=[S0, S1], minRange=0,
-            size="md", mb="lg", mt=6,
-            marks=[{"value": s, "label": str(s)[2:]} for s in range(S0, S1 + 1, 2)],
-        ),
+        # Seasons used to sit here, between Phase and Team. It is in the main pane now
+        # -- see season_band() for why a 264px track was the wrong home for it.
         dmc.Divider(className="st-facet-rule"),
         _label(lens.SUBJECT[key], "lbl-teams"),
         # No `limit`: 249 teams render fine, and a limit made the list look finished
@@ -308,6 +300,39 @@ def _readout(caption: str, cid: str):
     ])
 
 
+def season_band():
+    """The season range, given the width it always needed.
+
+    It lived in the sidebar between Phase and Team, on a 264px track. Thirteen year
+    marks do not fit in 264px -- they ran together -- so the marks were every OTHER
+    year, written as two digits, and the exact selection had to be read off a text
+    label above the track because the marks could not carry it. Two thumbs in that
+    space are also a small target for a filter this many questions start with.
+
+    Up here it has the whole main pane: every season gets its own mark, the marks are
+    four-digit years rather than `14` and `26`, and the thumbs have room to grab. The
+    readout stays -- it is the one thing that says whether a single-season selection is
+    2019 or 2019-2019 -- but it is now beside the track rather than a substitute for it.
+
+    It is in AppShellMain rather than on the explorer page because it is a GLOBAL
+    filter. The profile pages honour it too; a control that existed only on `/` would
+    leave the store holding a season range with nothing on screen saying so.
+    """
+    return dmc.Paper(withBorder=True, radius="sm", className="st-season-band", mb="md",
+                     children=dmc.Group(align="center", wrap="nowrap", gap="xl",
+                                        children=[
+        dmc.Stack(gap=1, className="st-season-head", children=[
+            dmc.Text("Seasons", className="st-cap"),
+            dmc.Text(id="lbl-seasons", className="st-season-readout"),
+        ]),
+        dmc.RangeSlider(
+            id="f-seasons", min=S0, max=S1, step=1, value=[S0, S1], minRange=0,
+            size="md", className="st-season-slider",
+            marks=[{"value": s, "label": str(s)} for s in range(S0, S1 + 1)],
+        ),
+    ]))
+
+
 def header():
     built = META["built_at"]
     stamp = built.strftime("%d %b %Y %H:%M") if built else "unknown"
@@ -380,6 +405,10 @@ app.layout = dmc.MantineProvider(
                 # off, and Dash renders None as nothing.
                 dmc.AppShellMain([
                     ui.wip_banner(),
+                    # Above the loader, not inside it: the season range is a filter that
+                    # OUTLIVES the page under it, and swapping it out on every route
+                    # change would blink the control the reader is dragging.
+                    season_band(),
                     dcc.Loading(
                         html.Div(id="page"), type="default", delay_show=250,
                         color=theme.SLOTS["dark"]["blue"],
@@ -743,10 +772,14 @@ def _toggle_drawer(n):
 
 @app.callback(Output("lbl-seasons", "children"), Input("f-seasons", "value"))
 def _season_label(rng):
-    """The slider's own marks are every other year now, so the exact selection lives
-    here. One season selected reads as one number, not as a range of it to itself."""
+    """The exact selection, beside the track.
+
+    The word "Seasons" is the caption above this now, so it is not repeated here. One
+    season selected reads as one number, not as a range of it to itself -- which is the
+    distinction the marks alone cannot draw, both thumbs sitting on the same mark.
+    """
     lo, hi = (rng or [S0, S1])
-    return f"Seasons {lo}" if lo == hi else f"Seasons {lo}\u2013{hi}"
+    return f"{lo}" if lo == hi else f"{lo}\u2013{hi}"
 
 
 # --------------------------------------------------------------------------- routing

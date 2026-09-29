@@ -165,6 +165,28 @@ navigate, and the hint above the grid says so rather than silently changing the 
 Filters in the sidebar are **global**: a player page and a team page both honour
 them, each ignoring only the facet it *is*.
 
+**Seasons is not in the sidebar (moved 2026-09-29).** It sits in a full-width band at the
+top of the main pane, above the page and below the header. It is the filter most questions
+here start with and it had the least room to be one: the sidebar track measured 264px,
+which cannot carry thirteen year marks, so it carried six two-digit ones and the exact
+selection had to be read off a text label because the marks could not say it. The band's
+track measures 830px and carries all thirteen as four-digit years, with the readout beside
+it rather than standing in for it.
+
+Two things about where it lives. It is in `AppShellMain`, not in `explorer.layout()`,
+because it is global like the rest — a control that existed only on `/` would leave the
+store holding a season range with nothing on screen saying so on a profile page. And it is
+**above** the `dcc.Loading` that wraps the page, not inside it, so a route change does not
+blink the control out from under a reader who is dragging it.
+
+Its CSS is the one place in this app where the Mantine part names are
+`mantine-RangeSlider-*` rather than `mantine-Slider-*` — RangeSlider is its own component,
+not a Slider with two thumbs, and a rule written against the Slider names matches nothing
+while looking correct. The narrow-width rule that thins the marks to every other year
+counts `markWrapper`, not `markLabel`: each mark renders as `markWrapper > mark +
+markLabel`, so every label is the second child of its own wrapper and
+`markLabel:nth-child(even)` selects all thirteen rather than six.
+
 **The Roof filter's two sides are not complements, and that is on purpose (added
 2026-09-09).** `venue_indoor` is nullable — 438 kick and 2,149 scrimmage rows have no venue
 at all, the 14 Hawai'i home games in 2019–2020 that carry no venue in the scoreboard — so

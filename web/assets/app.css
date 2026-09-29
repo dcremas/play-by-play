@@ -272,3 +272,49 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
   .st-header { padding: 0 12px; }
   .st-cap { font-size: 8.5px; letter-spacing: 0.04em; }
 }
+
+/* ------------------------------------------------------ the season band
+   The season range, promoted out of the sidebar on 2026-09-29. It is the filter
+   most questions here start with and it had the least room to be one: the sidebar
+   track measured 264px, which cannot carry thirteen year marks, so it carried six
+   two-digit ones. In the main pane the track measures 830px and carries all
+   thirteen as four-digit years.
+
+   NOTE THE CLASS PREFIX. Mantine names these parts `mantine-RangeSlider-*`, not
+   `mantine-Slider-*` -- RangeSlider is its own component, not a Slider with two
+   thumbs. The first version of this block used the Slider names, matched nothing,
+   and left the marks at Mantine's default 14px while appearing to have styled
+   them. Verified against the live DOM rather than assumed. */
+.st-season-band {
+  background: var(--st-surface);
+  padding: 10px 18px 6px 18px;
+}
+.st-season-head { min-width: 104px; }
+/* Fixed-width and tabular. The readout sits left of a track that takes the rest of
+   the row, so a readout that changed width with the range -- "2019" is narrower
+   than "2014-2026" -- would drag the track sideways under the thumb being held. */
+.st-season-readout {
+  font-size: 15px; font-weight: 600; color: var(--st-ink);
+  line-height: 1.2; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.st-season-slider { flex: 1; min-width: 0; padding-bottom: 20px; }
+.st-season-band .mantine-RangeSlider-markLabel {
+  font-size: 11px; color: var(--st-muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+/* Narrow: the band wraps to a readout over a full-width track, and the marks thin
+   to every other year rather than overlapping -- the sidebar's old compromise,
+   reached only at the width that actually forces it.
+
+   The even/odd count is on the WRAPPER, not the label. Each mark renders as
+   `markWrapper > mark + markLabel`, so every label is the second child of its own
+   wrapper and `markLabel:nth-child(even)` selects all thirteen -- it would hide the
+   marks entirely instead of thinning them. The wrappers are the only children of
+   their parent, so counting them counts marks. */
+@media (max-width: 900px) {
+  .st-season-band .mantine-Group-root { flex-wrap: wrap; }
+  .st-season-slider { flex: 1 0 100%; }
+  .st-season-band .mantine-RangeSlider-markWrapper:nth-child(even)
+  .mantine-RangeSlider-markLabel { display: none; }
+}
