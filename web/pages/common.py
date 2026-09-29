@@ -12,10 +12,10 @@ which is the whole reason they are one set of SQL and two label tables.
 from __future__ import annotations
 
 import dash_mantine_components as dmc
-from dash import Input, Output, State, callback, html
+from dash import Input, Output, State, callback, dcc, html
 from dash.exceptions import PreventUpdate
 
-from .. import columns, data, league, lens, ui
+from .. import columns, data, export, league, lens, ui
 
 # --------------------------------------------------------------------------- measures
 METRICS = """
@@ -453,14 +453,28 @@ def empty_panel(kind: str, flt: dict | None):
 
 def play_grid(mode: str, phases, extra=None, height: str = "480px"):
     return html.Div([
-        ui.note("Click any row to open the play.", "neutral"),
+        dmc.Group(justify="space-between", align="center", wrap="nowrap", children=[
+            ui.note("Click any row to open the play.", "neutral"),
+            export.controls("ent-dl"),
+        ]),
         ui.grid("grid-ent", mode, infinite=True, height=height,
                 columns=columns.build("st", phases, extra, mode)),
+        export.sink("ent-dl-file"),
+        # This grid's last getRowsRequest, for the same reason the explorer keeps one:
+        # an infinite row model cannot be asked what it is showing.
+        dcc.Store(id="ent-grid-req"),
+        # The arguments this grid was built from, so the download can rebuild the same
+        # column set. A module-level variable would have been shorter and wrong: under
+        # gunicorn it is one value shared by every visitor, so a team page open in one
+        # browser would decide the columns of a player download in another. In the
+        # layout it is per browser, which is what it describes.
+        dcc.Store(id="ent-grid-cols", data={"phases": list(phases), "extra": extra}),
     ])
 
 
 @callback(
     Output("grid-ent", "getRowsResponse"),
+    Output("ent-grid-req", "data"),
     Input("grid-ent", "getRowsRequest"),
     State("ent", "data"), State("flt", "data"),
     prevent_initial_call=True,
@@ -484,8 +498,9 @@ def _ent_rows(req, ent, flt):
     """)
     # The league-prefixed view, not the bare name: "st_play" is not a relation in either
     # corpus, so the row count raised rather than merely counting the wrong thing.
-    return {"rowData": data.records(df),
-            "rowCount": data.count_rows(view, where)}
+    return ({"rowData": data.records(df), "rowCount": data.count_rows(view, where)},
+            {"filterModel": req.get("filterModel") or {},
+             "sortModel": req.get("sortModel") or []})
 
 
 @callback(
@@ -497,6 +512,52 @@ def _ent_open(rows):
     if not rows:
         raise PreventUpdate
     return rows[0].get("play_uid")
+
+
+@callback(
+    Output("ent-dl-file", "data"),
+    Input("ent-dl-csv", "n_clicks"), Input("ent-dl-xlsx", "n_clicks"),
+    State("ent", "data"), State("flt", "data"),
+    State("ent-grid-req", "data"), State("ent-grid-cols", "data"),
+    running=export.busy("ent-dl"),
+    prevent_initial_call=True,
+)
+def _ent_download(n_csv, n_xlsx, ent, flt, req, cols):
+    """This profile's kicks, as the grid has them.
+
+    Same shape as the explorer's plays download and for the same reason -- an infinite
+    row model has nothing client-side to gather -- with one difference that matters:
+    the WHERE clause starts from entity_where, so the file is scoped to this player or
+    team even when the sidebar is wide open.
+    """
+    # The click guard first: this pair arrives with the grid, by callback, and Dash
+    # fires the callbacks of components it mounts. See export.clicked.
+    fmt = export.clicked(n_csv, n_xlsx)
+    if not ent:
+        raise PreventUpdate
+    lg = league.resolve(ent.get("league"))
+    view = lens.view("st", lg)
+    req = req or {}
+    where = (f"{entity_where(ent, flt)} AND "
+             f"({data.filter_model_to_sql(req.get('filterModel'))})")
+    order = data.sort_model_to_sql(req.get("sortModel"))
+    total = data.count_rows(view, where)
+    df = data.q(f"SELECT * FROM {view} WHERE {where} ORDER BY {order} "
+                f"LIMIT {export.cap(fmt)}")
+    cols = cols or {}
+    coldefs = columns.build("st", cols.get("phases") or SEASON_KINDS,
+                            cols.get("extra"), "dark")
+    # The lens is forced to kicks: a profile page is kicking-side whatever the header's
+    # selector says, and letting `flt` name the lens would label the file with a lens
+    # its rows did not come from.
+    scope = dict(flt or {}, lens="st", league=lg)
+    ignore = ("players",) if ent.get("kind") == "player" else ("teams",)
+    about = export.about(scope, f"one kick, for this {ent.get('kind')}",
+                         grid_filters=req.get("filterModel"), order=order, where=where,
+                         ignore=ignore)
+    about.insert(3, ("Profile", f"{ent.get('kind')} {ent.get('id')} in {lg}"))
+    stem = f"{export.stem(scope, 'kicks')}-{ent.get('kind')}{ent.get('id')}"
+    return export.deliver(fmt, export.shape(df, coldefs), stem, about, total)
 
 
 # --------------------------------------------------------------------------- chrome

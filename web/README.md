@@ -196,6 +196,53 @@ compose with the sidebar rather than fighting it. Column filters are supported f
 text, number and date; every ORDER BY is tie-broken on `play_uid` so paging is
 stable.
 
+## Taking the grid away: CSV and Excel
+
+Every grid that holds detail carries a **Download** pair on the line above it — the
+explorer's three grains, and the play grid on both profile pages. `web/export.py` is the
+whole implementation.
+
+**The file is the pane, and that is the hard part.** The plays grid runs on the infinite
+row model, so a client-side "export what you can see" would export a *scroll position*.
+The export therefore re-runs the query — the sidebar's WHERE clause, the grid's own
+header filters, and its sort order, composed exactly as `_rows` composes them. The two
+halves the grid knows and the server does not (its `filterModel` and `sortModel`) are
+kept in a `dcc.Store` fed by the last `getRowsRequest`, because that is literally what
+the grid asked for rather than a guess reconstructed from props. The rolled-up grids
+(Teams, Kickers) are client-side, so `virtualRowData` *is* the displayed rows and is used
+as given, with a server-side recompute as the fallback for the beat after a mount.
+
+**Columns come from the same `columnDefs` the grid was built with**, so the file has the
+pane's columns, in the pane's order, under the pane's headers — including whatever *Add
+columns* has switched on. **Values do not**: a rate goes into the cell as
+`0.7423728813559322`, not as the string `"74.2%"`, because a rate rounded to text is a
+rate nobody can average afterwards. What the grid's `valueFormatter` contributes instead
+is a *display* format, mapped from d3 to Excel's own format language and applied as a
+column format — so the workbook shows what the pane showed and holds what the warehouse
+holds. CSV has no formats at all and gets the full number, which is the right answer for
+a file whose purpose is to be read by something else.
+
+The workbook has two sheets. **Data** is frozen at the header row with an autofilter over
+it. **About** records the selection: league, lens, grain, every non-idle sidebar facet in
+the sidebar's own words, the grid's column filters, the ORDER BY, the row count — and the
+generated `WHERE` clause verbatim, the same habit as the drawer's Provenance panel. On a
+profile page it also names the profile and flags the facet that page *ignores*, listing it
+as ignored rather than omitting it: a reader who left the player picker set would
+otherwise have no way to tell whether it had bitten.
+
+**The row cap is real and is in the filename.** `PBP_WEB_EXPORT_MAX` (default 100,000)
+bounds a single download; 1.5M rows of thirty columns is a multi-hundred-megabyte CSV
+built in the worker's memory, and it is over Excel's own 1,048,576-row sheet limit
+besides. A truncated file is named `…-first100000-…` and carries the full selection size
+on its About sheet, so nobody can quote a capped count as a total.
+
+**The one deployment consequence.** `xlsxwriter` used to be the pin the box deliberately
+did *not* carry. It carries it now — see the note in `deploy/requirements-deploy.txt`.
+pandas resolves the engine at call time, so nothing in `web/` imports it at module level
+and a box missing it still starts, still serves every page and still downloads CSV; it
+fails only on the Excel button. That is a degraded feature rather than a dead app, which
+is exactly what makes the pin easy to forget.
+
 ## Three honesty decisions worth knowing
 
 **1. `Unknown` is a first-class outcome — and now a fact of the table, not a convention of
@@ -350,6 +397,7 @@ web/
                     kicks view has two charts. Callers hide the dead slot and drop their
                     SimpleGrid to two columns, or the survivors keep a third of the width
   detail.py         the single-play drawer, one renderer per fact
+  export.py         the Download pair: a grid's rows as CSV, or as a two-sheet workbook
   theme.py          validated palettes, Plotly and AG Grid defaults
   ui.py             stat tiles, notes, grid factory
   pages/

@@ -1866,6 +1866,18 @@ header filter are translated to SQL and pushed into DuckDB, so the browser never
 than a dozen 120-row blocks, header filters compose with the sidebar rather than fighting
 it, and every `ORDER BY` is tie-broken on `play_uid` so paging is stable.
 
+Every grid that holds detail carries a **Download** pair — CSV, or a two-sheet `.xlsx`
+(`web/export.py`). Because the play grid is server-side, an export cannot be gathered from
+the browser without exporting a *scroll position*, so it re-runs the query instead: the
+sidebar's WHERE clause, the grid's own header filters and its sort order, composed exactly
+as the row callback composes them. The file gets the pane's columns under the pane's
+headers and the warehouse's values under them — `0.7423728813559322` in the cell and
+`74.2%` as an Excel display format, never a rate rounded to a string that nobody can
+average afterwards. The workbook's **About** sheet records the selection down to the
+generated `WHERE` clause, the same habit as the drawer's Provenance panel, and a download
+is capped at `PBP_WEB_EXPORT_MAX` (100,000) rows with the cap named in the filename, so a
+truncated file cannot be mistaken for a total.
+
 Design decisions in `web/` that are settled unless deliberately reopened: descriptive only,
 **no models**; the side is exclusive, never a union; profiles are kicking side only;
 conversions are in the kicks lens but off by default, because 67,678 extra points from one

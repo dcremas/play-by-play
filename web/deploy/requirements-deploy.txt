@@ -59,6 +59,15 @@ pytz==2026.3.post1
 # this publicly.
 gunicorn==26.2.0
 
-# DELIBERATELY ABSENT: xlsxwriter. The repo pins it for scripts/ that write the
-# Excel reports; this app does not export spreadsheets and the box should not
-# carry a dependency it never imports.
+# REQUIRED SINCE THE GRIDS LEARNED TO DOWNLOAD. This used to be the one pin the
+# box deliberately did NOT carry -- the note here said "this app does not export
+# spreadsheets", and it was true. web/export.py makes it false: the Excel button
+# on every grid writes a .xlsx through pandas' xlsxwriter engine.
+#
+# pandas resolves that engine at call time, not at import, which is why nothing in
+# web/ imports xlsxwriter at the top of a module. So a box without this line still
+# starts, still serves every page and still downloads CSV; it fails only on the
+# Excel button, with a ValueError naming the missing engine. That is a degraded
+# feature rather than a dead app -- and it is exactly why this line is easy to
+# forget, so: it is not optional.
+xlsxwriter==3.2.9

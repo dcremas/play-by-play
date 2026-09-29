@@ -12,10 +12,10 @@ is the only place that knows the difference.
 from __future__ import annotations
 
 import dash_mantine_components as dmc
-from dash import Input, Output, State, callback, html, no_update
+from dash import Input, Output, State, callback, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
-from .. import charts, columns, data, league, lens, routes, ui
+from .. import charts, columns, data, export, league, lens, routes, ui
 from . import common
 
 
@@ -55,6 +55,12 @@ def layout(mode: str = "dark"):
         ]),
         html.Div(id="ex-hint"),
         html.Div(id="ex-grid-wrap"),
+        # One download sink for all three grains: a click writes exactly one file, so
+        # three competing targets would buy nothing. The Store beside it is the plays
+        # grid's last `getRowsRequest` -- its header filters and its sort order, kept
+        # because the infinite row model means the browser cannot be asked for them.
+        export.sink("ex-dl"),
+        dcc.Store(id="ex-plays-req"),
     ])
 
 
@@ -275,32 +281,47 @@ def _grid(grain, mode, extra, flt):
     key = lens.resolve((flt or {}).get("lens"))
     chips = data.chip_set(flt)
     if grain == "plays":
-        hint = ui.note("Click any row to open the play. Column headers carry their own "
+        note = ui.note("Click any row to open the play. Column headers carry their own "
                        "filters, which run in DuckDB and compose with the sidebar.",
                        "neutral")
         return ui.grid("grid-plays", mode, infinite=True, height="720px",
-                       columns=columns.build(key, chips, extra, mode)), hint
+                       columns=columns.build(key, chips, extra, mode)), \
+            _chrome(note, "ex-plays")
     if grain == "kickers":
-        hint = ui.note("Click a row to open that player's profile. Rates are computed "
+        note = ui.note("Click a row to open that player's profile. Rates are computed "
                        "on the filtered kicks only.", "neutral")
         return ui.grid("grid-kickers", mode, height="720px",
                        columns=common.agg_cols(key, "player", chips, mode),
-                       row_id="player_id"), hint
+                       row_id="player_id"), _chrome(note, "ex-kickers")
     if lens.is_scrimmage(key):
-        hint = ui.note(
+        note = ui.note(
             "Rolled up over the filtered plays. Team and player profile pages are "
             "kicking-side only for now, so these rows do not open — the offense and "
             "defense profiles are the next pass.", "neutral")
     else:
-        hint = ui.note("Click a row to open that team's profile.", "neutral")
+        note = ui.note("Click a row to open that team's profile.", "neutral")
     return ui.grid("grid-teams", mode, height="720px",
                    columns=common.agg_cols(key, "team", chips, mode),
-                   row_id="team_id"), hint
+                   row_id="team_id"), _chrome(note, "ex-teams")
+
+
+def _chrome(note, prefix: str):
+    """The line above the grid: what a click does, and how to take the rows away.
+
+    The download pair is rendered HERE rather than in the page's static chrome so that
+    it is swapped in and out with the grid it exports -- see export.controls. The three
+    grains therefore have three button pairs and three callbacks, each of which can only
+    fire while its own grid is on screen.
+    """
+    return dmc.Group(justify="space-between", align="center", wrap="nowrap", children=[
+        note, export.controls(prefix),
+    ])
 
 
 # --------------------------------------------------------------------------- plays grid
 @callback(
     Output("grid-plays", "getRowsResponse"),
+    Output("ex-plays-req", "data"),
     Input("grid-plays", "getRowsRequest"),
     State("flt", "data"),
     prevent_initial_call=True,
@@ -318,7 +339,11 @@ def _rows(req, flt):
         SELECT * FROM {view} WHERE {where}
         ORDER BY {order} LIMIT {max(end - start, 1)} OFFSET {start}
     """)
-    return {"rowData": data.records(df), "rowCount": data.count_rows(view, where)}
+    # Only the two halves that survive the page: the block bounds are a scroll
+    # position and would make the export a scroll position too.
+    return ({"rowData": data.records(df), "rowCount": data.count_rows(view, where)},
+            {"filterModel": req.get("filterModel") or {},
+             "sortModel": req.get("sortModel") or []})
 
 
 @callback(
@@ -402,3 +427,97 @@ def _goto_team(rows, key):
     if not rows or rows[0].get("team_id") is None:
         raise PreventUpdate
     return routes.url(f"/team/{league.resolve(rows[0].get('league'))}/{int(rows[0]['team_id'])}")
+
+
+# --------------------------------------------------------------------------- downloads
+# Three callbacks rather than one, because the three grains answer the "what is on
+# screen" question in genuinely different ways -- one re-runs the query, two read the
+# rows the client-side grid is displaying -- and because a single callback would need
+# States on all three grids, only one of which is ever in the tree.
+#
+# Every one of them opens on export.clicked(), which is load-bearing rather than
+# defensive: these buttons arrive by callback, and Dash fires the callbacks of
+# components it mounts dynamically. Without it the explorer downloaded a file on first
+# paint and on every grain switch.
+@callback(
+    Output("ex-dl", "data"),
+    Input("ex-plays-csv", "n_clicks"), Input("ex-plays-xlsx", "n_clicks"),
+    State("flt", "data"), State("ex-cols", "value"), State("ex-plays-req", "data"),
+    running=export.busy("ex-plays"),
+    prevent_initial_call=True,
+)
+def _dl_plays(n_csv, n_xlsx, flt, extra, req):
+    """The play grid, re-run rather than re-collected.
+
+    The infinite row model means the browser holds a dozen blocks of a selection that
+    can be 1.5M rows, so there is nothing client-side to gather. `req` is the grid's
+    last getRowsRequest -- its header filters and its sort -- and composing it with the
+    sidebar here is the same composition _rows does, so the file is the pane.
+    """
+    fmt = export.clicked(n_csv, n_xlsx)
+    key = lens.resolve((flt or {}).get("lens"))
+    view = data.view(flt)
+    req = req or {}
+    where = (f"({data.where_from_filters(flt)}) AND "
+             f"({data.filter_model_to_sql(req.get('filterModel'))})")
+    order = data.sort_model_to_sql(req.get("sortModel"))
+    total = data.count_rows(view, where)
+    # No PreventUpdate on an empty selection: DuckDB returns the schema with no rows,
+    # so the file is a header row saying which columns matched nothing. A button that
+    # does nothing at all is indistinguishable from a broken one.
+    df = data.q(f"SELECT * FROM {view} WHERE {where} ORDER BY {order} "
+                f"LIMIT {export.cap(fmt)}")
+    # The grid's own columns, so the file has the set on screen including anything
+    # switched on from Add columns. `mode` only decides outcome cell colours, which no
+    # spreadsheet carries, so the dark catalogue is as good as either.
+    cols = columns.build(key, data.chip_set(flt), extra, "dark")
+    about = export.about(flt, lens.NOUN[key], grid_filters=req.get("filterModel"),
+                         order=order, where=where)
+    return export.deliver(fmt, export.shape(df, cols), export.stem(flt, lens.NOUN[key]),
+                          about, total)
+
+
+def _dl_agg(grain: str, fmt: str, rows, flt, minimum):
+    """Shared body for the two rolled-up grids.
+
+    `virtualRowData` is the client-side grid's rows after its own header filters and in
+    its sort order, which is exactly the pane. It is empty for a beat after the grid
+    mounts and after a filter change, so the rollup is recomputed as a fallback -- the
+    same call that fills the grid, so the fallback differs from the grid only in not
+    having had the header filters applied.
+    """
+    key = lens.resolve((flt or {}).get("lens"))
+    col = "player" if grain == "kickers" else "team"
+    if not rows:
+        rows = _floor(common.agg_frame(key, col, data.where_from_filters(flt),
+                                       league.resolve((flt or {}).get("league"))),
+                      minimum)
+    cols = common.agg_cols(key, col, data.chip_set(flt), "dark")
+    about = export.about(flt, f"one row per {col}",
+                         where=data.where_from_filters(flt))
+    about.append((f"Minimum {lens.NOUN[key]}", str(int(minimum or 1))))
+    return export.deliver(fmt, export.shape(rows, cols), export.stem(flt, grain), about)
+
+
+@callback(
+    Output("ex-dl", "data", allow_duplicate=True),
+    Input("ex-kickers-csv", "n_clicks"), Input("ex-kickers-xlsx", "n_clicks"),
+    State("grid-kickers", "virtualRowData"), State("flt", "data"),
+    State("ex-min", "value"),
+    running=export.busy("ex-kickers"),
+    prevent_initial_call=True,
+)
+def _dl_kickers(n_csv, n_xlsx, rows, flt, minimum):
+    return _dl_agg("kickers", export.clicked(n_csv, n_xlsx), rows, flt, minimum)
+
+
+@callback(
+    Output("ex-dl", "data", allow_duplicate=True),
+    Input("ex-teams-csv", "n_clicks"), Input("ex-teams-xlsx", "n_clicks"),
+    State("grid-teams", "virtualRowData"), State("flt", "data"),
+    State("ex-min", "value"),
+    running=export.busy("ex-teams"),
+    prevent_initial_call=True,
+)
+def _dl_teams(n_csv, n_xlsx, rows, flt, minimum):
+    return _dl_agg("teams", export.clicked(n_csv, n_xlsx), rows, flt, minimum)
