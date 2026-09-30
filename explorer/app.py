@@ -40,6 +40,7 @@ import streamlit as st
 import agent
 import budget
 import corpus
+import estate
 
 st.set_page_config(page_title="Play-by-Play Explorer", page_icon="🏈", layout="wide")
 
@@ -338,3 +339,7 @@ something the model can write by accident — the other corpus is not in its too
 **Why it can still be wrong.** It writes the query; nothing checks the query answers *your*
 question. Read the SQL. That is what it is there for.
     """)
+
+
+# The cross-site footer, last on the page -- see estate.py.
+estate.footer()

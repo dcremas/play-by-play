@@ -1,4 +1,4 @@
-"""CFB Play-by-Play Instance Explorer.
+"""Play-by-Play Instance Explorer -- college football and the NFL.
 
 A Dash application over the DuckDB snapshot, aimed at the individual instance: one
 row per play, filterable down to a single player in a single situation, with every
@@ -19,12 +19,12 @@ import dash
 import dash_mantine_components as dmc
 from dash import Input, Output, State, ctx, dcc, html, no_update
 
-from . import data, detail, league, lens, routes, theme, ui
+from . import data, detail, estate, league, lens, routes, theme, ui
 from .pages import experience, explorer, player, team
 
 app = dash.Dash(
     __name__,
-    title="CFB Play-by-Play Explorer",
+    title="Play-by-Play Explorer — college football and NFL",
     external_stylesheets=dmc.styles.ALL,
     suppress_callback_exceptions=True,
     update_title=None,
@@ -487,10 +487,14 @@ app.layout = dmc.MantineProvider(
                     ),
                     # Below the loader, not inside it, for the intro's reason: it is a
                     # statement about every page, so a route change must not blink it.
+                    # Then the estate row every site on the box ends with (estate.py).
                     html.Footer(className="st-footer", children=[
-                        "Source: ",
-                        html.A("ESPN", href="https://www.espn.com", target="_blank",
-                               rel="noopener noreferrer"),
+                        html.P(className="st-footer-source", children=[
+                            "Source: ",
+                            html.A("ESPN", href="https://www.espn.com", target="_blank",
+                                   rel="noopener noreferrer"),
+                        ]),
+                        *estate.footer_children(),
                     ]),
                 ]),
             ],
