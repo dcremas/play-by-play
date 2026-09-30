@@ -485,6 +485,13 @@ app.layout = dmc.MantineProvider(
                         html.Div(id="page"), type="default", delay_show=250,
                         color=theme.SLOTS["dark"]["blue"],
                     ),
+                    # Below the loader, not inside it, for the intro's reason: it is a
+                    # statement about every page, so a route change must not blink it.
+                    html.Footer(className="st-footer", children=[
+                        "Source: ",
+                        html.A("ESPN", href="https://www.espn.com", target="_blank",
+                               rel="noopener noreferrer"),
+                    ]),
                 ]),
             ],
         ),

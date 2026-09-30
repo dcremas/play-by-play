@@ -319,6 +319,17 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
   .st-intro-sub { display: none; }
 }
 
+/* ------------------------------------------------------------------ footer
+   The source credit. Every row in the app comes from ESPN's play-by-play, so the
+   credit sits under every page, in the header's muted face. */
+.st-footer {
+  margin-top: 28px; padding: 12px 0 4px 0;
+  border-top: 1px solid var(--st-border);
+  font-size: 11px; color: var(--st-muted); line-height: 1.3;
+}
+.st-footer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.st-footer a:hover { color: var(--st-ink); }
+
 /* ------------------------------------------------------ the season band
    The season range, promoted out of the sidebar on 2026-09-29. It is the filter
    most questions here start with and it had the least room to be one: the sidebar
