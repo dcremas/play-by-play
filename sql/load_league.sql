@@ -14,7 +14,7 @@
 -- single id space across both feeds and a stadium that hosts both a bowl game and an NFL
 -- team is one building with one id. It is UPSERTed rather than replaced, so whichever
 -- league loads second adds its new venues and refreshes the shared ones instead of deleting
--- the other league's.
+-- the other league's -- filling gaps, never blanking a field the other league supplied.
 --
 -- Run sql/enrich_game_context.sql afterwards: venue_id, neutral_site and conference_game on
 -- the two facts are filled from fact_game AFTER the load, and are not in the column lists
@@ -93,12 +93,21 @@ SELECT NULLIF(venue_id,'')::integer, NULLIF(venue_name,''), NULLIF(city,''),
        NULLIF(state,''), NULLIF(zip,''), NULLIF(country,''), NULLIF(surface,''),
        NULLIF(indoor,'')::boolean
 FROM stg_venue
+-- Never overwrite a known value with NULL, on ANY column. The two leagues describe a
+-- shared venue from different payloads, and either may leave a field blank: the roof
+-- comes from the scoreboard and only one league's may state it, and venue 3932 (SDCCU
+-- Stadium) carries zip 92108 in the college summaries and none in the NFL's. A plain
+-- `= EXCLUDED` made the answer depend on which league loaded last -- local and the
+-- mirror disagreed on that zip on 2026-10-05, with every row count matching.
+-- Two NON-null values that differ still go to the last writer; none do today.
 ON CONFLICT (venue_id) DO UPDATE SET
-  venue_name = EXCLUDED.venue_name, city = EXCLUDED.city, state = EXCLUDED.state,
-  zip = EXCLUDED.zip, country = EXCLUDED.country, surface = EXCLUDED.surface,
-  -- Roof comes from the scoreboard and only one league's scoreboard may state it; never
-  -- overwrite a known value with NULL.
-  indoor = COALESCE(EXCLUDED.indoor, pbp.dim_venue.indoor);
+  venue_name = COALESCE(EXCLUDED.venue_name, pbp.dim_venue.venue_name),
+  city       = COALESCE(EXCLUDED.city,       pbp.dim_venue.city),
+  state      = COALESCE(EXCLUDED.state,      pbp.dim_venue.state),
+  zip        = COALESCE(EXCLUDED.zip,        pbp.dim_venue.zip),
+  country    = COALESCE(EXCLUDED.country,    pbp.dim_venue.country),
+  surface    = COALESCE(EXCLUDED.surface,    pbp.dim_venue.surface),
+  indoor     = COALESCE(EXCLUDED.indoor,     pbp.dim_venue.indoor);
 
 DELETE FROM pbp.fact_game       WHERE league = :'league' :sp ;
 DELETE FROM pbp.dim_team_season WHERE league = :'league';
