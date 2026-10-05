@@ -47,6 +47,9 @@ to its frozen extract and contributes play ids ESPN has since renumbered away:
     python build_dims.py athlete --league nfl --leagues cfb nfl \
         --plays-for nfl data/out/st_plays_nfl.csv data/out/st_plays_nfl_2026.csv \
         --plays-for cfb data/out/st_plays.csv     data/out/st_plays_2026.csv
+
+`--scrim-fact` and `--scrim-bridge` follow the same rule, with `--scrim-fact-for` and
+`--scrim-bridge-for` as their per-league forms.
 `--only-season` narrows the BRIDGE and WIDE outputs to that season while the dimension stays
 global. Scoping the dimension instead would give every returning kicker first_season=2026.
 
@@ -798,26 +801,35 @@ if __name__ == "__main__":
         # exactly the orphan this file's comment above records on 2026-09-22, and it
         # recurred on 2026-09-29 from the other direction: an NFL update was blocked by
         # a college play ESPN had removed two days earlier.
-        per = {}
-        for idx, tok in enumerate(a):
-            if tok != "--plays-for":
-                continue
-            lname, j, paths = a[idx + 1], idx + 2, []
-            while j < len(a) and not a[j].startswith("--"):
-                paths.append(a[j]); j += 1
-            per[lname] = paths
-        if per:
-            if csvs:
-                per.setdefault(LEAGUE, csvs)
-            csvs = per
+        #
+        # `--scrim-fact-for` and `--scrim-bridge-for` are the same thing for the scrimmage
+        # pair, and were missed by that fix. On 2026-10-05 a college run fed pbp.dim_athlete
+        # the NFL's frozen scrimmage extract with no 2026 file behind it: nothing refused,
+        # because the scrimmage side has no orphan guard, and verify_split.py caught it as
+        # 140 NFL careers whose scrimmage counts disagreed with nfl.dim_athlete.
+        def per_league(flag, bare):
+            per = {}
+            for idx, tok in enumerate(a):
+                if tok != flag:
+                    continue
+                lname, j, paths = a[idx + 1], idx + 2, []
+                while j < len(a) and not a[j].startswith("--"):
+                    paths.append(a[j]); j += 1
+                per[lname] = paths
+            if not per:
+                return bare
+            if bare:
+                per.setdefault(LEAGUE, bare)
+            return per
+        csvs = per_league("--plays-for", csvs)
         # `--leagues cfb nfl` builds ONE dimension over both corpora, which is how it should
         # normally be run once the NFL is loaded. Without it the dimension covers only the
         # league named by --league, and a rebuild would drop every athlete from the other.
         lnames = _multi(a, "--leagues", None) or [LEAGUE]
         stage_athlete(csvs,
                       int(a[a.index("--only-season") + 1]) if "--only-season" in a else None,
-                      _multi(a, "--scrim-fact", None),
-                      _multi(a, "--scrim-bridge", None),
+                      per_league("--scrim-fact-for", _multi(a, "--scrim-fact", None)),
+                      per_league("--scrim-bridge-for", _multi(a, "--scrim-bridge", None)),
                       lnames)
     else:
         {"conf": stage_conf, "venue": stage_venue}[a[0]]()

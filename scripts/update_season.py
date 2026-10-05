@@ -101,12 +101,22 @@ def plays_for_all(season):
     had and load_athletes_league.sql refused the load -- correctly. It cost an NFL update
     on 2026-09-29, blocked by one college play ESPN had dropped from a week-3 game two
     days earlier.
+
+    The scrimmage fact and bridge travel the same way, and did not until 2026-10-05: the
+    college run that day built pbp.dim_athlete from the NFL's frozen scrimmage extract, and
+    140 NFL careers came out with stale scrimmage counts. Nothing refused that one --
+    verify_split.py is what saw it.
     """
     out = []
     for one in lg.SPEC:
         ox = sfx(one)
         out += ["--plays-for", one,
-                f"{OUT}/st_plays{ox}.csv", f"{OUT}/st_plays{ox}_{season}.csv"]
+                f"{OUT}/st_plays{ox}.csv", f"{OUT}/st_plays{ox}_{season}.csv",
+                "--scrim-fact-for", one,
+                f"{OUT}/scrimmage_plays{ox}.csv", f"{OUT}/scrimmage_plays{ox}_{season}.csv",
+                "--scrim-bridge-for", one,
+                f"{OUT}/scrimmage_athlete{ox}.csv",
+                f"{OUT}/scrimmage_athlete{ox}_{season}.csv"]
     return out
 
 
@@ -134,7 +144,6 @@ def main():
     L = a.league
     x = sfx(L)
     FULL_PLAYS = f"{OUT}/st_plays{x}.csv"
-    FULL_SCRIM = f"{OUT}/scrimmage_plays{x}.csv"
     FULL_SCRIM_BRIDGE = f"{OUT}/scrimmage_athlete{x}.csv"
     plays_csv = f"{OUT}/st_plays{x}_{s}.csv"
     scrim_csv = f"{OUT}/scrimmage_plays{x}_{s}.csv"
@@ -184,9 +193,7 @@ def main():
     # all 13,767 of them across both leagues -- and --only-season only ever filtered what
     # got WRITTEN. The dimension was always global, because it is a career aggregate.
     run([PY, "scripts/build_dims.py", "athlete", "--league", L,
-         "--leagues", *lg.SPEC, *plays_for_all(s),
-         "--scrim-fact", FULL_SCRIM, scrim_csv,
-         "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv])
+         "--leagues", *lg.SPEC, *plays_for_all(s)])
 
     # A skipped conference fetch is only safe once the season is already in the CSV. On the
     # first run of a new season it is not, and load_dims.sql would replace dim_team_season
@@ -277,9 +284,7 @@ def main():
         shutil.move(f"{OUT}/dim_athlete.csv", f"{OUT}/dim_athlete_{one}.csv")
     # Restore the combined extract the pbp loader owns: the loop above overwrote it.
     run([PY, "scripts/build_dims.py", "athlete", "--league", L, "--leagues", *lg.SPEC,
-         *plays_for_all(s),
-         "--scrim-fact", FULL_SCRIM, scrim_csv,
-         "--scrim-bridge", FULL_SCRIM_BRIDGE, scrim_bridge_csv])
+         *plays_for_all(s)])
 
     # Build, grant, comment, swap -- per league. Local traffic is only the two apps
     # reading DuckDB, so nothing here is serving live queries; the sequence is the same as
