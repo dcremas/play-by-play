@@ -28,32 +28,32 @@
 
 COMMENT ON TABLE :schema.play_wide IS
 'THE KICKS FACT with dimensions pre-joined -- kickoffs, punts, field goals and the '
-'conversion family, 407,216 rows over two leagues. Prefer this over '
+'conversion family, one row per kick in this league. Prefer this over '
 'special_teams_play: the (team_id, season) conference join is already resolved '
 'here, and getting that join wrong is the single most likely way to get a wrong '
-'answer from this warehouse. Derived from :schema.special_teams_play by '
+'answer from this warehouse. Derived from special_teams_play by '
 'sql/split_leagues.sql; rebuild rather than repair. NULL IS MEANINGFUL on the '
 'outcome flags -- see the column comments before writing a rate.';
 
 COMMENT ON TABLE :schema.scrimmage_wide IS
 'THE SCRIMMAGE FACT with dimensions pre-joined -- rushes, passes, sacks and '
-'penalties, 1,958,314 rows over two leagues. Disjoint from play_wide by '
-'construction; play_uid is unique across both. Derived from :schema.scrimmage_play by '
+'penalties, one row per play in this league. Disjoint from play_wide by '
+'construction; play_uid is unique across both. Derived from scrimmage_play by '
 'sql/split_leagues.sql. yards_gained on a turnover is the DEFENCE''s return, not the '
 'offence''s gain -- exclude turnovers from any mean-yards measure.';
 
 COMMENT ON TABLE :schema.special_teams_play IS
-'The normalised kicks fact, 46 columns. :schema.play_wide is the same rows with the '
+'The normalised kicks fact, 46 columns. play_wide is the same rows with the '
 'dimensions attached and six derived columns; prefer it unless you are auditing. '
 'play_text is never cleaned or repaired -- it is the audit trail.';
 
 COMMENT ON TABLE :schema.scrimmage_play IS
 'The normalised scrimmage fact. Needs no parser: play_kind is derived from ESPN''s '
-'structured fields, and statYardage and down are 100%% populated. Prefer '
-':schema.scrimmage_wide.';
+'structured fields, and statYardage and down are 100% populated. Prefer '
+'scrimmage_wide.';
 
 COMMENT ON TABLE :schema.drive IS
-'One row per drive, 336,818 rows. SPANS BOTH FACTS -- a drive that ends in a punt '
+'One row per drive. SPANS BOTH FACTS -- a drive that ends in a punt '
 'contains the punt -- so plays_total counts every play in the drive and '
 'plays_scrimmage only those that reached the scrimmage fact.';
 
@@ -64,8 +64,8 @@ COMMENT ON TABLE :schema.play_athlete IS
 
 COMMENT ON TABLE :schema.scrimmage_athlete IS
 'play x role x athlete for the SCRIMMAGE fact. Every role ESPN reports is kept, '
-'including assistedBy, sackedBy, passDefender, forcedBy and recoverer. 193,215 '
-'plays have two tacklers and 1,156 have three, so counting tackles off the fact '
+'including assistedBy, sackedBy, passDefender, forcedBy and recoverer. Many plays '
+'have two tacklers and some have three, so counting tackles off the fact '
 'table''s single tackler_athlete_id undercounts.';
 
 COMMENT ON TABLE :schema.dim_athlete IS
@@ -84,11 +84,11 @@ COMMENT ON TABLE :schema.dim_team IS
 'schema at all. display_name is the team''s MOST RECENT name in the window.';
 
 COMMENT ON TABLE :schema.dim_team_season IS
-'league x team x season, carrying conference membership. JOIN ON (team_id, season, '
-'league), NEVER team_id alone: 83 of 275 teams changed conference at least once in '
+'team x season, carrying conference membership. JOIN ON (team_id, season), NEVER '
+'team_id alone: 83 of 275 college teams changed conference at least once in '
 'the window, and a team-only join returned 492 Pac-12 punts for 2018 against a '
 'true 730. The error drifts with the present day rather than staying put, which is '
-'what makes it hard to notice. 223 rows name a team absent from dim_team -- FCS '
+'what makes it hard to notice. In college, rows that name a team absent from dim_team are FCS '
 'programmes that never played an ingested game. That is expected.';
 
 COMMENT ON TABLE :schema.dim_conference IS
@@ -124,7 +124,8 @@ COMMENT ON COLUMN :schema.play_wide.fg_made IS
 
 COMMENT ON COLUMN :schema.play_wide.returned IS
 'NULL MEANS TWO DIFFERENT THINGS depending on play_kind. On punts and kickoffs it '
-'is an outcome the feed never stated -- 20,950 kicks, 9.9%% of the 211,659 -- and '
+'is an outcome the feed never stated -- about 10% of college punts and kickoffs and 3% '
+'of NFL ones; known_limits() carries the current count -- and '
 'those rows must be excluded from rate denominators, not counted as "did not '
 'happen". On field goals and conversions it means the column does not apply. '
 'Scope every returned/touchback question to play_kind IN (''punt'',''kickoff'').';
@@ -144,16 +145,16 @@ COMMENT ON COLUMN :schema.play_wide.return_yds IS
 
 COMMENT ON COLUMN :schema.play_wide.yards_to_goal IS
 'Yards to the opponent''s goal line at the snap. 0 IS A NULL SENTINEL, not the goal '
-'line -- 1,114 rows. Exclude it from any field-position analysis.';
+'line. Exclude it from any field-position analysis.';
 
 COMMENT ON COLUMN :schema.play_wide.wallclock_utc IS
-'Per-play UTC timestamp, 96.6%% populated overall but only 66.9%% in 2017. This is '
+'Per-play UTC timestamp, 96.6% populated overall but only 66.9% in 2017. This is '
 'what would make a play-level weather join possible; no weather is in this '
 'warehouse.';
 
 COMMENT ON COLUMN :schema.play_wide.parse_confidence IS
-'How well the kick-text parser read this row. ''exact'' on 98.04%% of college kicks '
-'and 98.19%% of NFL ones, from two separate dialect modules. Anything else means '
+'How well the kick-text parser read this row. ''exact'' on 98.04% of college kicks '
+'and 98.19% of NFL ones, from two separate dialect modules. Anything else means '
 'read play_text before trusting the parsed columns.';
 
 COMMENT ON COLUMN :schema.play_wide.play_text IS
@@ -163,8 +164,8 @@ COMMENT ON COLUMN :schema.play_wide.play_text IS
 COMMENT ON COLUMN :schema.play_wide.both_top_division IS
 'Both teams in the top division. The college corpus deliberately includes '
 'FBS-vs-FCS games, so set this for any kicker- or player-quality question. '
-'CONSTANT TRUE for the NFL, which has no second division -- so it is safe to '
-'filter on across both leagues.';
+'CONSTANT TRUE for the NFL, which has no second division -- so filtering on it there '
+'changes nothing.';
 
 COMMENT ON COLUMN :schema.play_wide.venue_indoor IS
 'A STADIUM property, not a game condition. A retractable roof reads true whether '
@@ -172,8 +173,8 @@ COMMENT ON COLUMN :schema.play_wide.venue_indoor IS
 'false is a clean "weather applied"; true means "cannot say".';
 
 COMMENT ON COLUMN :schema.play_wide.kicking_team_id IS
-'Always the kicking team, on every play_kind. Needs `league` alongside it -- team '
-'ids collide between the two corpora.';
+'Always the kicking team, on every play_kind. Unambiguous within this schema; team ids '
+'collide with the other league''s, which this schema cannot reach.';
 
 COMMENT ON COLUMN :schema.play_wide.is_clutch IS
 '4th quarter or later, margin within 8, under five minutes. Derived once here so '
@@ -186,7 +187,7 @@ COMMENT ON COLUMN :schema.play_wide.fg_dist_bucket IS
 -- scrimmage_wide
 
 COMMENT ON COLUMN :schema.scrimmage_wide.yards_gained IS
-'ESPN statYardage, 100%% populated. ON A TURNOVER THIS IS THE DEFENCE''S RETURN, '
+'ESPN statYardage, 100% populated. ON A TURNOVER THIS IS THE DEFENCE''S RETURN, '
 'NOT THE OFFENCE''S GAIN -- ESPN credits 35 yards to the offence row of a 35-yard '
 'pick-six. Hold turnovers out of every mean-yards measure. Four impossible values '
 'in the source (11,131 and 561 gained, -5,114 and 1,105 on penalties) are NULLed '
@@ -212,8 +213,8 @@ COMMENT ON COLUMN :schema.scrimmage_wide.end_yards_to_goal IS
 'goal line.';
 
 COMMENT ON COLUMN :schema.scrimmage_wide.offense_team_id IS
-'From teamParticipants, 99.78%% populated. NOT start.team.id, which on a kick is '
-'the kicking team. Needs `league` alongside it.';
+'From teamParticipants, 99.78% populated. NOT start.team.id, which on a kick is '
+'the kicking team.';
 
 COMMENT ON COLUMN :schema.scrimmage_wide.play_kind IS
 'DERIVED (rush | pass | sack | penalty | other), not a copy of play_type_espn. '

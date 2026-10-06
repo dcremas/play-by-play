@@ -342,7 +342,10 @@ def describe_policy() -> str:
         f"or multiple statements. Results are capped at {MAX_LIMIT} rows and "
         f"default to {DEFAULT_LIMIT} if you omit LIMIT. Readable tables:\n"
         + "\n".join(f"  {t}" for t in sorted(ALLOWED_TABLES))
-        + "\nPrefer pbp.play_wide and pbp.scrimmage_wide: they carry the "
+        # Named with THIS server's schema. It said `pbp.` until 2026-10-06, a name the
+        # guard above refuses -- so the rules invited the one query they reject.
+        + f"\nPrefer {DEFAULT_SCHEMA}.play_wide and {DEFAULT_SCHEMA}.scrimmage_wide (or "
+        "unqualified): they carry the "
         "dimensions pre-joined, including the (team_id, season) conference "
         "resolution that a hand-written join gets wrong.\n"
         "System catalogs and information_schema are not readable; use "

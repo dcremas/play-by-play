@@ -975,7 +975,7 @@ def list_schema() -> dict:
         tables.append(item)
     return {
         "database": db.database(),
-        "schema": "pbp",
+        "schema": config.SCHEMA,      # was a hard-coded "pbp" from before the split
         "count": len(tables),
         "tables": _jsonable(tables),
         "sql_rules": guard.describe_policy(),
@@ -1023,7 +1023,8 @@ def _run_or_explain(sql: str, explain_only: bool) -> tuple[list[str], list[list]
 def run_sql(sql: str, explain_only: bool = False) -> dict:
     """One read-only SELECT against the warehouse. `explain_only` costs it first.
 
-    Prefer `pbp.play_wide` and `pbp.scrimmage_wide`: they carry the dimensions
+    Prefer `play_wide` and `scrimmage_wide` (unqualified, or prefixed with this
+    server's schema -- there is no `pbp.` schema to read): they carry the dimensions
     pre-joined, including the (team_id, season) conference resolution that a
     hand-written join to dim_team_season gets wrong in both directions.
 
