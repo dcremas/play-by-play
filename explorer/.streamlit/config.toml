@@ -1,0 +1,41 @@
+# The page's look, matched to PromptPace (~/projects/typing/app/static/styles.css): the same
+# warm off-white, the same blue, the same dark palette. Streamlit picks light or dark from
+# the visitor's OS setting when both sections are present, as PromptPace's CSS does.
+#
+# Read from the WORKING DIRECTORY's .streamlit/, which is /opt/pbp-explorer on the box
+# (pbp-explorer.service) and this directory under run.sh. The rest of the styling -- the
+# cards, the header, the footer -- is CSS in style.py, and uses these same values.
+
+[client]
+toolbarMode = "minimal"           # no Deploy button or developer menu on a public page
+
+[theme]
+font = "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif"   # PromptPace's stack
+codeFont = "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace"
+baseRadius = "10px"
+buttonRadius = "10px"
+baseFontSize = 16
+headingFontWeights = [700, 650, 600, 600, 600, 600]
+showWidgetBorder = true
+
+[theme.light]
+primaryColor = "#2a78d6"
+backgroundColor = "#f6f5f2"
+secondaryBackgroundColor = "#f0efec"
+textColor = "#0b0b0b"
+borderColor = "#e2e0da"
+linkColor = "#1c5cab"
+codeBackgroundColor = "#f0efec"
+dataframeHeaderBackgroundColor = "#f0efec"
+chartCategoricalColors = ["#2a78d6", "#eb6834", "#1f8f4e", "#c98500"]
+
+[theme.dark]
+primaryColor = "#3987e5"
+backgroundColor = "#121211"
+secondaryBackgroundColor = "#232321"
+textColor = "#ffffff"
+borderColor = "#2e2e2b"
+linkColor = "#86b6ef"
+codeBackgroundColor = "#1a1a19"
+dataframeHeaderBackgroundColor = "#232321"
+chartCategoricalColors = ["#3987e5", "#d95926", "#3fb970", "#fab219"]

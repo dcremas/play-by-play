@@ -58,6 +58,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
@@ -133,7 +134,7 @@ comments carry the NULL semantics and they are authoritative.
 4. Write ONE SELECT and run it with run_sql.
 
 ONE QUERY, NOT A SERIES. Run a second statement only if the first errored, was refused, or
-came back truncated -- not to refine a result you already have. Every extra turn resends the whole conversation, and describe_table alone is several thousand tokens, so polishing a good answer into a slightly better one costs more than the answer was worth. If a threshold is arguable (a minimum number of attempts, say), pick a sensible one, state it, and move on rather than trying several.
+came back truncated by the server's cap -- not to refine a result you already have. Every extra turn resends the whole conversation, and describe_table alone is several thousand tokens, so polishing a good answer into a slightly better one costs more than the answer was worth. If a threshold is arguable (a minimum number of attempts, say), pick a sensible one, state it, and move on rather than trying several.
 
 TABLE NAMES ARE UNQUALIFIED OR PREFIXED `{schema}.` -- for example `{schema}.play_wide`. \
 There is no `pbp.` schema to read; a query naming one is refused and costs you a turn.
@@ -154,6 +155,12 @@ returned/touchback question to play_kind IN ('punt','kickoff').
 - yards_gained on a turnover is the DEFENCE's return, not the offence's gain. Exclude \
 turnovers from any mean-yards measure.
 
+A PENALTY ROW IS NOT A PLAY THE OFFENCE RAN. scrimmage_wide carries play_kind = 'penalty' \
+rows -- mostly pre-snap fouls before a punt or field goal -- and they are not attempts. Any \
+rate whose denominator is "plays" or "attempts" (conversion rate, run share, success rate) \
+counts play_kind IN ('rush','pass','sack') only. Counting every down = 4 row put college \
+fourth-down conversion at 46% when it is 53%: one row in five was a penalty.
+
 PEOPLE AND TEAMS
 - Group by athlete_id and LABEL with known_name, never the reverse: some names are shared \
 by more than one person and they are different people. Use find_player to resolve a name.
@@ -165,13 +172,20 @@ separate, unlinked record there; never present these numbers as a whole career.
 BEFORE YOU QUOTE A NUMBER
 - Call data_coverage if the question touches a recent season. A season still being played \
 is incomplete and weighted toward early-season games; say so rather than trending it.
-- If run_sql returns truncated: true, say so -- the result is a partial answer.
+- If run_sql returns truncated: true AND limit_source is not 'caller', say so -- the result is \
+a partial answer. With limit_source 'caller' it is your own LIMIT and the answer is complete.
 - If a query is rejected or errors, read the message and fix it. Do not retry the same \
 statement.
 
 STYLE
 Answer in a few sentences. Lead with the finding, not with a description of what you did. \
-Give numbers with their units and to one decimal place. Do not paste the SQL into your \
+STATE ONLY WHAT THE QUERY RETURNED: no schools, records, game descriptions or context from \
+memory. A reader checks your answer against the result table under it, and a fact that is \
+not in the table cannot be checked. If the question is ambiguous ("who" could mean players \
+or teams), pick the simpler reading, say which, and answer that with one query. \
+Give numbers with their units and to one decimal place. When you split a total into \
+parts (interceptions and fumbles, say), make the parts' filters mutually exclusive so they \
+sum to the total, and check that they do before you quote them. Do not paste the SQL into your \
 answer -- the page shows it already. When you bucket by time, alias the bucket clearly \
 -- `AS season`, `AS week` -- because the chart picks its axis from the column name.
 """
@@ -275,7 +289,11 @@ def call_tool(c: corpus.Corpus, name: str, arguments: dict | None = None,
         tool = tools.get(name)
         if tool is None:
             raise SetupError(f"The {c.label} server does not expose {name!r}.")
-        return await tool.ainvoke(arguments or {})
+        # DECODED HERE, not by the caller. The adapter returns the tool's JSON as a list of
+        # text blocks, never a dict, and the first build of the page tested
+        # isinstance(payload, dict) on the raw value -- so the Tables and Known limits tabs
+        # rendered empty in production with no error anywhere.
+        return _decode(await tool.ainvoke(arguments or {}))
 
     return run_sync(_run(), timeout=timeout)
 
@@ -378,12 +396,47 @@ def _decode(content: Any) -> Any:
         return text
 
 
+class ModelUnavailable(RuntimeError):
+    """The provider refused the request outright -- out of credit, or rate limited.
+
+    Not a bad question and not a bug, so the page says so in plain words instead of
+    printing the provider's exception, which is what it did on 2026-10-06 when the
+    prepaid credit ran out: every visitor saw a raw ChatGoogleGenerativeAIError.
+    """
+
+
+# After a refusal, refuse locally for a while instead of asking again. Process-wide, so one
+# visitor discovering the outage spares the next ones the wait and the error.
+_UNAVAILABLE_FOR = {"billing": 900.0, "rate": 60.0}
+_unavailable_until = 0.0
+_unavailable_kind = ""
+
+
+def _provider_refusal(exc: BaseException) -> str:
+    """'billing', 'rate', or '' -- read from the message, which is all the SDK exposes."""
+    text = str(exc)
+    if "402" in text or "prepayment" in text.lower() or "billing" in text.lower():
+        return "billing"
+    if "RESOURCE_EXHAUSTED" in text or "429" in text:
+        return "rate"
+    return ""
+
+
+def model_status() -> str:
+    """'' when questions can be asked, else 'billing' or 'rate' while the cooldown runs."""
+    return _unavailable_kind if time.monotonic() < _unavailable_until else ""
+
+
 def ask(c: corpus.Corpus, question: str, session_questions: int) -> dict:
     """Answer one question against one corpus.
 
-    Raises budget.BudgetExceeded BEFORE spending anything. Returns the answer text, every
-    SQL statement the agent ran with its result, and the tokens charged.
+    Raises budget.BudgetExceeded BEFORE spending anything, and ModelUnavailable when the
+    provider is refusing requests. Returns the answer text, every SQL statement the agent
+    ran with its result, and the tokens charged.
     """
+    global _unavailable_until, _unavailable_kind
+    if model_status():
+        raise ModelUnavailable(_unavailable_kind)
     budget.check_can_spend(session_questions)
     agent, _ = build_agent(c)
 
@@ -397,10 +450,19 @@ def ask(c: corpus.Corpus, question: str, session_questions: int) -> dict:
                 {"recursion_limit": budget.MAX_AGENT_STEPS},
             )
         )
-    except Exception:
+    except Exception as exc:
+        kind = _provider_refusal(exc)
         # Charge the estimate even on failure: a crashed or looping run still spent
-        # tokens, and exempting failures is a hole in the daily cap.
-        budget.record(charged)
+        # tokens, and exempting failures is a hole in the daily cap. The one exception is
+        # a BILLING refusal, which by definition bought nothing -- charging it let an
+        # outage fill the ledger, so the page stayed paused until midnight UTC even after
+        # the credit was topped up.
+        if kind != "billing":
+            budget.record(charged)
+        if kind:
+            _unavailable_kind = kind
+            _unavailable_until = time.monotonic() + _UNAVAILABLE_FOR[kind]
+            raise ModelUnavailable(kind) from exc
         raise
 
     messages = result.get("messages", [])

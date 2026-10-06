@@ -1,4 +1,4 @@
-streamlit>=1.40
+streamlit>=1.64  # theme.light/theme.dark, horizontal containers, st.space, required=
 langchain>=1.0
 langchain-google-genai>=4.0
 langchain-mcp-adapters>=0.3
@@ -14,3 +14,4 @@ pandas>=2.2
 # these are separate processes sharing a wire protocol, not a library. The weather
 # explorer has run a v1 client against a v2 server since 2026-08-20.
 mcp<2
+altair>=5    # charts.py builds the answer charts directly; Streamlit ships it, this names it

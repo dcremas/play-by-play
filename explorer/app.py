@@ -1,4 +1,4 @@
-"""Play-by-Play Explorer: ask a football question, watch it become SQL.
+"""Football SQL: ask a football question, watch it become SQL.
 
     ./run.sh                        # local, needs both MCP servers running
     streamlit run explorer/app.py   # same thing without the checks
@@ -24,10 +24,19 @@ It never touches Postgres and never builds SQL itself. Every byte of data on it 
 through an MCP tool call, and the only tool that runs SQL runs it through a parser and a
 SELECT-only role. Compromising this process yields no database credential, because it
 never had one.
+
+THE LOOK is PromptPace's (~/projects/typing), carried over in style.py and
+.streamlit/config.toml: one 960px column of cards on a dotted page, light or dark by the
+visitor's OS. Named "Football SQL" to match the estate footer; "Play-by-Play Explorer" is
+the Dash app's name on the main site, and two apps under one name was a coin toss.
 """
 from __future__ import annotations
 
+import html
+import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -39,307 +48,360 @@ import streamlit as st
 # blank page and a clean log. The weather explorer is laid out the same way.
 import agent
 import budget
+import charts
 import corpus
 import estate
+import style
 
-st.set_page_config(page_title="Play-by-Play Explorer", page_icon="🏈", layout="wide")
+st.set_page_config(page_title="Football SQL — Dustin Cremascoli", page_icon="🏈",
+                   layout="wide")
+style.inject()
 
 
 # --------------------------------------------------------------------------- #
-# Cached resources
+# Reads that need no model -- free, cached, and still working when the model is not
 # --------------------------------------------------------------------------- #
-
-@st.cache_resource(show_spinner=False)
-def _agent_for(key: str):
-    """One agent per corpus, cached for the process.
-
-    cache_resource, not cache_data: this is a live object holding MCP sessions tied to the
-    background loop, and a copy per session would open a connection per visitor.
-    """
-    return agent.build_agent(corpus.resolve(key))
-
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _schema_for(key: str) -> list[dict]:
-    """The readable tables, straight from the server. No model in the path, so free."""
-    c = corpus.resolve(key)
-    payload = agent.call_tool(c, "list_schema", {})
-    if isinstance(payload, dict):
-        return payload.get("tables", []) or payload.get("schema", [])
-    return []
+    """The readable tables, straight from the server."""
+    payload = agent.call_tool(corpus.resolve(key), "list_schema", {})
+    return payload.get("tables", []) if isinstance(payload, dict) else []
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _limits_for(key: str) -> list[dict]:
     payload = agent.call_tool(corpus.resolve(key), "known_limits", {})
-    return (payload or {}).get("limits", []) if isinstance(payload, dict) else []
+    return payload.get("limits", []) if isinstance(payload, dict) else []
 
 
-# --------------------------------------------------------------------------- #
-# Charting
-# --------------------------------------------------------------------------- #
+@st.cache_data(ttl=600, show_spinner=False)
+def _coverage_for(key: str) -> dict | None:
+    """Games, plays and the last game loaded -- the numbers the scope line states.
 
-# Column names that mean "this is the x axis, and it is ordered". The system prompt tells
-# the model to alias its bucket clearly -- `AS season`, `AS week` -- and this is the other
-# half of that bargain: a vague alias costs the reader a chart, so the instruction is only
-# honest if something here actually looks for the name.
-_ORDERED_X = ("season", "year", "week", "month", "day", "date", "bucket",
-              "fg_dist_bucket", "down", "distance", "yards", "quarter", "period")
-
-
-def _maybe_chart(df: pd.DataFrame) -> None:
-    """Draw a chart when the shape obviously supports one, and otherwise draw nothing.
-
-    Deliberately conservative. A wrong chart is worse than no chart here: the table is
-    already on screen and correct, so an invented axis only adds a way to misread it. Two
-    shapes qualify and nothing else does.
+    Read live because a hand-typed count is a count that goes stale: the old header said
+    "to last weekend" for an NFL corpus three weeks behind. None when the server is down,
+    and the page then states the scope in words only.
     """
-    if df.empty or len(df.columns) < 2 or len(df) < 2 or len(df) > 500:
-        return
+    try:
+        payload = agent.call_tool(corpus.resolve(key), "data_coverage", {})
+    except Exception:  # noqa: BLE001 - the scope line is decoration, not the page
+        return None
+    if not isinstance(payload, dict) or "totals" not in payload:
+        return None
+    t = payload["totals"]
+    last = max((s.get("last_kickoff") or "" for s in payload.get("seasons") or []),
+               default="")
+    live = (payload.get("in_progress") or [None])[0]
+    return {"games": t.get("games") or 0,
+            "plays": (t.get("scrimmage_plays") or 0) + (t.get("kick_plays") or 0),
+            "first": t.get("first_season"), "last": last,
+            "week": live.get("last_regular_week") if live else None}
 
-    numeric = [col for col in df.columns
-               if pd.api.types.is_numeric_dtype(df[col]) and df[col].notna().any()]
-    if not numeric:
-        return
 
-    lowered = {str(col).lower(): col for col in df.columns}
-    x = next((lowered[name] for name in _ORDERED_X if name in lowered), None)
+def _plays(n: int) -> str:
+    return f"{n / 1e6:.2f}M" if n >= 1e6 else f"{n / 1e3:.0f}k"
 
-    if x is not None:
-        # The axis is usually numeric itself -- `season` is an integer -- so it must be
-        # removed from the measures rather than used to disqualify the chart. An earlier
-        # version tested `x not in numeric[:1]`, which silently refused to chart every
-        # by-season result, i.e. most of them.
-        measures = [col for col in numeric if col != x]
-        if not measures:
-            return
-        # RATES AND COUNTS DO NOT SHARE AN AXIS. A frame with total_kickoffs (9,000) and
-        # touchback_rate (51.5) plots the rate as a flat line along the bottom -- the
-        # chart is technically correct and shows nothing. When the result has both, chart
-        # the rates: the question was almost always about the rate, which is why the
-        # model computed one.
-        rates = [c for c in measures
-                 if any(k in str(c).lower() for k in ("pct", "rate", "percent", "share", "avg"))]
-        measures = rates or measures
-        plot = df[[x] + measures[:3]].copy()
-        # A year is a LABEL, not a quantity. Left as an integer, Streamlit formats the
-        # axis with a thousands separator and the chart reads "2,014" -- which is not a
-        # year anyone writes. Casting to string makes it an ordered category; the frame
-        # is already sorted by the query's ORDER BY.
-        if str(x).lower() in ("season", "year", "game_month", "month", "week"):
-            plot[x] = plot[x].astype("Int64").astype(str)
-        st.line_chart(plot.set_index(x), height=260)
-        return
 
-    # A labelled ranking: one text column, one measure, few enough rows to read. Anything
-    # wider than this is a table, not a chart.
-    labels = [col for col in df.columns if not pd.api.types.is_numeric_dtype(df[col])]
-    if len(labels) == 1 and len(df) <= 30:
-        st.bar_chart(df.set_index(labels[0])[numeric[0]], height=260)
+def _scope_html(c: corpus.Corpus) -> str:
+    cov = _coverage_for(c.key)
+    bits = [f"<b>{html.escape(c.label)}</b>", html.escape(c.blurb.rstrip("."))]
+    if cov:
+        bits += [f"{cov['games']:,} games", f"{_plays(cov['plays'])} plays"]
+        if cov["last"]:
+            # Kickoffs are stored in UTC; a Saturday night game is Sunday in UTC, and
+            # "through Sunday" for a slate that ended Saturday reads as a missing day.
+            day = datetime.fromisoformat(cov["last"]).astimezone(ZoneInfo("America/New_York"))
+            through = f"{day:%b} {day.day}, {day.year}"
+            bits.append(f"through week {cov['week']} ({through})" if cov["week"]
+                        else f"through {through}")
+    return f'<p class="pp-scope">{" · ".join(bits)}</p>'
 
 
 # --------------------------------------------------------------------------- #
 # Session state
 # --------------------------------------------------------------------------- #
 
-if "asked" not in st.session_state:
-    st.session_state.asked = 0
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "corpus" not in st.session_state:
-    st.session_state.corpus = corpus.DEFAULT
+st.session_state.setdefault("asked", 0)
+st.session_state.setdefault("history", [])
+st.session_state.setdefault("corpus", corpus.DEFAULT)
+st.session_state.setdefault("next_id", 0)
 
 
-# --------------------------------------------------------------------------- #
-# Header
-# --------------------------------------------------------------------------- #
-
-left, right = st.columns([3, 2], vertical_alignment="bottom")
-with left:
-    st.title("🏈 Play-by-Play Explorer")
-    st.caption(
-        "Ask in English. A language model writes PostgreSQL, runs it through a read-only "
-        "guard, and shows you the query."
-    )
-with right:
-    picked = st.segmented_control(
-        "Corpus",
-        options=[c.key for c in corpus.ALL],
-        format_func=lambda k: corpus.BY_KEY[k].label,
-        default=st.session_state.corpus,
-        key="corpus_pick",
-    )
+def _switch_league() -> None:
     # The selector is the backend. Switching it is switching MCP servers, so the history
     # from the other corpus is left behind rather than re-rendered under the wrong league.
+    picked = st.session_state.get("league")
     if picked and picked != st.session_state.corpus:
         st.session_state.corpus = picked
         st.session_state.history = []
-        st.rerun()
+
+
+def _pick_example(key: str) -> None:
+    """A chip click asks its question. The chip is then cleared so it can be asked again."""
+    chosen = st.session_state.get(f"ex-{key}")
+    if chosen:
+        st.session_state.pending = chosen
+    st.session_state[f"ex-{key}"] = None
+
 
 c = corpus.resolve(st.session_state.corpus)
-st.caption(f"**{c.label}** — {c.blurb}")
-
-
-# --------------------------------------------------------------------------- #
-# Budget banner
-# --------------------------------------------------------------------------- #
-
 status = budget.status()
-if not status.get("healthy"):
-    st.error(
-        "The usage ledger is unreadable, so questions are paused. This fails closed on "
-        f"purpose. ({status.get('error', 'unknown')})"
-    )
-remaining_pct = (status["remaining"] / max(status["tokens_limit"], 1)) * 100
-left_q = budget.MAX_QUESTIONS_PER_SESSION - st.session_state.asked
+left_q = max(0, budget.MAX_QUESTIONS_PER_SESSION - st.session_state.asked)
+remaining_pct = status["remaining"] / max(status["tokens_limit"], 1) * 100
+paused = agent.model_status()
+can_ask = status.get("healthy") and status["remaining"] > 0 and left_q > 0 and not paused
 
-bar, meta = st.columns([3, 1])
-with bar:
-    st.progress(min(1.0, max(0.0, remaining_pct / 100)),
-                text=f"Daily model budget: {remaining_pct:.0f}% left "
-                     f"({status['tokens_used']:,} of {status['tokens_limit']:,} tokens used)")
-with meta:
-    st.metric("Questions left this session", max(0, left_q))
+_UNAVAILABLE = {
+    "billing": ("<b>Answers are paused.</b> The language model behind this page is out of "
+                "credit. The tables and known limits below still work, and the warehouse "
+                "itself is unaffected."),
+    "rate": ("<b>The language model is busy.</b> It refused the last request as too many "
+             "at once. Try again in a minute."),
+}
 
 
 # --------------------------------------------------------------------------- #
-# Ask
+# Header and the ask card
 # --------------------------------------------------------------------------- #
 
-st.divider()
-with st.form("ask", clear_on_submit=False):
-    question = st.text_input(
-        "Your question",
-        placeholder=c.examples[0] if c.examples else "Ask about this corpus…",
-        label_visibility="collapsed",
-    )
-    submitted = st.form_submit_button("Ask", type="primary", use_container_width=False)
+style.header("Ask about any college football or NFL play since 2014. A language model "
+             "writes the SQL, runs it read-only, and shows you the query.")
 
-st.caption("Try one of these:")
-cols = st.columns(len(c.examples) or 1)
-for col, example in zip(cols, c.examples):
-    if col.button(example, use_container_width=True, key=f"ex-{c.key}-{example[:20]}"):
-        question, submitted = example, True
+with st.container(key="card-ask"):
+    with st.container(horizontal=True, vertical_alignment="center", key="ask-top"):
+        st.html('<p class="pp-eyebrow">Ask a question</p>', width="content")
+        st.space("stretch")
+        st.segmented_control(
+            "League", options=[x.key for x in corpus.ALL],
+            format_func=lambda k: corpus.BY_KEY[k].label,
+            default=st.session_state.corpus, required=True, key="league",
+            on_change=_switch_league, label_visibility="collapsed",
+        )
+    st.html(_scope_html(c))
+
+    with st.form("ask", border=False, clear_on_submit=False):
+        question = st.text_input(
+            "Your question", max_chars=400, label_visibility="collapsed",
+            placeholder=c.examples[0] if c.examples else "Ask about this league…",
+        )
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if paused:
+                st.html('<span class="pp-status" data-state="paused">Answers paused</span>',
+                        width="content")
+            elif not status.get("healthy"):
+                st.html('<span class="pp-status" data-state="paused">Usage ledger '
+                        'unreadable — questions paused</span>', width="content")
+            else:
+                st.html(f'<span class="pp-status"><b>{left_q}</b> questions left · '
+                        f'<b>{remaining_pct:.0f}%</b> of today\'s model budget</span>',
+                        width="content")
+            st.space("stretch")
+            submitted = st.form_submit_button("Ask", type="primary", disabled=not can_ask)
 
 if submitted and question and question.strip():
+    st.session_state.pending = question.strip()
+
+if c.examples:
+    st.html('<p class="pp-label">Try one of these</p>')
+    st.pills("Try one of these", c.examples, key=f"ex-{c.key}", disabled=not can_ask,
+             on_change=_pick_example, args=(c.key,), label_visibility="collapsed")
+
+
+# --------------------------------------------------------------------------- #
+# Asking
+# --------------------------------------------------------------------------- #
+
+if paused:
+    style.notice(_UNAVAILABLE[paused], "warn")
+elif not status.get("healthy"):
+    style.notice("<b>Questions are paused.</b> The usage ledger is unreadable, and the page "
+                 "fails closed on purpose rather than spend without counting. "
+                 f"({html.escape(str(status.get('error', 'unknown')))})", "error")
+
+pending = st.session_state.pop("pending", None)
+if pending:
     try:
-        with st.spinner(f"Asking the {c.short} warehouse…"):
+        with st.spinner(f"Asking the {c.label} warehouse… this usually takes 10–40 seconds"):
             t0 = time.time()
-            result = agent.ask(c, question.strip(), st.session_state.asked)
-            result["elapsed"] = time.time() - t0
-            result["question"] = question.strip()
+            result = agent.ask(c, pending, st.session_state.asked)
+        result.update(elapsed=time.time() - t0, question=pending, id=st.session_state.next_id)
+        st.session_state.next_id += 1
         st.session_state.asked += 1
         st.session_state.history.insert(0, result)
-        # The budget banner and the questions-left metric are rendered ABOVE this block,
-        # so without a rerun they show the state from before the question that just ran --
-        # a counter that reads 12 after you have asked one. Rerunning redraws the header
-        # with the ledger's real numbers.
+        # The status line is rendered ABOVE this block, so without a rerun it shows the
+        # state from before the question that just ran -- a counter that reads 10 after
+        # you have asked one. Rerunning redraws it with the ledger's real numbers.
+        st.rerun()
+    except agent.ModelUnavailable:
+        # agent.model_status() now reports the outage, so the rerun draws the paused
+        # status line and the notice from the top of the page.
         st.rerun()
     except budget.BudgetExceeded as exc:
-        st.warning(str(exc))
+        style.notice(html.escape(str(exc)), "warn")
     except agent.SetupError as exc:
-        st.error(str(exc))
+        style.notice("<b>The warehouse is unreachable right now.</b> Please try again "
+                     "shortly.", "error")
+        with st.expander("Details for the operator"):
+            st.code(str(exc), language=None)
     except Exception as exc:  # noqa: BLE001 - the page must survive a bad question
         # The turn was still charged; see agent.ask. Saying so keeps the counter honest
         # rather than looking like a free failure.
-        st.error(
-            f"That question could not be answered: {type(exc).__name__}: {exc}\n\n"
-            "It was still charged against the daily budget, because it still spent tokens."
-        )
+        style.notice("<b>That question could not be answered.</b> Try rephrasing it. It was "
+                     "still counted against the daily budget, because it still spent tokens.",
+                     "error")
+        with st.expander("Details"):
+            st.code(f"{type(exc).__name__}: {exc}", language=None)
 
 
 # --------------------------------------------------------------------------- #
 # Answers
 # --------------------------------------------------------------------------- #
 
-for i, item in enumerate(st.session_state.history):
-    st.divider()
-    st.markdown(f"**{item['question']}**")
-    if item.get("answer"):
-        st.markdown(item["answer"])
+def _md(text: str) -> str:
+    # A bare `$` opens LaTeX in st.markdown, so "$5 tickets ... $10" renders as math.
+    return text.replace("$", r"\$")
 
-    for n, q in enumerate(item.get("queries") or []):
-        with st.expander(f"SQL {n + 1} of {len(item['queries'])}", expanded=(n == 0)):
-            st.code(q.get("asked") or "", language="sql")
-            payload = q.get("result")
-            if isinstance(payload, dict) and payload.get("rows") is not None:
-                df = pd.DataFrame(payload["rows"], columns=payload.get("columns"))
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                bits = [f"{payload.get('row_count', len(df)):,} rows"]
-                if payload.get("truncated"):
-                    bits.append(f"**truncated at {payload.get('row_limit')}** — "
-                                "this is a partial answer")
-                if payload.get("tables"):
-                    bits.append("read " + ", ".join(payload["tables"]))
-                st.caption(" · ".join(bits))
-                _maybe_chart(df)
-            elif isinstance(payload, dict) and payload.get("error"):
-                # Shown rather than hidden: a refused query is the guard working, and
-                # watching it refuse is more informative than a generic failure.
-                st.warning(payload["error"])
-            elif payload is not None:
-                st.write(payload)
 
-    charged = f"{item['tokens']:,} tokens"
-    if not item.get("measured"):
-        charged += " (estimated — the provider reported none)"
-    st.caption(f"{item.get('elapsed', 0):.1f}s · {charged} · {c.short}")
+def _frame(payload) -> pd.DataFrame | None:
+    if isinstance(payload, dict) and payload.get("rows") is not None:
+        return pd.DataFrame(payload["rows"], columns=payload.get("columns"))
+    return None
+
+
+def _result(q: dict, primary: bool) -> None:
+    """One run_sql call: its SQL, then its rows or the reason it has none."""
+    payload = q.get("result")
+    df = _frame(payload)
+    if primary and df is not None:
+        chart = charts.pick(df)
+        if chart is not None:
+            st.altair_chart(chart, width="stretch")
+    st.html('<p class="pp-label">SQL</p>')
+    st.code(q.get("asked") or "", language="sql", wrap_lines=True)
+    if df is not None:
+        bits = [f"{payload.get('row_count', len(df)):,} row"
+                + ("" if payload.get("row_count", len(df)) == 1 else "s")]
+        if payload.get("tables"):
+            bits.append("read " + ", ".join(payload["tables"]))
+        st.html(f'<p class="pp-label">Result · {html.escape(" · ".join(bits))}</p>')
+        # `truncated` is true whenever the page is full, including a top-10 that asked for
+        # LIMIT 10 itself; limit_source == "caller" is the server saying so. Warning on
+        # those put "partial answer" under every ranking on the page.
+        if payload.get("truncated") and payload.get("limit_source") != "caller":
+            style.notice(f"<b>Truncated at {payload.get('row_limit')} rows</b> — this is a "
+                         "partial answer.", "warn")
+        st.dataframe(df, hide_index=True, height="auto" if len(df) <= 12 else 420)
+    elif isinstance(payload, dict) and payload.get("error"):
+        # Shown rather than hidden: a refused query is the guard working, and watching it
+        # refuse is more informative than a generic failure.
+        style.notice("<b>Refused or failed:</b> " + html.escape(str(payload["error"])), "warn")
+    elif payload is not None:
+        st.write(payload)
+
+
+for item in st.session_state.history:
+    with st.container(key=f"card-answer-{item['id']}"):
+        charged = f"<b>{item['tokens']:,}</b> tokens"
+        if not item.get("measured"):
+            charged += " (estimated)"
+        st.html(
+            '<div style="display:flex;justify-content:space-between;align-items:center;'
+            'gap:12px;flex-wrap:wrap">'
+            f'<p class="pp-eyebrow">Question <span class="pp-chip">'
+            f'{html.escape(corpus.resolve(item.get("corpus")).label)}</span></p>'
+            f'<p class="pp-meta"><b>{item.get("elapsed", 0):.1f}s</b> · {charged}</p></div>'
+            f'<p class="pp-question">{html.escape(item["question"])}</p>'
+        )
+        if item.get("answer"):
+            st.markdown(_md(item["answer"]))
+        else:
+            style.notice("The model returned no written answer. Its queries are below.")
+
+        # The answer rests on the LAST query: the prompt allows a second only when the
+        # first errored, was refused or came back truncated. Earlier ones are attempts.
+        queries = item.get("queries") or []
+        if queries:
+            _result(queries[-1], primary=True)
+        if len(queries) > 1:
+            with st.expander(f"Earlier attempts ({len(queries) - 1})"):
+                for q in queries[:-1]:
+                    _result(q, primary=False)
 
 
 # --------------------------------------------------------------------------- #
-# Reference
+# Reference -- no model involved, so it costs nothing and works when the model is down
 # --------------------------------------------------------------------------- #
 
-st.divider()
-tab_schema, tab_limits, tab_how = st.tabs(["Tables", "Known limits", "How this works"])
+def _prose(text: str) -> str:
+    """Escape, then let `backticks` read as code. The comments carry a literal `%%` from
+    the psql script that wrote them; it is meant as one percent sign."""
+    text = html.escape((text or "").replace("%%", "%"))
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
 
-with tab_schema:
-    st.caption(
-        "Straight from the database — these are the table COMMENTs, which is the same "
-        "documentation the model reads before it writes a query. No model was involved in "
-        "rendering this tab and it costs nothing."
-    )
-    try:
-        for t in _schema_for(c.key):
-            with st.expander(f"`{t.get('table_name')}` — {t.get('approx_rows') or '?':,} rows"
-                             if isinstance(t.get("approx_rows"), int)
-                             else f"`{t.get('table_name')}`"):
-                st.write(t.get("description") or "_no description_")
-    except agent.SetupError as exc:
-        st.error(str(exc))
 
-with tab_limits:
-    st.caption(
-        "The model is told to read these before answering. They are the cases that return "
-        "a plausible wrong number rather than an error."
-    )
-    try:
-        for lim in _limits_for(c.key):
-            st.markdown(f"**{lim.get('topic')}** — _{lim.get('applies_to')}_")
-            st.write(lim.get("limit"))
-            st.caption("→ " + (lim.get("what_to_do") or ""))
-    except agent.SetupError as exc:
-        st.error(str(exc))
+with st.container(key="card-reference"):
+    st.html('<p class="pp-eyebrow">Reference</p>')
+    tab_schema, tab_limits, tab_how = st.tabs(["Tables", "Known limits", "How it works"])
 
-with tab_how:
-    st.markdown(f"""
-**The chain.** Your question goes to {agent.MODEL}, which can only reach data by calling
+    with tab_schema:
+        st.caption("Straight from the database: the same table documentation the model "
+                   "reads before it writes a query.")
+        try:
+            for t in _schema_for(c.key):
+                rows = t.get("approx_rows")
+                label = f"**{t.get('table_name')}**" + (
+                    f" · {rows:,} rows" if isinstance(rows, int) and rows >= 0 else "")
+                with st.expander(label):
+                    st.html(f'<p class="pp-scope">{_prose(t.get("description"))}</p>')
+                    if t.get("note"):
+                        st.html(f'<p class="pp-scope">{_prose(t["note"])}</p>')
+        except Exception:  # noqa: BLE001
+            style.notice("The table list is unavailable right now.", "warn")
+
+    with tab_limits:
+        st.caption("The cases that return a plausible wrong number rather than an error. "
+                   "The model is told to read these first.")
+        try:
+            blocks = "".join(
+                '<div class="pp-limit">'
+                f'<h4>{_prose(lim.get("topic"))}</h4>'
+                f'<p class="pp-applies">{_prose(lim.get("applies_to"))}</p>'
+                f'<p>{_prose(lim.get("limit"))}</p>'
+                + (f'<p class="pp-todo">{_prose(lim["what_to_do"])}</p>'
+                   if lim.get("what_to_do") else "")
+                + "</div>"
+                for lim in _limits_for(c.key)
+            )
+            st.html(blocks or '<p class="pp-scope">None listed.</p>')
+        except Exception:  # noqa: BLE001
+            style.notice("The known limits are unavailable right now.", "warn")
+
+    with tab_how:
+        st.markdown(f"""
+**The chain.** Your question goes to `{agent.MODEL}`, which can reach data only by calling
 MCP tools. The tool that runs SQL parses it first, forces a `LIMIT`, refuses anything but a
-single read-only `SELECT` over an allow-listed table, and executes it as a role that holds
+single read-only `SELECT` over an allow-listed table, and runs it as a role that holds
 `SELECT` and nothing else.
 
-**This page has no database credential.** It cannot build SQL or open a connection. If it
-were fully compromised the warehouse would be unaffected, because the web tier was never
-trusted with it.
+**This page has no database credential.** It cannot build SQL or open a connection, so if
+it were compromised the warehouse would be unaffected.
 
 **One server per league.** {c.label} is served by its own MCP process against its own
-schema. There is no `league` column and no tool takes one, so a cross-league query is not
-something the model can write by accident — the other corpus is not in its tool set.
+schema. No tool takes a league, so a cross-league query is not something the model can
+write by accident.
 
-**Why it can still be wrong.** It writes the query; nothing checks the query answers *your*
-question. Read the SQL. That is what it is there for.
-    """)
+**Why it can still be wrong.** It writes the query; nothing checks that the query answers
+*your* question. Read the SQL. That is what it is there for.
+""")
 
 
 # The cross-site footer, last on the page -- see estate.py.
-estate.footer()
+estate.footer(
+    'Play-by-play data from <a href="https://www.espn.com" target="_blank" '
+    'rel="noopener noreferrer">ESPN</a>. Answers are written by a language model and can '
+    "be wrong even when the query runs; the SQL is shown under every answer so you can "
+    "check it. Each visit gets "
+    f"{budget.MAX_QUESTIONS_PER_SESSION} questions, and the page shares a daily model "
+    "budget that resets at 00:00 UTC."
+)

@@ -1,4 +1,4 @@
-# Play-by-Play Explorer
+# Football SQL — the play-by-play SQL explorer
 
 **Ask a football question in English; watch it become SQL.** Streamlit in front of Gemini,
 which reaches data only by calling MCP tools against a `SELECT`-only Postgres role.
@@ -89,7 +89,7 @@ cp .env.example .env          # fill in PBPX_API_KEY
 empty tool list and the model then answers with no data — which looks like a model problem
 and is not.
 
-## Four things that cost time here
+## Six things that cost time here
 
 1. **`mcp<2` is pinned, and the servers run `mcp>=2`.** `langchain-mcp-adapters` imports
    `RequestContext` from a module v2 moved. Two processes sharing a wire protocol, not a
@@ -104,6 +104,21 @@ and is not.
 4. **`HOME` must be set in the unit and must not be under `/home`.** Streamlit probes
    `$HOME/.streamlit/secrets.toml` before serving; with `ProtectHome=true` that raises
    `PermissionError`, which Streamlit does not handle, and the service crash-loops.
+
+5. **`st.html` sanitises, and it is not obvious how.** Inline `<svg>` is dropped
+   entirely, and a `<style>` whose text contains `<` followed by a letter is deleted
+   whole -- DOMPurify's mXSS guard -- so one CSS comment naming an element unstyled the
+   footer. Icons here are CSS data-URIs (`style.py`, `estate.py`) for that reason.
+6. **MCP tool results arrive as text blocks, not dicts.** `call_tool` decodes them. Before
+   it did, the Tables and Known limits tabs rendered empty in production with no error.
+
+## The look
+
+PromptPace's (`~/projects/typing/app/static/styles.css`): the palette lives twice, in
+`.streamlit/config.toml` for what Streamlit draws and in `style.py` for the cards, header
+and footer, and the two must stay equal. Light or dark follows the visitor's OS.
+`charts.py` picks at most one chart per answer and documents each rule with the wrong
+chart that motivated it.
 
 ## Deploying
 

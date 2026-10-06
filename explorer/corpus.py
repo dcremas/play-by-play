@@ -26,6 +26,9 @@ class Corpus:
     label: str
     short: str
     mcp_url: str
+    # Scope in words only. The counts and the "data through" date come from the server's
+    # data_coverage at render time: the blurbs used to carry hand-typed counts, and by
+    # 2026-10-06 every one of them was stale and "to last weekend" was false for the NFL.
     blurb: str
     examples: list[str] = field(default_factory=list)
     # Per-corpus facts the system prompt and the UI both need. See the module docstring
@@ -39,7 +42,7 @@ CFB = Corpus(
     label="College football",
     short="CFB",
     mcp_url=os.environ.get("PBPX_MCP_URL_CFB", "http://127.0.0.1:8771/mcp"),
-    blurb="FBS, 2014 to last weekend. 1.53M scrimmage plays, 321k kicks, 10,631 games.",
+    blurb="Every FBS game since 2014, including FBS-vs-FCS.",
     unstated_pct="9.9%",
     notes=(
         "The corpus deliberately includes FBS-vs-FCS games, so any question about player "
@@ -59,7 +62,7 @@ NFL = Corpus(
     label="NFL",
     short="NFL",
     mcp_url=os.environ.get("PBPX_MCP_URL_NFL", "http://127.0.0.1:8772/mcp"),
-    blurb="2014 to last weekend. 452k scrimmage plays, 92k kicks, 3,327 games.",
+    blurb="Every regular-season and playoff game since 2014.",
     unstated_pct="3.4%",
     notes=(
         "both_top_division is constant true here -- the NFL has no second division -- so "
@@ -70,7 +73,7 @@ NFL = Corpus(
         "Which kickers were best from 50+ yards since 2020?",
         "How did touchback rate change after the 2024 kickoff rule?",
         "Which teams ran most often on third and short in 2024?",
-        "Who forced the most turnovers last season?",
+        "Which defenses forced the most turnovers in 2025?",
     ],
 )
 
