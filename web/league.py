@@ -29,7 +29,8 @@ LONG = {"cfb": "D-I FBS college football", "nfl": "the NFL"}
 # HAND-MAINTAINED, AND IT GOES STALE EVERY WEEK A LIVE SEASON IS PULLED FORWARD. These
 # were measured on 2026-09-11 and were wrong by 2026-09-29 in both corpora -- the header
 # was still reporting 3,297 NFL games against 3,343 actually loaded, and 10,470 college
-# against 10,702. Re-measure them after any run of scripts/update_season.py:
+# against 10,702. Re-measure them after any run of scripts/update_season.py, including
+# the one inside scripts/weekly_cfb.sh, which deliberately leaves these alone:
 #
 #   for lg in cfb nfl; do .venv/bin/python -c "
 #   import duckdb; c=duckdb.connect(f'data/out/pbp_$lg.duckdb', read_only=True)

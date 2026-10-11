@@ -244,8 +244,9 @@ sentence in its tooltip.
 ## Refreshing the snapshot
 
 The corpus on the box is a copy, and it goes stale the moment
-`scripts/update_season.py` runs. There is no automation for this; it is the same
-open follow-up the mirror has.
+`scripts/update_season.py` runs. For college, `bash scripts/weekly_cfb.sh` does all of
+this and the mirror sync, the Sunday-morning run in runbook A of the top-level README.
+Nothing runs it on a schedule. By hand, or for the NFL:
 
 ```bash
 .venv/bin/python scripts/update_season.py 2026               # college

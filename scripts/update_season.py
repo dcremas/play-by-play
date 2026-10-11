@@ -24,6 +24,10 @@ counterpart that is not:
     .venv/bin/python scripts/update_season.py 2026 --dry-run      # fetch, build, change nothing
     .venv/bin/python scripts/update_season.py 2026 --skip-conf    # no conference re-fetch
 
+For college on a Sunday, scripts/weekly_cfb.sh runs this and everything after it: both
+verifiers, the EC2 mirror and the deployed explorer's snapshot. This script alone stops at
+the local snapshot.
+
 Every stage is idempotent, so an interrupted run is fixed by running it again. Run it from
 the repository root: sql/load_dims.sql resolves its CSV paths relative to the caller.
 
