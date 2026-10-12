@@ -291,7 +291,9 @@ echo "   default_server still belongs to $(basename "$FIRST_VHOST")"
 if grep -q "\"${HOSTNAME_APP}\"" /etc/nginx/conf.d/00-weblog.conf; then
     echo "   weblog map already has ${HOSTNAME_APP}"
 else
-    cp -a /etc/nginx/conf.d/00-weblog.conf "/etc/nginx/conf.d/00-weblog.conf.bak-$(date +%Y%m%d)"
+    install -d -m 0755 -o ec2-user -g ec2-user /home/ec2-user/nginx-conf-archive
+    # Backups go to the archive, never conf.d/ (NGINX-RUNBOOK.md §1 in ec2-nginx).
+    cp -a /etc/nginx/conf.d/00-weblog.conf "/home/ec2-user/nginx-conf-archive/00-weblog.conf.bak-$(date +%Y%m%d-%H%M%S)"
     sed -i "s|^\(\s*\)\"sql\.dustincremascoli\.com\"\(\s*\)sqlx;|&\n\1\"${HOSTNAME_APP}\"\2${WEBLOG_SITE};|" \
         /etc/nginx/conf.d/00-weblog.conf
     grep -q "\"${HOSTNAME_APP}\"" /etc/nginx/conf.d/00-weblog.conf \

@@ -71,9 +71,22 @@ fi
 
 log "Installing the TLS vhost"
 [[ -f "$VHOST" ]] || fail "${VHOST} is missing -- run provision.sh first"
-BACKUP="${VHOST}.bak-$(date +%Y%m%d-%H%M%S)"
+# The backup goes to the archive, NOT next to the vhost: a .bak-* inside conf.d/
+# is not loaded but reads as if it were (NGINX-RUNBOOK.md §1 in ec2-nginx).
+ARCHIVE=/home/ec2-user/nginx-conf-archive
+install -d -m 0755 -o ec2-user -g ec2-user "$ARCHIVE"
+BACKUP="${ARCHIVE}/$(basename "$VHOST").bak-$(date +%Y%m%d-%H%M%S)"
 cp -a "$VHOST" "$BACKUP"
 install -m 644 "$SRC/pbp.conf" "$VHOST"
+
+# The checked-in pbp.conf deliberately lacks the /plays/ include: web/deploy/
+# splices it in, and only after installing pbp-plays.inc. Re-installing this
+# file must not silently drop it, so re-splice it whenever the outgoing vhost
+# had it. Same sed as web/deploy/provision.sh.
+if grep -q 'include /etc/nginx/pbp-plays.inc;' "$BACKUP"; then
+    sed -i 's|^\( *\)error_page 502 503 504 /maintenance.html;|\1# The Dash instance explorer at /plays/. Owned by web/deploy/ in the pbp repo.\n\1include /etc/nginx/pbp-plays.inc;\n\n\1error_page 502 503 504 /maintenance.html;|' "$VHOST"
+    echo "   re-spliced the /plays/ include that the previous vhost carried"
+fi
 
 if ! nginx -t; then
     cp -a "$BACKUP" "$VHOST"
