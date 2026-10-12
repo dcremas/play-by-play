@@ -170,8 +170,8 @@ style.header("Ask about any college football or NFL play since 2014. A language 
 
 with st.container(key="card-ask"):
     with st.container(horizontal=True, vertical_alignment="center", key="ask-top"):
-        st.html('<p class="pp-eyebrow">Ask a question</p>', width="content")
-        st.space("stretch")
+        # Stretch, not content: the eyebrow's leader line fills the gap to the control.
+        st.html('<p class="pp-eyebrow">Ask a question</p>', width="stretch")
         st.segmented_control(
             "League", options=[x.key for x in corpus.ALL],
             format_func=lambda k: corpus.BY_KEY[k].label,

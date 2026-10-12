@@ -27,7 +27,7 @@ _CSS = """
 :root {
   --pp-surface: #fcfcfb; --pp-surface-2: #f0efec; --pp-border: #e2e0da;
   --pp-text: #0b0b0b; --pp-text-2: #52514e; --pp-muted: #74726c;
-  --pp-accent: #2a78d6; --pp-accent-ink: #1c5cab; --pp-accent-soft: rgb(42 120 214 / .10);
+  --pp-accent: #0b6bcb; --pp-accent-ink: #0956a8; --pp-accent-soft: rgb(11 107 203 / .10);
   --pp-series-2: #eb6834; --pp-dot: rgb(0 0 0 / .055);
   --pp-live: #16a34a; --pp-live-halo: rgb(22 163 74 / .20);
   --pp-warn: #9a6700; --pp-warn-bg: rgb(250 178 25 / .14);
@@ -39,7 +39,7 @@ _CSS = """
   :root {
     --pp-surface: #1a1a19; --pp-surface-2: #232321; --pp-border: #2e2e2b;
     --pp-text: #ffffff; --pp-text-2: #c3c2b7; --pp-muted: #93928a;
-    --pp-accent: #3987e5; --pp-accent-ink: #86b6ef; --pp-accent-soft: rgb(57 135 229 / .16);
+    --pp-accent: #61a8ff; --pp-accent-ink: #8cc0ff; --pp-accent-soft: rgb(97 168 255 / .16);
     --pp-series-2: #d95926; --pp-dot: rgb(255 255 255 / .045);
     --pp-live: #34d399; --pp-live-halo: rgb(52 211 153 / .22);
     --pp-warn: #fab219; --pp-warn-bg: rgb(250 178 25 / .12);
@@ -64,12 +64,22 @@ header[data-testid="stHeader"], [data-testid="stDecoration"], [data-testid="stTo
 /* ---- header ---- */
 .pp-brand { display: flex; align-items: center; gap: 10px; margin: 0; padding: 0; }
 .pp-brand::before { content: ""; width: 40px; height: 40px; flex: none;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cg transform='rotate%28-35 16 16%29' fill='none' stroke='%23fff' stroke-linecap='round'%3E%3Cellipse cx='16' cy='16' rx='10.5' ry='6.4' stroke-width='2.2'/%3E%3Cpath d='M11.5 16h9M13.5 14.4v3.2M16 14.4v3.2M18.5 14.4v3.2' stroke-width='1.6'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat; }
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b6bcb'/%3E%3Cg transform='rotate%28-35 16 16%29' fill='none' stroke='%23fff' stroke-linecap='round'%3E%3Cellipse cx='16' cy='16' rx='10.5' ry='6.4' stroke-width='2.2'/%3E%3Cpath d='M11.5 16h9M13.5 14.4v3.2M16 14.4v3.2M18.5 14.4v3.2' stroke-width='1.6'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat; }
 .pp-brand-text { display: flex; flex-direction: column; line-height: 1.1; }
 .pp-wordmark { font-size: 1.75rem; font-weight: 750; letter-spacing: -.02em; color: var(--pp-text); }
 .pp-wordmark span { color: var(--pp-accent); }
 .pp-brand-text small { font-size: .8rem; font-weight: 500; color: var(--pp-muted); margin-top: 3px; }
 .pp-tagline { margin: 14px 0 6px; color: var(--pp-text-2); font-size: 1rem; }
+/* The main site's leader line (2026-10-12): a hairline fading from the border
+   colour into the accent, under the header and after each card's eyebrow. */
+.pp-tagline::after {
+  content: ""; display: block; height: 1px; margin-top: 20px;
+  background: linear-gradient(to right, var(--pp-border), var(--pp-accent));
+}
+.pp-eyebrow::after {
+  content: ""; flex: 1 1 1.5rem; height: 1px;
+  background: linear-gradient(to right, var(--pp-border), var(--pp-accent));
+}
 
 /* ---- cards ---- */
 [class*="st-key-card"] {
