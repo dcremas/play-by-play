@@ -169,7 +169,25 @@ def ordered_outcomes(present: list[str], key: str = "st",
 
 
 # --------------------------------------------------------------------- plotly
-FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
+# Inter first since 2026-10-12, matching the main site: assets/app.css loads it, and
+# Plotly draws its SVG text in the page's fonts, so the charts get it too.
+FONT = '"Inter Variable", system-ui, -apple-system, "Segoe UI", sans-serif'
+
+# --------------------------------------------------------------------- mantine
+# The main site's blue as Mantine's primary colour (2026-10-12), so buttons, switches
+# and selected controls match dustincremascoli.com. Shade 6 is the light accent
+# #0b6bcb and shade 4 the dark one #61a8ff, as on the main site; autoContrast puts
+# dark text on the lighter dark-mode fill. Charts keep their own palette above.
+ACCENT_SCALE = ["#eaf3fe", "#d3e6fd", "#a9cefc", "#82b9fd", "#61a8ff",
+                "#3a8ee8", "#0b6bcb", "#0956a8", "#074789", "#05386c"]
+MANTINE_THEME = {
+    "fontFamily": FONT,
+    "defaultRadius": "sm",
+    "colors": {"accent": ACCENT_SCALE},
+    "primaryColor": "accent",
+    "primaryShade": {"light": 6, "dark": 4},
+    "autoContrast": True,
+}
 
 # Phase identity, for the charts that compare phases against each other. The order
 # is the validated sequence again, so a chart carrying all six kick phases or all

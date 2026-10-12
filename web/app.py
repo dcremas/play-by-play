@@ -453,7 +453,7 @@ def header():
 app.layout = dmc.MantineProvider(
     id="provider",
     forceColorScheme="dark",
-    theme={"fontFamily": theme.FONT, "defaultRadius": "sm"},
+    theme=theme.MANTINE_THEME,
     children=[
         dcc.Location(id="url", refresh=False),
         dcc.Store(id="flt"),

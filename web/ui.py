@@ -30,8 +30,8 @@ def tile(label: str, value, sub: str | None = None, tone: str | None = None):
 
 def section(title: str, subtitle: str | None = None, right=None):
     return dmc.Group(justify="space-between", align="flex-end", mb="xs", children=[
-        dmc.Stack(gap=0, children=[
-            dmc.Text(title, fw=600, size="sm"),
+        dmc.Stack(gap=0, className="st-section-head", children=[
+            dmc.Text(title, fw=600, size="sm", className="st-section-title"),
             dmc.Text(subtitle or "", size="xs", c="dimmed"),
         ]),
         right or html.Div(),

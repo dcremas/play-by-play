@@ -1,6 +1,23 @@
 /* Special Teams Instance Explorer -- surfaces, ink and grid chrome.
    Light and dark are both selected palettes, not an automatic flip. */
 
+/* Inter, variable weight, Latin subset: 48 KB, the same file as the main
+   dustincremascoli.com site, added 2026-10-12 so every app on the estate sets
+   type the same way. From @fontsource-variable/inter 5.3.0, SIL OFL 1.1,
+   licence beside it in assets/fonts/. theme.FONT names it for Mantine, the
+   grid and Plotly. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("fonts/inter-latin-wght-normal.woff2") format("woff2-variations"),
+       url("fonts/inter-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+                 U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+                 U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
   --st-surface: #fcfcfb;
   --st-plane: #f9f9f7;
@@ -10,6 +27,9 @@
   --st-grid: #e1e0d9;
   --st-axis: #c3c2b7;
   --st-border: rgba(11, 11, 11, 0.10);
+  /* The main site's accent (2026-10-12), for UI chrome. The chart palette in
+     theme.py is separate and unchanged. */
+  --st-accent: #0b6bcb;
 }
 [data-mantine-color-scheme="dark"] {
   --st-surface: #1a1a19;
@@ -20,6 +40,7 @@
   --st-grid: #2c2c2a;
   --st-axis: #383835;
   --st-border: rgba(255, 255, 255, 0.10);
+  --st-accent: #61a8ff;
 }
 
 body { background: var(--st-plane); }
@@ -27,7 +48,7 @@ body { background: var(--st-plane); }
 /* ------------------------------------------------------------------ shell */
 .st-header {
   background: var(--st-surface);
-  border-bottom: 1px solid var(--st-border);
+  border-bottom: 1px solid transparent;
   padding: 0 16px;
   display: flex;
   align-items: center;
@@ -68,7 +89,7 @@ body { background: var(--st-plane); }
 
 /* ------------------------------------------------------------------ grid */
 .st-grid {
-  --ag-font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ag-font-family: "Inter Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
   --ag-font-size: 12px;
   /* Every colour is set here rather than relying on a theme variant: only the
      light quartz stylesheet is bundled, so a dark theme class does nothing. */
@@ -86,8 +107,8 @@ body { background: var(--st-plane); }
   --ag-input-border-color: var(--st-border);
   --ag-input-focus-box-shadow: none;
   --ag-checkbox-unchecked-color: var(--st-axis);
-  --ag-checkbox-checked-color: #3987e5;
-  --ag-range-selection-border-color: #3987e5;
+  --ag-checkbox-checked-color: var(--st-accent);
+  --ag-range-selection-border-color: var(--st-accent);
   --ag-tooltip-background-color: var(--st-plane);
   --ag-chip-background-color: var(--st-plane);
   --ag-background-color: var(--st-surface);
@@ -198,8 +219,8 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
   color: var(--st-ink);
   outline: none;
 }
-.hint-info { border-color: color-mix(in srgb, #3987e5 55%, transparent); }
-.hint-info:hover, .hint-info:focus-visible { border-color: #3987e5; }
+.hint-info { border-color: color-mix(in srgb, var(--st-accent) 55%, transparent); }
+.hint-info:hover, .hint-info:focus-visible { border-color: var(--st-accent); }
 
 /* ------------------------------------------------------------------ filter drawer */
 /* The three groups inside `More filters`. Mantine's default accordion pads each
@@ -404,5 +425,23 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
 }
 .st-nav-item:hover { color: var(--st-ink); }
 .st-nav-item.is-active {
-  color: var(--st-ink); border-bottom-color: #3987e5;
+  color: var(--st-ink); border-bottom-color: var(--st-accent);
+}
+
+/* ------------------------------------------------------------------ leader lines */
+/* The main site's leader line (2026-10-12): a hairline fading from the border
+   colour into the accent. Along the header's bottom edge (in place of its plain
+   border), from "Filters" across the panel, and from each section title towards
+   whatever sits on its right. */
+.st-header::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: linear-gradient(to right, var(--st-border), var(--st-accent));
+  pointer-events: none;
+}
+.st-panel-title, .st-section-title { display: flex; align-items: center; gap: 10px; }
+.st-panel-title { flex: 1 1 auto; }
+.st-section-head { flex: 1 1 auto; }
+.st-panel-title::after, .st-section-title::after {
+  content: ""; flex: 1 1 1.5rem; height: 1px;
+  background: linear-gradient(to right, var(--st-border), var(--st-accent));
 }
