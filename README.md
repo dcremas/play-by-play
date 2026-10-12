@@ -5,14 +5,19 @@ one row per play, with the situation it happened in, the venue, the people ident
 stable ESPN id rather than name string, and the raw source text kept alongside so any row can
 be audited back to what the feed actually said.
 
-**2,365,530 plays** over **13,597 games** and **13 seasons**, across two leagues and two fact
-tables that are disjoint by construction:
+**2,436,997 plays** over **14,022 games** and **13 seasons**, across two leagues and two fact
+tables that are disjoint by construction. Counted 2026-10-12, through college week 6 and NFL
+week 5, in local Postgres and the EC2 mirror, which agree table for table:
 
 | fact | college | NFL | what it holds |
 |---|---|---|---|
-| `pbp.special_teams_play` | 316,397 | 90,819 | kickoffs, punts, field goals, and the conversion family |
-| `pbp.scrimmage_play` | 1,510,679 | 447,635 | rushes, passes, sacks, penalties |
-| | **1,827,076** | **538,454** | |
+| `pbp.special_teams_play` | 326,480 | 92,914 | kickoffs, punts, field goals, and the conversion family |
+| `pbp.scrimmage_play` | 1,559,698 | 457,905 | rushes, passes, sacks, penalties |
+| | **1,886,178** | **550,819** | |
+| games with plays | 10,650 | 3,372 | `fact_game` holds 10,819 and 3,373 (14,192): ESPN carries no play-by-play for the other 170 |
+
+The numbers grow every in-season week. The live count is on
+[dustincremascoli.com](https://www.dustincremascoli.com/), refreshed hourly from the mirror.
 
 Built from ESPN play-by-play and nothing else — the same two endpoints for both leagues.
 Stored in local Postgres, read through a DuckDB snapshot by two applications.
@@ -44,7 +49,7 @@ implementation notes) are kept, but nothing here depends on them.
 | **Read path** | `data/out/pbp_cfb.duckdb` (246 MB) and `pbp_nfl.duckdb` (82 MB) — **one snapshot per league**, wide `play` and `scrimmage` plus `drive`, rebuilt from Postgres in one command. No `league` column in either |
 | **Parse quality** | kicks: **98.04% `exact` college, 98.19% NFL**. Two different dialects, two parser modules. Scrimmage needs no parser in either league — `statYardage` and `down` are structured fields at 100% coverage |
 | **People** | one shared `dim_athlete` of 66,426 athletes, 100% named and positioned from ESPN; 32,582 appear in both facts and 2,779 in both leagues. 98.7% of college kicks and 99.9% of NFL kicks carry a kicker id |
-| **Apps** | Dash instance explorer (all 2.37M plays, through a League toggle and an Offense / Defense / Special teams lens) — **live at [pbp.dustincremascoli.com/plays/](https://pbp.dustincremascoli.com/plays/)** · Excel reports (kicks) · one-page ERD (both facts) · a 25-tool read-only MCP server over the EC2 mirror · a Streamlit text-to-SQL agent at the root of the same host |
+| **Apps** | Dash instance explorer (all 2.44M plays, through a League toggle and an Offense / Defense / Special teams lens) — **live at [pbp.dustincremascoli.com/plays/](https://pbp.dustincremascoli.com/plays/)** · Excel reports (kicks) · one-page ERD (both facts) · a 25-tool read-only MCP server over the EC2 mirror · a Streamlit text-to-SQL agent at the root of the same host |
 
 Does it behave like football? These come out of the data, not out of a reference book, and
 the two leagues are checked separately because they are different sports at the margin:
