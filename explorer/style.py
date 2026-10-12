@@ -111,7 +111,18 @@ header[data-testid="stHeader"], [data-testid="stDecoration"], [data-testid="stTo
 .pp-notice[data-tone="error"] { background: var(--pp-danger-bg); border-color: transparent; }
 
 /* ---- the ask box ---- */
-.st-key-card-ask [data-testid="stTextInput"] input { font-size: 1.1rem; padding: 12px 14px; }
+/* The question box is a text area so a long question wraps instead of scrolling sideways
+   under Streamlit's "Press Enter to submit form" hint, which a padded single-line input
+   overlapped. The hint is hidden: _ASK_JS makes plain Enter submit, so its "⌘+Enter" would
+   be wrong, and maxlength still stops typing at 400. */
+.st-key-card-ask [data-testid="stTextArea"] textarea { font-size: 1.1rem; line-height: 1.45;
+  padding: 12px 14px; min-height: 0; resize: none; overflow-y: hidden; }
+.st-key-card-ask [data-testid="stTextArea"] [data-baseweb="textarea"] { height: auto !important; }
+.st-key-card-ask [data-testid="InputInstructions"] { display: none; }
+/* Streamlit hides an st.html that is only a stylesheet, but not one that also carries a
+   script, and the empty element then takes a flex gap above the header. (No angle brackets
+   in these comments: the sanitiser st.html runs reads them as tags and drops the sheet.) */
+[data-testid="stElementContainer"]:has(> [data-testid="stHtml"] > script) { display: none; }
 .st-key-card-ask [data-testid="stForm"] { border: 0; padding: 0; }
 .st-key-card-ask [data-testid="stFormSubmitButton"] button { padding: 9px 20px; font-weight: 600; }
 
@@ -149,9 +160,43 @@ header[data-testid="stHeader"], [data-testid="stDecoration"], [data-testid="stTo
 # sanitiser never sees the stylesheet's contents. (A football on PromptPace's blue square.)
 
 
+# The question box's behaviour, which CSS cannot give it. Streamlit's height="content" only
+# resizes on a rerun, and a form does not rerun while you type, so the box is grown here on
+# every input. And a text area submits on Cmd/Ctrl+Enter, where the single-line box it
+# replaced submitted on Enter -- so plain Enter is re-sent as Ctrl+Enter, which is the key
+# Streamlit's own handler submits the form on. Shift+Enter still makes a new line. Listeners
+# sit on the document, once per page, so a rerun that remounts the box needs nothing redone.
+_ASK_JS = """
+<script>
+if (!window.__ppAskBox) {
+  window.__ppAskBox = true;
+  const SEL = ".st-key-card-ask textarea";
+  const fit = t => {
+    t.rows = 1; t.style.height = "auto"; t.style.height = t.scrollHeight + 2 + "px";
+  };
+  document.addEventListener("input", e => { if (e.target.matches?.(SEL)) fit(e.target); }, true);
+  window.addEventListener("resize", () => { const t = document.querySelector(SEL); if (t) fit(t); });
+  // Streamlit mounts it at three rows; size it whenever a new one appears.
+  new MutationObserver(() => {
+    const t = document.querySelector(SEL);
+    if (t && !t.dataset.ppFit) { t.dataset.ppFit = "1"; fit(t); }
+  }).observe(document.body, {childList: true, subtree: true});
+  document.addEventListener("keydown", e => {
+    const t = e.target;
+    if (!t.matches?.(SEL) || e.key !== "Enter" || e.isComposing
+        || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    t.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", code: "Enter", keyCode: 13,
+      which: 13, ctrlKey: true, bubbles: true, cancelable: true}));
+  }, true);
+}
+</script>
+"""
+
+
 def inject() -> None:
-    """The stylesheet. Call once, first. st.html with only a <style> renders no element."""
-    st.html(_CSS)
+    """The stylesheet and the ask box's script. Call once, first. Renders no element."""
+    st.html(_CSS + _ASK_JS, unsafe_allow_javascript=True)
 
 
 def header(tagline: str) -> None:

@@ -181,8 +181,8 @@ with st.container(key="card-ask"):
     st.html(_scope_html(c))
 
     with st.form("ask", border=False, clear_on_submit=False):
-        question = st.text_input(
-            "Your question", max_chars=400, label_visibility="collapsed",
+        question = st.text_area(
+            "Your question", max_chars=400, label_visibility="collapsed", height="content",
             placeholder=c.examples[0] if c.examples else "Ask about this league…",
         )
         with st.container(horizontal=True, vertical_alignment="center"):
