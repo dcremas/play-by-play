@@ -124,6 +124,7 @@ pbp/
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
 │   ├── weekly_cfb.sh          the Sunday college run, end to end: update_season,
 │   │                          both verifiers, the mirror, the explorer. Runbook A
+│   ├── weekly_nfl.sh          the same for the NFL, after its Monday game
 │   ├── sync_ec2.py            local Postgres -> the EC2 mirror, then the serving
 │   │                          layer, the grants and the comments. Runbook H.
 │   ├── verify_split.py        proves cfb.*/nfl.* are a faithful, lossless split
@@ -208,10 +209,10 @@ explorer's header shows how old the snapshot is.
 |---|---|
 | **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts in BOTH leagues; both applications, with a league toggle; the weekly in-season update per league; the ERD; the EC2 mirror and the MCP server over it |
 | **Where the data lives** | **local Postgres is the system of record.** `data/out/pbp_cfb.duckdb` and `pbp_nfl.duckdb` are the local read path for both apps; the EC2 box carries a full mirror, refreshed by [runbook H](#h-push-the-warehouse-to-the-ec2-mirror), which is what `mcp_server/` reads. Three copies, one direction of travel |
-| **In progress right now** | the 2026 season in both leagues — 448 college games through week 6 and 64 NFL through week 4, as of 2026-10-11. **College: `bash scripts/weekly_cfb.sh` every Sunday morning** pulls the week forward and pushes it to every consumer. The NFL still runs the steps by hand, after its Monday game ([runbook A](#a-pull-the-in-progress-season-forward-the-weekly-run)) |
+| **In progress right now** | the 2026 season in both leagues — 448 college games through week 6 and 78 NFL through week 5 (all but its Monday game), as of 2026-10-12. **College: `bash scripts/weekly_cfb.sh` every Sunday morning; the NFL: `bash scripts/weekly_nfl.sh` after its Monday game.** Each pulls the week forward and pushes it to every consumer ([runbook A](#a-pull-the-in-progress-season-forward-the-weekly-run)) |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
-| **Open follow-ups** | `update_season.py` alone still leaves the EC2 mirror and the deployed explorer's snapshot stale. `scripts/weekly_cfb.sh` closes that for college, but it is run by hand rather than scheduled, the NFL has no equivalent yet, and `web/league.py`'s `CORPUS` counts are still re-measured by hand afterwards. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
+| **Open follow-ups** | `update_season.py` alone still leaves the EC2 mirror and the deployed explorer's snapshot stale. `scripts/weekly_cfb.sh` and `scripts/weekly_nfl.sh` close that, but they are run by hand rather than scheduled, and `web/league.py`'s `CORPUS` counts are still re-measured by hand afterwards. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 
@@ -1410,8 +1411,19 @@ leaves that alone.
 
 The sync covers **both** leagues even though only college was pulled forward. It copies
 local Postgres, so the NFL stays at the last week loaded, and a one-league sync is what left
-the mirror a week behind on 2026-10-05. **The NFL has no wrapper**: its week runs Thu→Mon,
-so after the Monday game run the same sequence by hand with `--league nfl` on the first step.
+the mirror a week behind on 2026-10-05.
+
+**The NFL week is the same thing with `--league nfl` on the first step:**
+
+```bash
+bash scripts/weekly_nfl.sh          # after the Monday game; Tuesday morning is natural
+```
+
+Its week runs Thu→Mon. Only completed games are fetched, so a run before the Monday game
+ends loads the week without it, and the next run picks it up (`--refresh-days` re-pulls
+anything recent). The preflight lists every game in ESPN's current week that is not final,
+so a partial week is announced rather than discovered. The first run, on 2026-10-12, loaded week 5
+less its Monday game (14 games) in 23 minutes, 15 of them in `update_season.py`.
 
 The pieces, one at a time:
 
@@ -1759,7 +1771,7 @@ MCP server — and anything else without a tunnel to this laptop — can read th
 ```bash
 .venv/bin/python scripts/sync_ec2.py                  # both leagues, whole window (~1 hour)
 .venv/bin/python scripts/sync_ec2.py --season 2026    # the weekly push, after runbook A
-                                                      # (scripts/weekly_cfb.sh runs it for you)
+                                                      # (weekly_cfb.sh / weekly_nfl.sh run it for you)
 .venv/bin/python scripts/sync_ec2.py --league nfl     # one league
 .venv/bin/python scripts/sync_ec2.py --dry-run        # print the plan, change nothing
 ```
@@ -1866,9 +1878,9 @@ locally, which is why `python -m web.app` is unchanged. There was a third, `PBP_
 behind a work-in-progress banner; the banner was removed on 2026-09-29 and so was it.
 
 **The deployed snapshot is a copy and goes stale.** Nothing refreshes it on a schedule —
-the same open follow-up the EC2 mirror has. For college, `scripts/weekly_cfb.sh` rebuilds
-and reships it as its last step; after an NFL update, rebuild and reship by hand:
-`build_snapshot.py`, then `push.sh --data`. The `snapshot` badge in the header reports the
+the same open follow-up the EC2 mirror has. `scripts/weekly_cfb.sh` and `weekly_nfl.sh`
+rebuild and reship it as their last step; after a bare `update_season.py`, rebuild and
+reship by hand: `build_snapshot.py`, then `push.sh --data`. The `snapshot` badge in the header reports the
 build time of whatever is being read, so the page says how stale it is.
 
 It answers "show me the actual instances and let me take them apart", over every play in

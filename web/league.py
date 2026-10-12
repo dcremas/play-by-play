@@ -30,7 +30,7 @@ LONG = {"cfb": "D-I FBS college football", "nfl": "the NFL"}
 # were measured on 2026-09-11 and were wrong by 2026-09-29 in both corpora -- the header
 # was still reporting 3,297 NFL games against 3,343 actually loaded, and 10,470 college
 # against 10,702. Re-measure them after any run of scripts/update_season.py, including
-# the one inside scripts/weekly_cfb.sh, which deliberately leaves these alone:
+# the ones inside scripts/weekly_cfb.sh and weekly_nfl.sh, which deliberately leave these alone:
 #
 #   for lg in cfb nfl; do .venv/bin/python -c "
 #   import duckdb; c=duckdb.connect(f'data/out/pbp_$lg.duckdb', read_only=True)
@@ -43,13 +43,13 @@ LONG = {"cfb": "D-I FBS college football", "nfl": "the NFL"}
 # It is not done here because these numbers feed lens.py's generated PROSE as well as the
 # header, and that prose is written to read as a stable description of the corpus rather
 # than as a live counter -- a sentence about coverage that moves every Sunday is a
-# different design decision, not a bug fix. Measured 2026-10-06 against the snapshot
-# (college through week 5, NFL through week 4).
+# different design decision, not a bug fix. Measured 2026-10-12 against the snapshot
+# (college through week 6, NFL week 5 less its Monday game).
 CORPUS = {
-    "cfb": {"kicks": 324_833, "plays": 1_551_519, "games": 10_761,
-            "teams": 250, "seasons": "2014-2026", "drives": 265_611},
-    "nfl": {"kicks": 92_521, "plays": 455_989, "games": 3_359,
-            "teams": 32, "seasons": "2014-2026", "drives": 74_922},
+    "cfb": {"kicks": 326_480, "plays": 1_559_698, "games": 10_819,
+            "teams": 250, "seasons": "2014-2026", "drives": 266_948},
+    "nfl": {"kicks": 92_914, "plays": 457_905, "games": 3_373,
+            "teams": 32, "seasons": "2014-2026", "drives": 75_242},
 }
 
 # The word for the top-level grouping a team belongs to. Both leagues have a column called
