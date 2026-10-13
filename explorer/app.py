@@ -415,7 +415,8 @@ write by accident.
 # The cross-site footer, last on the page -- see estate.py.
 estate.footer(
     'Play-by-play data from <a href="https://www.espn.com" target="_blank" '
-    'rel="noopener noreferrer">ESPN</a>. Answers are written by a language model and can '
+    f'rel="noopener noreferrer">ESPN{estate.NEW_TAB_SR}</a>. '
+    "Answers are written by a language model and can "
     "be wrong even when the query runs; the SQL is shown under every answer so you can "
     "check it. Each visit gets "
     f"{budget.MAX_QUESTIONS_PER_SESSION} questions, and the page shares a daily model "

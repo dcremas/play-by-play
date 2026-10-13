@@ -363,7 +363,18 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
 .st-estate li { display: inline-flex; align-items: center; font-size: 12px; }
 .st-footer .st-estate-link { text-decoration: none; font-weight: 550; color: var(--st-ink); }
 .st-footer .st-estate-link:hover { text-decoration: underline; }
+/* The entry for this app is a span, not a link: the explorer's filters live in
+   memory, so a link to itself would reload the page and reset them. */
 .st-footer .st-estate-link.is-current { color: var(--st-muted); font-weight: 650; }
+.st-footer span.st-estate-link:hover { text-decoration: none; }
+/* The new-tab cue on every link out (estate row, socials, the ESPN credit): a
+   visible arrow hidden from screen readers, which read the .sr-only text instead.
+   inline-block, so a link's underline does not run under the arrow. */
+.st-ext { display: inline-block; margin-left: 2px; font-size: .9em; opacity: .7; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 .st-estate-sep { margin: 0 6px; opacity: .6; }
 .st-estate-meta { margin: 10px 0 0 0; }
 

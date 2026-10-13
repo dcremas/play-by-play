@@ -491,7 +491,8 @@ app.layout = dmc.MantineProvider(
                     html.Footer(className="st-footer", children=[
                         html.P(className="st-footer-source", children=[
                             "Source: ",
-                            html.A("ESPN", href="https://www.espn.com", target="_blank",
+                            html.A(["ESPN", *estate.new_tab_cue()],
+                                   href="https://www.espn.com", target="_blank",
                                    rel="noopener noreferrer"),
                         ]),
                         *estate.footer_children(),

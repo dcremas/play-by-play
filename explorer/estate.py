@@ -8,8 +8,11 @@ diffs the copies inside that directory, and this one (outside it) is kept in ste
 by hand. The markup and styling follow PromptPace's footer (typing/app/static/), since
 2026-10-06 when this app took PromptPace's look; the site list and order are unchanged.
 
-Every href is absolute, including this app's own: a Streamlit app is a single
-page and a relative "/" would reload it rather than go anywhere.
+Every href is absolute. This app's own entry renders as a span rather than a link -- it is
+stateful (the conversation lives in session memory), so a link to itself would reload the
+page and wipe it -- but its href stays in SITES so check-footer-nav.sh can compare the row.
+Every link out opens a new tab, and each carries a visible icon and screen-reader text
+saying so (link policy sections 2a, 3 and 4).
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ BUILT_WITH = "Built with Python, Streamlit and {model} — self-hosted on AWS EC
 CREDIT = "Produced with the aid of Claude Code&#39;s Command Line tools..."
 SOCIALS = [
     ("GitHub", "https://github.com/dcremas"),
-    ("LinkedIn", "https://www.linkedin.com/in/dustin-cremascoli-662105423/"),
+    ("LinkedIn", "https://www.linkedin.com/in/dustin-cremascoli-662105423"),
 ]
 
 # NOTHING TAG-SHAPED MAY APPEAR IN THIS CSS, comments included. st.html runs DOMPurify,
@@ -62,13 +65,21 @@ _CSS = """
   color: var(--pp-text-2) !important; text-decoration: none !important; font-size: .9rem;
   font-weight: 550; }
 .ppx-link:hover { color: var(--pp-accent) !important; }
-/* PromptPace's external-link glyph, as a mask: st.html strips inline SVG markup. */
-.ppx-nav .ppx-link[target]::after { content: ""; width: 1em; height: 1em; opacity: .55;
+/* PromptPace's external-link glyph, as a mask: st.html strips inline SVG markup. Every
+   target=_blank link in the footer carries it -- site row, socials and the notes' credit
+   links alike -- as the visible half of the new-tab cue; the sr-only text is the other. */
+.ppx-footer a[target]::after { content: ""; flex: none; width: 1em; height: 1em; opacity: .55;
   background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 4h6v6M20 4l-8.5 8.5'/%3E%3Cpath d='M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 4h6v6M20 4l-8.5 8.5'/%3E%3Cpath d='M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4'/%3E%3C/svg%3E") center / contain no-repeat; }
-.ppx-nav .ppx-link[target]:hover::after { opacity: 1; }
+.ppx-footer a[target]:hover::after { opacity: 1; }
+/* Inline text, not a flex row, so the icon needs its own box and spacing here. */
+.ppx-notes a[target]::after { display: inline-block; width: .85em; height: .85em;
+  margin-left: .2em; vertical-align: -.08em; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .ppx-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--pp-live);
   box-shadow: 0 0 0 2px var(--pp-live-halo); }
+/* The entry for this app: a span, not a link (see the module docstring), muted. */
 .ppx-link[aria-current] { color: var(--pp-muted) !important; font-weight: 650; }
 .ppx-link[aria-current] .ppx-dot { background: var(--pp-muted); box-shadow: none; }
 .ppx-meta { margin: 0; color: var(--pp-muted); font-size: .85rem; line-height: 1.7; }
@@ -79,16 +90,25 @@ _CSS = """
 </style>
 """
 
+# The screen-reader half of the new-tab cue; the visible half is the CSS icon above. Public
+# so app.py can put it inside the credit links it passes in as `notes`.
+NEW_TAB_SR = '<span class="sr-only"> (opens in a new tab)</span>'
+
+
 def _row(sites, current):
+    # rel="noopener" alone would keep the Referer for the weblog on these, the estate's own
+    # sites, but st.html forces "noopener noreferrer" onto every target=_blank link. Written
+    # as what actually ships.
     items = []
     for key, label, href in sites:
         if key == current:
-            items.append(f'<li><a class="ppx-link" href="{href}" aria-current="page">'
-                         f'<span class="ppx-dot" aria-hidden="true"></span>{html.escape(label)}</a></li>')
+            items.append(f'<li><span class="ppx-link" aria-current="page">'
+                         f'<span class="ppx-dot" aria-hidden="true"></span>{html.escape(label)}'
+                         "</span></li>")
         else:
             items.append(f'<li><a class="ppx-link" href="{href}" target="_blank" '
                          f'rel="noopener noreferrer"><span class="ppx-dot" aria-hidden="true"></span>'
-                         f'{html.escape(label)}</a></li>')
+                         f"{html.escape(label)}{NEW_TAB_SR}</a></li>")
     return "".join(items)
 
 
@@ -101,7 +121,7 @@ def footer(notes: str = "", model: str = "Gemini") -> None:
     """
     socials = '<span class="ppx-sep" aria-hidden="true">·</span>'.join(
         f'<a class="ppx-link" href="{h}" target="_blank" rel="noopener noreferrer">'
-        f"{html.escape(n)}</a>"
+        f"{html.escape(n)}{NEW_TAB_SR}</a>"
         for n, h in SOCIALS
     )
     st.html(
