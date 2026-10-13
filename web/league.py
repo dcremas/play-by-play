@@ -43,13 +43,13 @@ LONG = {"cfb": "D-I FBS college football", "nfl": "the NFL"}
 # It is not done here because these numbers feed lens.py's generated PROSE as well as the
 # header, and that prose is written to read as a stable description of the corpus rather
 # than as a live counter -- a sentence about coverage that moves every Sunday is a
-# different design decision, not a bug fix. Measured 2026-10-12 against the snapshot
-# (college through week 6, NFL week 5 less its Monday game).
+# different design decision, not a bug fix. Measured 2026-10-13 against the snapshot
+# (college through week 6, NFL through week 5).
 CORPUS = {
     "cfb": {"kicks": 326_480, "plays": 1_559_698, "games": 10_819,
             "teams": 250, "seasons": "2014-2026", "drives": 266_948},
-    "nfl": {"kicks": 92_914, "plays": 457_905, "games": 3_373,
-            "teams": 32, "seasons": "2014-2026", "drives": 75_242},
+    "nfl": {"kicks": 92_945, "plays": 458_058, "games": 3_374,
+            "teams": 32, "seasons": "2014-2026", "drives": 75_263},
 }
 
 # The word for the top-level grouping a team belongs to. Both leagues have a column called
