@@ -206,6 +206,13 @@ parts (interceptions and fumbles, say), make the parts' filters mutually exclusi
 sum to the total, and check that they do before you quote them. Do not paste the SQL into your \
 answer -- the page shows it already. When you bucket by time, alias the bucket clearly \
 -- `AS season`, `AS week` -- because the chart picks its axis from the column name.
+
+FOLLOW-UPS
+Earlier questions in this conversation may appear before the current one, each with \
+your answer and the SQL behind it. Use them to resolve a follow-up ("what about 2019?", \
+"now just the SEC") by adapting that SQL. Their result rows and tool output are not \
+carried over, so run a fresh query for any number you quote, and still call known_limits \
+first. A question that does not refer back is a new question; ignore the earlier ones.
 """
 
 
@@ -357,6 +364,42 @@ def _tokens_from(messages: list) -> int:
 # costs something. Deliberately pessimistic.
 UNKNOWN_QUESTION_TOKENS = 20_000
 
+# How much of the visitor's history rides along with a new question, so "what about
+# 2019?" means something. COMPACT ON PURPOSE: each prior exchange is the question, the
+# written answer and the final SQL -- never the rows, and never the describe_table or
+# known_limits output, which is thousands of tokens and would be resent on every step of
+# every later question. Three exchanges at these caps is roughly 1k tokens per step.
+CONTEXT_EXCHANGES = 3
+_CONTEXT_ANSWER_CHARS = 800
+_CONTEXT_SQL_CHARS = 1500
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit].rstrip() + " …"
+
+
+def _prior_turns(history: list[dict] | None) -> list[dict]:
+    """The visitor's recent exchanges as chat messages, oldest first.
+
+    History comes from the page's session state, which is per visitor and already cleared
+    on a league switch, so this carries context without a checkpointer on the agent. The
+    agents are shared by every visitor in the process, and a checkpointer keyed wrongly
+    would hand one visitor's conversation to another.
+    """
+    turns: list[dict] = []
+    usable = [h for h in (history or []) if h.get("answer")]
+    for exchange in usable[:CONTEXT_EXCHANGES]:  # history is newest-first
+        reply = _clip(exchange["answer"].strip(), _CONTEXT_ANSWER_CHARS)
+        # The SQL the answer rests on: the last statement that did not come back an error.
+        ran = [q for q in exchange.get("queries") or []
+               if not (isinstance(q.get("result"), dict) and q["result"].get("error"))]
+        sql = (ran[-1].get("asked") or "").strip() if ran else ""
+        if sql:
+            reply += f"\n\nSQL that produced this:\n{_clip(sql, _CONTEXT_SQL_CHARS)}"
+        turns[:0] = [{"role": "user", "content": exchange["question"]},
+                     {"role": "assistant", "content": reply}]
+    return turns
+
 
 def _text(content: Any) -> str:
     """Flatten a message's content to text.
@@ -418,24 +461,27 @@ def model_status() -> str:
     return _unavailable_kind if time.monotonic() < _unavailable_until else ""
 
 
-def ask(c: corpus.Corpus, question: str, session_questions: int) -> dict:
+def ask(c: corpus.Corpus, question: str, session_questions: int,
+        history: list[dict] | None = None) -> dict:
     """Answer one question against one corpus.
 
-    Raises budget.BudgetExceeded BEFORE spending anything, and ModelUnavailable when the
-    provider is refusing requests. Returns the answer text, every SQL statement the agent
-    ran with its result, and the tokens charged.
+    `history` is the page's own list of earlier exchanges on this corpus, newest first;
+    see `_prior_turns`. Raises budget.BudgetExceeded BEFORE spending anything, and
+    ModelUnavailable when the provider is refusing requests. Returns the answer text,
+    every SQL statement the agent ran with its result, and the tokens charged.
     """
     global _unavailable_until, _unavailable_kind
     if model_status():
         raise ModelUnavailable(_unavailable_kind)
     budget.check_can_spend(session_questions)
     agent, _ = build_agent(c)
+    prior = _prior_turns(history)
 
     charged = UNKNOWN_QUESTION_TOKENS
     try:
         result = run_sync(
             agent.ainvoke(
-                {"messages": [{"role": "user", "content": question}]},
+                {"messages": [*prior, {"role": "user", "content": question}]},
                 # Hard stop on the tool-call loop. An agent retrying a failing query is
                 # the expensive failure mode and a question count cannot see it.
                 {"recursion_limit": budget.MAX_AGENT_STEPS},
@@ -456,7 +502,9 @@ def ask(c: corpus.Corpus, question: str, session_questions: int) -> dict:
             raise ModelUnavailable(kind) from exc
         raise
 
-    messages = result.get("messages", [])
+    # This turn only. The result echoes the prior turns back first, and without the slice
+    # a turn that ends with no text would report the PREVIOUS answer as this one's.
+    messages = result.get("messages", [])[len(prior):]
     measured = _tokens_from(messages)
     charged = measured or UNKNOWN_QUESTION_TOKENS
     budget.record(charged)
@@ -491,6 +539,8 @@ def ask(c: corpus.Corpus, question: str, session_questions: int) -> dict:
         if getattr(message, "tool_calls", None):
             continue
         if getattr(message, "name", None):      # a ToolMessage, not the reply
+            continue
+        if getattr(message, "type", None) == "human":   # the question itself
             continue
         text = _text(getattr(message, "content", None)).strip()
         if text:

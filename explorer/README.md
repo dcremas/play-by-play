@@ -1,4 +1,4 @@
-# Football SQL — the play-by-play SQL explorer
+# Ask Football — the play-by-play SQL explorer
 
 **Ask a football question in English; watch it become SQL.** Streamlit in front of a
 language model (Gemini by default; one setting switches it), which reaches data only by

@@ -1,4 +1,4 @@
-"""Football SQL: ask a football question, watch it become SQL.
+"""Ask Football: ask a football question, watch it become SQL.
 
     ./run.sh                        # local, needs both MCP servers running
     streamlit run explorer/app.py   # same thing without the checks
@@ -27,7 +27,9 @@ never had one.
 
 THE LOOK is PromptPace's (~/projects/typing), carried over in style.py and
 .streamlit/config.toml: one 960px column of cards on a dotted page, light or dark by the
-visitor's OS. Named "Football SQL" to match the estate footer; "Play-by-Play Explorer" is
+visitor's OS. Named "Ask Football" (was "Football SQL" until 2026-10-12: "SQL" means
+nothing to most visitors, so the name says what you do and the tagline says how), paired
+with the weather app's "Ask Weather". "Play-by-Play Explorer" is
 the Dash app's name on the main site, and two apps under one name was a coin toss.
 """
 from __future__ import annotations
@@ -53,7 +55,7 @@ import corpus
 import estate
 import style
 
-st.set_page_config(page_title="Football SQL — Dustin Cremascoli", page_icon="🏈",
+st.set_page_config(page_title="Ask Football — Dustin Cremascoli", page_icon="🏈",
                    layout="wide")
 style.inject()
 
@@ -224,7 +226,8 @@ if pending:
     try:
         with st.spinner(f"Asking the {c.label} warehouse… this usually takes 10–40 seconds"):
             t0 = time.time()
-            result = agent.ask(c, pending, st.session_state.asked)
+            result = agent.ask(c, pending, st.session_state.asked,
+                               history=st.session_state.history)
         result.update(elapsed=time.time() - t0, question=pending, id=st.session_state.next_id)
         st.session_state.next_id += 1
         st.session_state.asked += 1
@@ -299,6 +302,19 @@ def _result(q: dict, primary: bool) -> None:
     elif payload is not None:
         st.write(payload)
 
+
+def _new_conversation() -> None:
+    # Clears the answers AND the follow-up context, which are the same list -- see
+    # agent._prior_turns. `asked` is deliberately left alone: starting over is not a way
+    # to earn more questions.
+    st.session_state.history = []
+
+
+if st.session_state.history:
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.html('<p class="pp-scope">Follow-ups can refer back: each question carries '
+                f'your last {agent.CONTEXT_EXCHANGES} as context.</p>', width="stretch")
+        st.button("New conversation", on_click=_new_conversation)
 
 for item in st.session_state.history:
     with st.container(key=f"card-answer-{item['id']}"):

@@ -237,7 +237,7 @@ def missing_key(model: str) -> str | None:
 def report(rows: list[dict], models: list[str], questions: list[dict], out_dir: Path) -> str:
     prices = load_prices()
     attempts = max((r["attempt"] for r in rows), default=1)
-    lines = [f"# Test set results — {'Football SQL' if IS_PBP else 'Weather SQL Explorer'}",
+    lines = [f"# Test set results — {'Ask Football' if IS_PBP else 'Ask Weather'}",
              "", f"Run {out_dir.name}: {len(questions)} questions, {attempts} attempt(s) each.",
              "", "| Model | Passed | Errors | Tokens / question | Cost / question | Seconds / question |",
              "|---|---|---|---|---|---|"]
@@ -314,7 +314,7 @@ def main() -> None:
 
     prices = load_prices()
     n = len(questions) * args.repeat
-    print(f"{'Football SQL' if IS_PBP else 'Weather SQL Explorer'}: {len(questions)} questions"
+    print(f"{'Ask Football' if IS_PBP else 'Ask Weather'}: {len(questions)} questions"
           f" x {args.repeat} x {len(args.models)} model(s) = {n * len(args.models)} questions asked.")
     problems = []
     for m in args.models:

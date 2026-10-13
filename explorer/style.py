@@ -212,7 +212,7 @@ def inject() -> None:
 def header(tagline: str) -> None:
     st.html(
         '<h1 class="pp-brand">'
-        + '<span class="pp-brand-text"><span class="pp-wordmark">Football <span>SQL</span></span>'
+        + '<span class="pp-brand-text"><span class="pp-wordmark">Ask <span>Football</span></span>'
         + "<small>by Dustin Cremascoli</small></span></h1>"
         + f'<p class="pp-tagline">{html.escape(tagline)}</p>'
     )

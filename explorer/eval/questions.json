@@ -1,5 +1,5 @@
 {
-  "about": "Football SQL test set. Each expected answer was computed from the warehouse through the read-only MCP path on 2026-10-12, with the reference SQL beside it. Every question avoids the season in progress unless the in-progress caveat is what it tests, so the answers do not drift. Checks run against the answer text a visitor sees; see run_eval.py for what each check type means.",
+  "about": "Ask Football test set. Each expected answer was computed from the warehouse through the read-only MCP path on 2026-10-12, with the reference SQL beside it. Every question avoids the season in progress unless the in-progress caveat is what it tests, so the answers do not drift. Checks run against the answer text a visitor sees; see run_eval.py for what each check type means.",
   "questions": [
     {
       "id": "cfb-fg50-pct",
