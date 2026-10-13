@@ -214,18 +214,28 @@ public endpoint.
 
 ### Claude Code
 
+One registration per league, the same split as `pbp-mcp@cfb` / `pbp-mcp@nfl` on
+the box:
+
 ```bash
-claude mcp add pbp-warehouse \
-  --scope user \
-  -e PYTHONPATH=/Users/dustincremascoli/projects/pbp/mcp_server \
-  -- /Users/dustincremascoli/projects/pbp/mcp_server/.venv/bin/python \
-     -m pbp_mcp.server
+for lg in cfb nfl; do
+  claude mcp add pbp-$lg \
+    --scope user \
+    -e PYTHONPATH=/Users/dustincremascoli/projects/pbp/mcp_server \
+    -e MCP_DB_SCHEMA=$lg \
+    -- /Users/dustincremascoli/projects/pbp/mcp_server/.venv/bin/python \
+       -m pbp_mcp.server
+done
 ```
 
-**`PYTHONPATH` is not optional.** The server is launched from whatever directory
-the client happens to be in, and `python -m pbp_mcp.server` cannot find the
-package from outside `mcp_server/`. Without it the server exits immediately and
-the client reports `CONNECTION_CLOSED`, which does not point at the cause.
+**Neither `-e` is optional**, and both fail the same way: the server exits
+immediately and the client reports `CONNECTION_CLOSED`, which points at neither
+cause. `PYTHONPATH` because the server is launched from whatever directory the
+client happens to be in, and `python -m pbp_mcp.server` cannot find the package
+from outside `mcp_server/`. `MCP_DB_SCHEMA` because since the league split the
+server has no default corpus and refuses to start without one. The single
+`pbp-warehouse` registration from before the split had the first and not the
+second, and sat failing to connect from 2026-09-25 until 2026-10-13.
 
 ### Claude Desktop
 
@@ -234,11 +244,20 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "pbp-warehouse": {
+    "pbp-cfb": {
       "command": "/Users/dustincremascoli/projects/pbp/mcp_server/.venv/bin/python",
       "args": ["-m", "pbp_mcp.server"],
       "env": {
-        "PYTHONPATH": "/Users/dustincremascoli/projects/pbp/mcp_server"
+        "PYTHONPATH": "/Users/dustincremascoli/projects/pbp/mcp_server",
+        "MCP_DB_SCHEMA": "cfb"
+      }
+    },
+    "pbp-nfl": {
+      "command": "/Users/dustincremascoli/projects/pbp/mcp_server/.venv/bin/python",
+      "args": ["-m", "pbp_mcp.server"],
+      "env": {
+        "PYTHONPATH": "/Users/dustincremascoli/projects/pbp/mcp_server",
+        "MCP_DB_SCHEMA": "nfl"
       }
     }
   }
