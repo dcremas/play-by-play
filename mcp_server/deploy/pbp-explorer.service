@@ -10,7 +10,7 @@
 # and the only tool that runs SQL runs it through a parser as a SELECT-only role.
 
 [Unit]
-Description=Play-by-Play Explorer (Streamlit + LangChain + Gemini, two corpora)
+Description=Play-by-Play Explorer (Streamlit + LangChain + a language model, two corpora)
 Documentation=file:///opt/pbp-explorer/README.md
 After=network-online.target pbp-mcp@cfb.service pbp-mcp@nfl.service
 Wants=network-online.target
@@ -33,6 +33,8 @@ WorkingDirectory=/opt/pbp-explorer
 
 Environment=PBPX_MCP_URL_CFB=http://127.0.0.1:8771/mcp
 Environment=PBPX_MCP_URL_NFL=http://127.0.0.1:8772/mcp
+# The default model. A PBPX_MODEL in app.env overrides it (EnvironmentFile wins over
+# Environment=), so switching models needs no change to this unit. See explorer/llm.py.
 Environment=PBPX_MODEL=gemini-3.8-flash
 Environment=PBPX_PORT=8504
 # The daily token ledger. Must be on disk and writable by this user: it is what survives a
@@ -52,8 +54,9 @@ Environment=PYTHONUNBUFFERED=1
 # Streamlit a real directory it owns.
 Environment=HOME=/var/lib/pbp-explorer
 
-# Holds only the API key and the spend caps. Mode 640 root:pbpapp. This user deliberately
-# cannot read /etc/pbp-mcp/mcp.env -- see the header.
+# Holds only the model API keys, an optional PBPX_MODEL and the spend caps.
+# Mode 640 root:pbpapp. This user deliberately cannot read /etc/pbp-mcp/mcp.env -- see
+# the header.
 EnvironmentFile=/etc/pbp-explorer/app.env
 
 # --server.address=127.0.0.1 IS LOAD-BEARING. Streamlit otherwise binds 0.0.0.0, which

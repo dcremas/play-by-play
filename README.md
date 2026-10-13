@@ -162,7 +162,7 @@ pbp/
 ├── web/               Dash instance explorer — every play, three lenses
 ├── reports/           formatted Excel workbooks + the ERD output
 ├── explorer/          the text-to-SQL app at pbp.dustincremascoli.com — Streamlit +
-│                      Gemini over the two MCP servers. Its own README.
+│                      a language model over the two MCP servers. Its own README.
 ├── mcp_server/        read-only MCP over the EC2 mirror — 25 tools, its own README
 │   └── deploy/        on-box deployment: systemd unit, nginx vhost, TLS, and
 │                      push.sh, which is the code sync sync_ec2.py does not do

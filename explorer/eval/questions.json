@@ -1,0 +1,133 @@
+{
+  "about": "Football SQL test set. Each expected answer was computed from the warehouse through the read-only MCP path on 2026-10-12, with the reference SQL beside it. Every question avoids the season in progress unless the in-progress caveat is what it tests, so the answers do not drift. Checks run against the answer text a visitor sees; see run_eval.py for what each check type means.",
+  "questions": [
+    {
+      "id": "cfb-fg50-pct",
+      "corpus": "cfb",
+      "question": "What was the field goal percentage on kicks of 50 yards or longer in FBS-vs-FBS games from 2015 through 2025?",
+      "checks": [{"number": 47.6, "tol": 0.25}],
+      "trap": "fg_made IS NULL is a kick negated by penalty, not a miss: counting it as a miss gives 47.25%.",
+      "reference_sql": "SELECT round(100.0*avg(fg_made::int),2) FROM play_wide WHERE play_kind='field_goal' AND fg_distance_yds >= 50 AND season BETWEEN 2015 AND 2025 AND both_top_division"
+    },
+    {
+      "id": "cfb-fg50-leader",
+      "corpus": "cfb",
+      "question": "Which college kicker made the most field goals of 50 yards or longer from 2014 through 2025, and how many?",
+      "checks": [{"text": ["Cade York"]}, {"number": 15, "tol": 0}],
+      "trap": "Group by athlete_id, not by name.",
+      "reference_sql": "SELECT kicker_athlete_id, kicker_known_name, count(*) FILTER (WHERE fg_made) FROM play_wide WHERE play_kind='field_goal' AND fg_distance_yds >= 50 AND season BETWEEN 2014 AND 2025 GROUP BY 1,2 ORDER BY 3 DESC LIMIT 5"
+    },
+    {
+      "id": "cfb-4th-down-2024",
+      "corpus": "cfb",
+      "question": "What was the fourth-down conversion rate in college football in 2024?",
+      "checks": [{"number": 52.8, "tol": 0.3}],
+      "trap": "Penalty rows are not attempts: counting every down = 4 row gives 45.6%.",
+      "reference_sql": "SELECT round(100.0*avg(first_down_gained::int),2) FROM scrimmage_wide WHERE season=2024 AND down=4 AND play_kind IN ('rush','pass','sack')"
+    },
+    {
+      "id": "cfb-touchback-2018",
+      "corpus": "cfb",
+      "question": "Did the kickoff touchback rate really jump in 2018? Give the 2017 and 2018 rates.",
+      "checks": [{"number": 43.1, "tol": 0.3}, {"number": 51.5, "tol": 0.3}],
+      "trap": "returned IS NULL is an unstated outcome and onside kicks are a different play; both leave the denominator.",
+      "reference_sql": "SELECT season, round(100.0*avg(touchback::int),2) FROM play_wide WHERE play_kind='kickoff' AND returned IS NOT NULL AND NOT coalesce(onside,false) AND season IN (2017,2018) GROUP BY 1"
+    },
+    {
+      "id": "cfb-games-2020",
+      "corpus": "cfb",
+      "question": "How many FBS-vs-FBS games were played in 2020 compared with 2019?",
+      "checks": [{"number": 529, "tol": 3}, {"number": 773, "tol": 3}],
+      "trap": "2020 was two-thirds of a season; the small count is real, not a data gap.",
+      "reference_sql": "SELECT season, count(DISTINCT game_id) FROM scrimmage_wide WHERE both_top_division AND season IN (2019,2020) GROUP BY 1"
+    },
+    {
+      "id": "cfb-ypc-2024",
+      "corpus": "cfb",
+      "question": "Which team gained the most yards per rush in 2024, among teams with at least 300 rushes?",
+      "checks": [{"text": ["New Mexico"]}, {"number": 7.0, "tol": 0.05}],
+      "trap": "yards_gained on a turnover is the defence's return; New Mexico leads either way (7.03 excluding, 7.00 including).",
+      "reference_sql": "SELECT offense_team, round(avg(yards_gained),3), count(*) FROM scrimmage_wide WHERE season=2024 AND play_kind='rush' AND NOT coalesce(is_turnover,false) GROUP BY 1 HAVING count(*) >= 300 ORDER BY 2 DESC LIMIT 5"
+    },
+    {
+      "id": "cfb-2026-in-progress",
+      "corpus": "cfb",
+      "question": "How many games of the 2026 college season are in the data, and is the season complete?",
+      "checks": [{"any": ["in progress", "in-progress", "incomplete", "not complete", "not yet complete", "ongoing", "still being played", "underway", "partial", "not finished"]}],
+      "trap": "A season still being played must be called incomplete. The game count grows weekly, so only the caveat is checked.",
+      "reference_sql": "SELECT season, games, is_in_progress FROM season_status WHERE season = 2026"
+    },
+    {
+      "id": "cfb-wrong-league",
+      "corpus": "cfb",
+      "question": "Which NFL team forced the most turnovers in 2025?",
+      "checks": [{"any": ["college", "NFL data", "other league", "only covers", "only holds", "only contains", "not in this", "isn't in this", "is not in this", "does not include", "doesn't include", "can't answer", "cannot answer", "switch"]}, {"none": ["Chicago Bears"]}],
+      "trap": "This server holds college football only. The right answer is to say so, not to answer from college data.",
+      "reference_sql": null
+    },
+    {
+      "id": "nfl-fg50-leader",
+      "corpus": "nfl",
+      "question": "Which NFL kicker made the most field goals of 50 or more yards from 2020 through 2024, and how many?",
+      "checks": [{"text": ["Boswell"]}, {"number": 35, "tol": 0}],
+      "trap": "A closed window; Fairbairn is second with 33.",
+      "reference_sql": "SELECT kicker_athlete_id, kicker_known_name, count(*) FILTER (WHERE fg_made) FROM play_wide WHERE play_kind='field_goal' AND fg_distance_yds >= 50 AND season BETWEEN 2020 AND 2024 GROUP BY 1,2 ORDER BY 3 DESC LIMIT 4"
+    },
+    {
+      "id": "nfl-longest-fg",
+      "corpus": "nfl",
+      "question": "What is the longest made field goal in the data, who kicked it, and in which season?",
+      "checks": [{"text": ["Cam Little"]}, {"number": 68, "tol": 0}, {"number": 2025, "tol": 0}],
+      "trap": "fg_made must be true; a long miss or a negated kick is not a made field goal.",
+      "reference_sql": "SELECT kicker_known_name, fg_distance_yds, season FROM play_wide WHERE play_kind='field_goal' AND fg_made ORDER BY fg_distance_yds DESC LIMIT 4"
+    },
+    {
+      "id": "nfl-touchback-rule",
+      "corpus": "nfl",
+      "question": "How did the kickoff touchback rate change across 2023, 2024 and 2025?",
+      "checks": [{"number": 74.7, "tol": 0.4}, {"number": 65.7, "tol": 0.4}, {"number": 22.0, "tol": 0.4}],
+      "trap": "The kickoff rule changed in 2024 and again in 2025; unstated outcomes and onside kicks leave the denominator.",
+      "reference_sql": "SELECT season, round(100.0*avg(touchback::int),2) FROM play_wide WHERE play_kind='kickoff' AND returned IS NOT NULL AND NOT coalesce(onside,false) AND season IN (2023,2024,2025) GROUP BY 1"
+    },
+    {
+      "id": "nfl-turnovers-2025",
+      "corpus": "nfl",
+      "question": "Which defense forced the most turnovers in the 2025 regular season, and how many?",
+      "checks": [{"text": ["Bears"]}, {"number": 33, "tol": 0}],
+      "trap": "Turnovers belong to the defense_team; Jacksonville is second with 29.",
+      "reference_sql": "SELECT defense_team, count(*) FROM scrimmage_wide WHERE season=2025 AND season_type='regular' AND is_turnover GROUP BY 1 ORDER BY 2 DESC LIMIT 5"
+    },
+    {
+      "id": "nfl-3rd-short-2024",
+      "corpus": "nfl",
+      "question": "On third down with 3 yards or fewer to go in 2024, what share of plays were runs?",
+      "checks": [{"range": [51.0, 54.0]}],
+      "trap": "Penalty rows are not plays. 51.4% counting sacks as pass plays, 53.6% without them; both are accepted.",
+      "reference_sql": "SELECT round(100.0*avg((play_kind='rush')::int),2) FROM scrimmage_wide WHERE season=2024 AND down=3 AND distance <= 3 AND play_kind IN ('rush','pass','sack')"
+    },
+    {
+      "id": "nfl-4th-down-2024",
+      "corpus": "nfl",
+      "question": "What was the NFL's fourth-down conversion rate in 2024?",
+      "checks": [{"number": 57.4, "tol": 0.3}],
+      "trap": "Penalty rows are not attempts.",
+      "reference_sql": "SELECT round(100.0*avg(first_down_gained::int),2) FROM scrimmage_wide WHERE season=2024 AND down=4 AND play_kind IN ('rush','pass','sack')"
+    },
+    {
+      "id": "nfl-completion-2024",
+      "corpus": "nfl",
+      "question": "What was the league-wide pass completion percentage in 2024?",
+      "checks": [{"range": [63.5, 64.7]}],
+      "trap": "An interception is an incomplete attempt; sacks are not attempts.",
+      "reference_sql": "SELECT round(100.0*avg(is_complete::int),2) FROM scrimmage_wide WHERE season=2024 AND play_kind='pass'"
+    },
+    {
+      "id": "nfl-2026-in-progress",
+      "corpus": "nfl",
+      "question": "Is the 2026 NFL season complete in this data?",
+      "checks": [{"any": ["in progress", "in-progress", "incomplete", "not complete", "not yet complete", "ongoing", "still being played", "underway", "partial", "not finished", "no,"]}],
+      "trap": "Only the caveat is checked; the game count grows weekly.",
+      "reference_sql": "SELECT season, games, is_in_progress FROM season_status WHERE season = 2026"
+    }
+  ]
+}

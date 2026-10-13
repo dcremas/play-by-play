@@ -32,7 +32,8 @@ SITES = [
 
 SITES_CURRENT = "pbp"
 SITES_LABEL = "Everything here"
-BUILT_WITH = "Built with Python, Streamlit and Gemini — self-hosted on AWS EC2 behind nginx."
+# {model} is the provider's name, from agent.MODEL_FAMILY, so the footer follows a switch.
+BUILT_WITH = "Built with Python, Streamlit and {model} — self-hosted on AWS EC2 behind nginx."
 CREDIT = "Produced with the aid of Claude Code&#39;s Command Line tools..."
 SOCIALS = [
     ("GitHub", "https://github.com/dcremas"),
@@ -91,11 +92,12 @@ def _row(sites, current):
     return "".join(items)
 
 
-def footer(notes: str = "") -> None:
+def footer(notes: str = "", model: str = "Gemini") -> None:
     """Render the footer. Call once, last, from the main body.
 
     `notes` is trusted markup for the small print above the site row -- PromptPace puts its
-    definitions there, and this app puts its source credit and its one caveat.
+    definitions there, and this app puts its source credit and its one caveat. `model` is
+    the language model's family name for the built-with line.
     """
     socials = '<span class="ppx-sep" aria-hidden="true">·</span>'.join(
         f'<a class="ppx-link" href="{h}" target="_blank" rel="noopener noreferrer">'
@@ -112,7 +114,7 @@ def footer(notes: str = "") -> None:
         + f'<p class="ppx-meta">© {datetime.now(timezone.utc).year} Dustin Cremascoli. '
         + "All rights reserved."
         + '<span class="ppx-sep" aria-hidden="true">·</span>'
-        + f"{html.escape(BUILT_WITH)}"
+        + f"{html.escape(BUILT_WITH.format(model=model))}"
         + f'<span class="ppx-sep" aria-hidden="true">·</span>{CREDIT}<br>{socials}</p>'
         + "</footer>"
     )

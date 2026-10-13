@@ -1,7 +1,8 @@
 # Football SQL — the play-by-play SQL explorer
 
-**Ask a football question in English; watch it become SQL.** Streamlit in front of Gemini,
-which reaches data only by calling MCP tools against a `SELECT`-only Postgres role.
+**Ask a football question in English; watch it become SQL.** Streamlit in front of a
+language model (Gemini by default; one setting switches it), which reaches data only by
+calling MCP tools against a `SELECT`-only Postgres role.
 
     https://pbp.dustincremascoli.com        (the box)
     ./run.sh                                (local, needs both MCP servers)
@@ -20,7 +21,7 @@ which reaches data only by calling MCP tools against a `SELECT`-only Postgres ro
 
 ```
 browser -> nginx (TLS, rate limits) -> Streamlit :8504
-             -> Gemini
+             -> the language model (PBPX_MODEL; see llm.py)
                -> MCP tools over loopback HTTP -> :8771 / :8772
                  -> pbp_ro on Postgres, SELECT-only, search_path pinned to one schema
 ```
@@ -78,7 +79,7 @@ failures is the hole a retry loop escapes through.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env          # fill in PBPX_API_KEY
+cp .env.example .env          # fill in the key for PBPX_MODEL's provider (PBPX_API_KEY for Gemini)
 # both servers, one per corpus:
 (cd ../mcp_server && MCP_DB_SCHEMA=cfb MCP_HTTP_PORT=8771 ./.venv/bin/python -m pbp_mcp.server --http &)
 (cd ../mcp_server && MCP_DB_SCHEMA=nfl MCP_HTTP_PORT=8772 ./.venv/bin/python -m pbp_mcp.server --http &)
@@ -119,6 +120,71 @@ PromptPace's (`~/projects/typing/app/static/styles.css`): the palette lives twic
 and footer, and the two must stay equal. Light or dark follows the visitor's OS.
 `charts.py` picks at most one chart per answer and documents each rule with the wrong
 chart that motivated it.
+
+## Switching models
+
+`PBPX_MODEL` names the model and `llm.py` turns it into a chat model. A bare `gemini-*` or
+`claude-*` name works as it always has; anything else is `provider:model`:
+
+| Provider | Setting | Key |
+|---|---|---|
+| Google (default) | `gemini-3.8-flash` | `PBPX_API_KEY` or `GOOGLE_API_KEY` |
+| Anthropic | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai:gpt-6-astra` | `OPENAI_API_KEY` |
+| OpenRouter (one key, most models) | `openrouter:qwen/qwen3.8-max` | `OPENROUTER_API_KEY` |
+| DeepSeek | `deepseek:deepseek-flash` | `DEEPSEEK_API_KEY` |
+| Qwen (Alibaba, international) | `qwen:<model>` | `DASHSCOPE_API_KEY` |
+| Kimi (Moonshot) | `kimi:kimi-k3` | `MOONSHOT_API_KEY` |
+| Mistral | `mistral:<model>` | `MISTRAL_API_KEY` |
+| Together / Groq / Fireworks | `together:<model>` etc. | `TOGETHER_API_KEY` etc. |
+
+Each provider reads its own key, so any number can sit in the env file and a switch is one
+line:
+
+```bash
+# on the box: app.env overrides the unit's default, so no redeploy is needed
+sudo vi /etc/pbp-explorer/app.env      # e.g. ANTHROPIC_API_KEY=... and PBPX_MODEL=claude-sonnet-5-5
+sudo systemctl restart pbp-explorer
+```
+
+* **Nothing changes until the setting does.** Each provider's package is imported only
+  when chosen, so the default path is the same code it always was.
+* **`llm.py` has an identical twin** in the weather explorer
+  (`ec2-nginx/weather-sql-explorer/sql_explorer/llm.py`). Keep them in step by hand.
+* **A Claude key is an API key from platform.claude.com.** A claude.ai Team or Pro plan
+  does not include API access.
+* **What each provider is sent.** Gemini: `temperature=0`, `low` effort. Claude: no
+  temperature (current models reject one; Haiku 4.5 keeps `0`), `low` effort, refusal
+  fallbacks, prompt caching. OpenAI: `low` effort on its reasoning models, and the library
+  picks the Responses API where a model needs it. Every other provider: nothing optional --
+  untested parameters are where a 400 comes from, so they get their own defaults.
+* **Outages are recognised for all of them.** `llm.refusal` maps rate limits and
+  overload to a one-minute pause, and an empty balance or spend limit to a fifteen-minute
+  pause that is not charged.
+* **Re-check the caps after a switch.** `PBPX_MAX_DAILY_TOKENS` counts tokens, and a
+  token does not cost the same everywhere. Ask the same question before and after and
+  compare the tokens charged before trusting the old number.
+* **Chinese-hosted endpoints.** `deepseek:`, `qwen:` and `kimi:` send visitors' questions
+  to servers in China. The same open-weight models are on Together, Groq, Fireworks and
+  OpenRouter if that matters.
+
+## Comparing models: the test set
+
+`eval/` holds 16 questions (8 college, 8 NFL) with answers computed from the warehouse
+on 2026-10-12, each aimed at a trap from `known_limits` -- penalty rows counted as plays,
+negated kicks counted as misses, the season in progress, a question for the other league.
+`eval/run_eval.py` asks them through the app's own `agent.ask` and grades the answer text:
+
+```bash
+.venv/bin/python eval/run_eval.py gemini-3.8-flash claude-sonnet-5-5          # plan + cost ceiling, sends nothing
+.venv/bin/python eval/run_eval.py gemini-3.8-flash claude-sonnet-5-5 --yes    # spends money
+```
+
+Needs both MCP servers running (as for `run.sh`) and each model's key. It never touches
+the live ledger. Results land in `eval/results/<timestamp>/report.md` (gitignored), with
+every failed answer and its SQL in full -- read those before trusting a percentage. Prices
+for the cost column are in `eval/prices.json`. `run_eval.py` is a twin of the weather
+explorer's; keep them in step. `push.sh` leaves `eval/` off the box.
 
 ## Deploying
 

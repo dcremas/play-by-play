@@ -1,6 +1,9 @@
 streamlit>=1.64  # theme.light/theme.dark, horizontal containers, st.space, required=
 langchain>=1.0
 langchain-google-genai>=4.0
+# The other providers' packages. Each is imported only when PBPX_MODEL picks it (llm.py).
+langchain-anthropic>=1.7   # claude-*: effort, fallbacks, caching middleware
+langchain-openai>=1.7      # openai:, and every OpenAI-compatible provider in llm.COMPATIBLE
 langchain-mcp-adapters>=0.3
 pandas>=2.2
 

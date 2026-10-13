@@ -206,12 +206,19 @@ if [[ -d /opt/pbp-explorer ]]; then
 # Google AI Studio key for Gemini. NO DATABASE CREDENTIAL BELONGS IN THIS FILE -- the app
 # reaches data only through the MCP servers on the loopback.
 PBPX_API_KEY=
+# Claude API key (platform.claude.com), read only when PBPX_MODEL is claude-*.
+ANTHROPIC_API_KEY=
+# Any other provider's key goes here too, e.g. OPENAI_API_KEY= -- the full list is in
+# explorer/.env.example and explorer/llm.py.
+# Uncomment to switch models (bare gemini-*/claude-*, or provider:model). This file overrides the unit's Environment= line, so a
+# switch is this line plus `systemctl restart pbp-explorer` -- no redeploy.
+#PBPX_MODEL=claude-sonnet-5-5
 # Spend caps. Tighter than the laptop defaults: this endpoint is public. nginx cannot
 # enforce them -- see explorer/budget.py.
 PBPX_MAX_SESSION_QUESTIONS=10
 PBPX_MAX_DAILY_TOKENS=1500000
 EOT
-        echo "   /etc/pbp-explorer/app.env CREATED EMPTY -- fill in PBPX_API_KEY"
+        echo "   /etc/pbp-explorer/app.env CREATED EMPTY -- fill in the key for PBPX_MODEL's provider"
     fi
     chown root:pbpapp /etc/pbp-explorer/app.env
     chmod 640 /etc/pbp-explorer/app.env
@@ -442,8 +449,8 @@ if [[ ! -d "/etc/letsencrypt/live/${HOSTNAME_APP}" ]]; then
 fi
 
 if [[ -d /opt/pbp-explorer ]] \
-   && ! grep -q '[^[:space:]]' <<<"$(sed -n 's/^PBPX_API_KEY=//p' /etc/pbp-explorer/app.env)"; then
-    note "Fill in PBPX_API_KEY in /etc/pbp-explorer/app.env, then:
+   && ! grep -q '[^[:space:]]' <<<"$(sed -n 's/^[A-Z_]*_API_KEY=//p' /etc/pbp-explorer/app.env)"; then
+    note "Fill in the API key for PBPX_MODEL's provider in /etc/pbp-explorer/app.env, then:
        systemctl restart pbp-explorer"
 fi
 

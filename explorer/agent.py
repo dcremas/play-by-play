@@ -1,10 +1,10 @@
-"""The text-to-SQL agent: Gemini, reached through MCP tools, driven from Streamlit.
+"""The text-to-SQL agent: a language model (Gemini by default), reached through MCP tools, driven from Streamlit.
 
 SHAPE OF THE THING
 ------------------
     Streamlit (sync)
       -> one background asyncio loop, for the app's whole life
-        -> LangChain agent (Gemini), ONE PER CORPUS
+        -> LangChain agent (PBPX_MODEL, see llm.py), ONE PER CORPUS
           -> MCP tools over streamable HTTP to 127.0.0.1:8771 (cfb) or :8772 (nfl)
             -> pbp_ro on Postgres, SELECT-only, search_path pinned to that corpus
 
@@ -51,6 +51,14 @@ The MCP client and the agent are async and their sessions are tied to the loop t
 them, so `asyncio.run(...)` per interaction would build a fresh loop each time, strand the
 previous connections, and eventually raise "attached to a different loop". One long-lived
 loop on a daemon thread, cached for the process, keeps the clients valid across reruns.
+
+SWITCHING MODELS
+----------------
+PBPX_MODEL names the model, and llm.py turns it into a chat model: a bare `gemini-*` or
+`claude-*` name, or `provider:model` for OpenAI, OpenRouter, DeepSeek, Qwen, Kimi,
+Mistral, Together, Groq or Fireworks. Each provider reads its own key, so several can sit
+in app.env at once and a switch is one line plus a restart. llm.py is the only place the
+providers differ; everything downstream reads LangChain's common message shape.
 """
 from __future__ import annotations
 
@@ -64,11 +72,12 @@ from pathlib import Path
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 import budget
 import corpus
+import llm
+from llm import SetupError  # also what app.py catches, as agent.SetupError
 
 
 def _load_env() -> None:
@@ -92,7 +101,16 @@ def _load_env() -> None:
 # loaded any later than this is a .env that silently does nothing.
 _load_env()
 
-MODEL = os.environ.get("PBPX_MODEL", "gemini-3.8-flash")
+CHOICE = llm.parse(os.environ.get("PBPX_MODEL", "gemini-3.8-flash"))
+MODEL = CHOICE.model                # the id the provider is sent, shown on the page
+MODEL_FAMILY = CHOICE.family        # "Gemini", "Claude", "Qwen", ... for the footer
+
+# Applied wherever the provider takes an effort (see llm.py). `low` is what the weather
+# explorer measured as most of the saving without changing its answers, and it matters
+# more here: this prompt is longer and describe_table returns a lot of prose, so a turn
+# that reasons freely over it is expensive. See MAX_AGENT_STEPS in budget.py for the
+# other half of the same problem.
+EFFORT = "low"
 
 # SEVEN TOOLS OF THE SERVERS' TWENTY-FIVE, and the choice is not about cost.
 #
@@ -226,10 +244,6 @@ def run_sync(coro, timeout: float = 180.0) -> Any:
 # Building agents, one per corpus
 # --------------------------------------------------------------------------- #
 
-class SetupError(RuntimeError):
-    """Configuration or connectivity problem, phrased for the operator."""
-
-
 _tools_by_corpus: dict[str, dict[str, Any]] = {}
 _agents: dict[str, Any] = {}
 _clients: dict[str, Any] = {}
@@ -299,30 +313,16 @@ def call_tool(c: corpus.Corpus, name: str, arguments: dict | None = None,
 
 
 async def _build(c: corpus.Corpus) -> Any:
-    key = os.environ.get("PBPX_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not key:
-        raise SetupError(
-            "No API key. Put PBPX_API_KEY in explorer/.env (see .env.example) or export "
-            "it before starting Streamlit. On the box it is /etc/pbp-explorer/app.env."
-        )
-    os.environ.setdefault("GOOGLE_API_KEY", key)
-
-    tools = await _discover(c)
-    llm = ChatGoogleGenerativeAI(
-        model=MODEL,
-        temperature=0,        # SQL generation: same question, same query.
-        max_retries=2,
-        # Flash reasons by default and cannot be told not to -- the API accepts
-        # low/medium/high and rejects "minimal". `low` is what the weather explorer
-        # measured as most of the saving without changing its answers, and it matters more
-        # here: this prompt is longer and describe_table returns a lot of prose, so a turn
-        # that reasons freely over it is expensive. See MAX_AGENT_STEPS in budget.py for
-        # the other half of the same problem.
-        reasoning_effort="low",
+    # Before discovery: a missing key needs no network to report.
+    model, middleware = llm.build(
+        CHOICE, effort=EFFORT, google_keys=("PBPX_API_KEY", "GOOGLE_API_KEY"),
+        where="explorer/.env (see .env.example), or /etc/pbp-explorer/app.env on the box",
     )
+    tools = await _discover(c)
     prompt = SYSTEM_PROMPT.format(label=c.label, schema=c.key,
                                   unstated_pct=c.unstated_pct, notes=c.notes)
-    return create_agent(llm, list(tools.values()), system_prompt=prompt)
+    return create_agent(model, list(tools.values()), system_prompt=prompt,
+                        middleware=middleware)
 
 
 def build_agent(c: corpus.Corpus) -> tuple[Any, list[str]]:
@@ -401,7 +401,8 @@ class ModelUnavailable(RuntimeError):
 
     Not a bad question and not a bug, so the page says so in plain words instead of
     printing the provider's exception, which is what it did on 2026-10-06 when the
-    prepaid credit ran out: every visitor saw a raw ChatGoogleGenerativeAIError.
+    prepaid credit ran out: every visitor saw a raw ChatGoogleGenerativeAIError. Every
+    provider's refusal lands here; see `llm.refusal`.
     """
 
 
@@ -410,16 +411,6 @@ class ModelUnavailable(RuntimeError):
 _UNAVAILABLE_FOR = {"billing": 900.0, "rate": 60.0}
 _unavailable_until = 0.0
 _unavailable_kind = ""
-
-
-def _provider_refusal(exc: BaseException) -> str:
-    """'billing', 'rate', or '' -- read from the message, which is all the SDK exposes."""
-    text = str(exc)
-    if "402" in text or "prepayment" in text.lower() or "billing" in text.lower():
-        return "billing"
-    if "RESOURCE_EXHAUSTED" in text or "429" in text:
-        return "rate"
-    return ""
 
 
 def model_status() -> str:
@@ -451,7 +442,7 @@ def ask(c: corpus.Corpus, question: str, session_questions: int) -> dict:
             )
         )
     except Exception as exc:
-        kind = _provider_refusal(exc)
+        kind = llm.refusal(exc)
         # Charge the estimate even on failure: a crashed or looping run still spent
         # tokens, and exempting failures is a hole in the daily cap. The one exception is
         # a BILLING refusal, which by definition bought nothing -- charging it let an

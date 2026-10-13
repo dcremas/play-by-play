@@ -403,5 +403,6 @@ estate.footer(
     "be wrong even when the query runs; the SQL is shown under every answer so you can "
     "check it. Each visit gets "
     f"{budget.MAX_QUESTIONS_PER_SESSION} questions, and the page shares a daily model "
-    "budget that resets at 00:00 UTC."
+    "budget that resets at 00:00 UTC.",
+    model=agent.MODEL_FAMILY,
 )

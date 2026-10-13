@@ -1,0 +1,11 @@
+{
+  "about": "USD per million tokens, keyed by the exact model setting. Used only to turn measured tokens into a cost per question; edit freely. A model missing here reports tokens but no cost. Anthropic's cache WRITES (1.25x input) are not modelled, so Claude costs are slightly understated on a cold cache.",
+  "as_of": "2026-10-12",
+  "prices": {
+    "gemini-3.8-flash":   {"input": 0.75, "output": 3.75, "cached_input": 0.075, "source": "ai.google.dev/gemini-api/docs/pricing; doubles to 1.50 / 7.50 / 0.15 on 2027-01-01"},
+    "claude-haiku-4-5":   {"input": 1.00, "output": 5.00,  "cached_input": 0.10, "source": "Anthropic"},
+    "claude-sonnet-5-5":  {"input": 2.00, "output": 10.00, "cached_input": 0.20, "source": "Anthropic"},
+    "claude-opus-5-5":    {"input": 4.00, "output": 20.00, "cached_input": 0.20, "source": "Anthropic"},
+    "openai:gpt-6-astra": {"input": 10.00, "output": 50.00, "cached_input": 1.00, "source": "third-party price trackers -- check openai.com before relying on it"}
+  }
+}

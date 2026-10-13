@@ -47,7 +47,7 @@ rsync -az --delete \
 if [[ -d "$SRC/../explorer" ]]; then
     rsync -az --delete \
           --exclude '.venv/' --exclude '__pycache__/' --exclude '.env' \
-          --exclude '.budget.json' \
+          --exclude '.budget.json' --exclude 'eval/' \
           "$SRC/../explorer/" "${SSH_HOST}:${STAGE}/explorer/"
     echo "   explorer staged at ${STAGE}/explorer"
 fi
