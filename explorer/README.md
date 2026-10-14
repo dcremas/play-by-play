@@ -128,7 +128,7 @@ chart that motivated it.
 
 | Provider | Setting | Key |
 |---|---|---|
-| Google (default) | `gemini-3.8-flash` | `PBPX_API_KEY` or `GOOGLE_API_KEY` |
+| Google (default) | `gemini-4-argon` | `PBPX_API_KEY` or `GOOGLE_API_KEY` |
 | Anthropic | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY` |
 | OpenAI | `openai:gpt-6-astra` | `OPENAI_API_KEY` |
 | OpenRouter (one key, most models) | `openrouter:qwen/qwen3.8-max` | `OPENROUTER_API_KEY` |

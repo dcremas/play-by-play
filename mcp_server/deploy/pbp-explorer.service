@@ -35,7 +35,7 @@ Environment=PBPX_MCP_URL_CFB=http://127.0.0.1:8771/mcp
 Environment=PBPX_MCP_URL_NFL=http://127.0.0.1:8772/mcp
 # The default model. A PBPX_MODEL in app.env overrides it (EnvironmentFile wins over
 # Environment=), so switching models needs no change to this unit. See explorer/llm.py.
-Environment=PBPX_MODEL=gemini-3.8-flash
+Environment=PBPX_MODEL=gemini-4-argon
 Environment=PBPX_PORT=8504
 # The daily token ledger. Must be on disk and writable by this user: it is what survives a
 # restart, and Streamlit restarts often. StateDirectory below creates it with the right

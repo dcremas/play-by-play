@@ -101,7 +101,7 @@ def _load_env() -> None:
 # loaded any later than this is a .env that silently does nothing.
 _load_env()
 
-CHOICE = llm.parse(os.environ.get("PBPX_MODEL", "gemini-3.8-flash"))
+CHOICE = llm.parse(os.environ.get("PBPX_MODEL", "gemini-4-argon"))
 MODEL = CHOICE.model                # the id the provider is sent, shown on the page
 MODEL_FAMILY = CHOICE.family        # "Gemini", "Claude", "Qwen", ... for the footer
 
