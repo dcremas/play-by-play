@@ -19,8 +19,9 @@ The EC2 box (PG 16) holds a mirror split into `cfb.*` / `nfl.*` by `sql/split_le
 Three venvs, all pyenv Python 3.14.7 (3.12/3.13 builds lack `blake2`): root `.venv`, `mcp_server/.venv`,
 `explorer/.venv`, each with its own `requirements.txt`. No `pyproject.toml`.
 
-- **Root `.venv/bin/pip` (and other entry-point scripts) are broken** — their shebangs point at the old
-  `projects/cfb-special-teams` path. Use `.venv/bin/python -m pip ...`.
+- The repo was renamed from `projects/cfb-special-teams`. The root `.venv`'s scripts were repointed on
+  2026-10-15; if a venv entry point ever fails with "bad interpreter", grep `.venv` with `/usr/bin/grep`
+  (the shell's `grep` wrapper skips gitignored dirs) for the old path and rewrite it.
 - `explorer/requirements.txt` pins `mcp<2` on purpose (langchain-mcp-adapters breaks on 2.x).
 
 Run everything from the repo root — the SQL files resolve CSV paths relative to it.
