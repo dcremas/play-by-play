@@ -534,8 +534,13 @@ def stage_athlete(plays_csvs=None, only_season=None, scrim_fact=None, scrim_brid
             # plays the fact table does not have. load_athletes_league.sql refuses that load
             # -- correctly -- which is how this was found, on 2026-09-22, with 9 orphans
             # across two week-1 games.
+            #
+            # The season set is built ONCE. Written inline in the comprehension it was rebuilt
+            # for every play already held -- 321k college plays times a 13k-row season file --
+            # and that alone was ~140 s of each ~230 s build (profiled 2026-10-15).
+            fresh_seasons = {f[0] for f in fresh.values()}
             drop = [u for u, v in plays.items()
-                    if play_league[u] == lname and v[0] in {f[0] for f in fresh.values()}]
+                    if play_league[u] == lname and v[0] in fresh_seasons]
             for u in drop:
                 del plays[u], play_league[u]
             plays.update(fresh)

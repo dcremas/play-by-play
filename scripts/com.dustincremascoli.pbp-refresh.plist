@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.dustincremascoli.pbp-refresh</string>
+
+	<!-- scripts/refresh.sh: asks ESPN what has finished, and runs the full pipeline only
+	     for a league with a finished game local Postgres lacks. On a day nobody played it
+	     is one ~4-second check and exits.
+
+	     Install:   cp scripts/com.dustincremascoli.pbp-refresh.plist ~/Library/LaunchAgents/
+	                launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dustincremascoli.pbp-refresh.plist
+	     Run now:   launchctl kickstart gui/$(id -u)/com.dustincremascoli.pbp-refresh
+	     Remove:    launchctl bootout gui/$(id -u)/com.dustincremascoli.pbp-refresh -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/dustincremascoli/projects/pbp/scripts/refresh.sh</string>
+		<string>--notify</string>
+	</array>
+
+	<!-- Daily at 06:00 Central. The last college kickoffs (Hawai'i at home) end around
+	     02:30 Central, so every game of the previous day is final by then. If the laptop is
+	     asleep, launchd runs the job once on the next wake rather than skipping the day. -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>6</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<false/>
+
+	<!-- launchd's PATH is /usr/bin:/bin:/usr/sbin:/sbin, which has no psql. -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/opt/postgresql@18/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/dustincremascoli/projects/pbp</string>
+
+	<!-- Every run appends here, a quiet day as one line. A run that loads anything also
+	     writes its own log to data/logs/refresh_<timestamp>.log. -->
+	<key>StandardOutPath</key>
+	<string>/Users/dustincremascoli/Library/Logs/pbp-refresh.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/dustincremascoli/Library/Logs/pbp-refresh.log</string>
+
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>Nice</key>
+	<integer>5</integer>
+</dict>
+</plist>

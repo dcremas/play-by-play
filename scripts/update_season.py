@@ -277,6 +277,18 @@ def main():
     # warns about, arriving through the caller rather than through a filtered view -- and it
     # is silent, because a dimension full of the wrong league still loads, still swaps and
     # still passes every row-count check.
+    #
+    # The loop overwrites the COMBINED extract the pbp loader owns -- dim_athlete.csv and the
+    # four bridge files, which sync_ec2.py ships to the mirror after this -- so set it aside
+    # first and put it back after. This used to be a second run of the combined build, the
+    # identical command over inputs nothing in between touches, and it was ~4 of the ~23
+    # minutes of every update.
+    both = [f"{OUT}/dim_athlete.csv"] + [f"{OUT}/play_athlete{w}{sfx(one)}.csv"
+                                         for one in lg.SPEC for w in ("", "_wide")]
+    stash = f"{OUT}/.athlete_combined"
+    os.makedirs(stash, exist_ok=True)
+    for p in both:
+        shutil.copy2(p, stash)
     for one in lg.SPEC:
         ox = sfx(one)
         run([PY, "scripts/build_dims.py", "athlete", "--league", one, "--leagues", one,
@@ -287,8 +299,8 @@ def main():
              f"{OUT}/scrimmage_athlete{ox}_{s}.csv"])
         shutil.move(f"{OUT}/dim_athlete.csv", f"{OUT}/dim_athlete_{one}.csv")
     # Restore the combined extract the pbp loader owns: the loop above overwrote it.
-    run([PY, "scripts/build_dims.py", "athlete", "--league", L, "--leagues", *lg.SPEC,
-         *plays_for_all(s)])
+    for p in both:
+        os.replace(f"{stash}/{os.path.basename(p)}", p)
 
     # Build, grant, comment, swap -- per league. Local traffic is only the two apps
     # reading DuckDB, so nothing here is serving live queries; the sequence is the same as

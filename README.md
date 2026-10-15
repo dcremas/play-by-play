@@ -127,6 +127,10 @@ pbp/
 │   ├── build_dims.py          conf | venue | athlete       -> the dimension CSVs
 │   ├── build_snapshot.py      Postgres cfb.*/nfl.*         -> data/out/pbp_<league>.duckdb
 │   ├── update_season.py       the weekly in-season driver; calls all of the above
+│   ├── refresh.sh             any day, both leagues: runs the two below' pipeline only
+│   │                          for a league with a finished game not yet loaded. Its
+│   │                          launchd plist sits beside it. Runbook A
+│   ├── new_games.py           ESPN's finished games vs pbp.fact_game; read-only
 │   ├── weekly_cfb.sh          the Sunday college run, end to end: update_season,
 │   │                          both verifiers, the mirror, the explorer. Runbook A
 │   ├── weekly_nfl.sh          the same for the NFL, after its Monday game
@@ -214,10 +218,10 @@ explorer's header shows how old the snapshot is.
 |---|---|
 | **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts in BOTH leagues; both applications, with a league toggle; the weekly in-season update per league; the ERD; the EC2 mirror and the MCP server over it |
 | **Where the data lives** | **local Postgres is the system of record.** `data/out/pbp_cfb.duckdb` and `pbp_nfl.duckdb` are the local read path for both apps; the EC2 box carries a full mirror, refreshed by [runbook H](#h-push-the-warehouse-to-the-ec2-mirror), which is what `mcp_server/` reads. Three copies, one direction of travel |
-| **In progress right now** | the 2026 season in both leagues — 448 college games through week 6 and 78 NFL through week 5 (all but its Monday game), as of 2026-10-12. **College: `bash scripts/weekly_cfb.sh` every Sunday morning; the NFL: `bash scripts/weekly_nfl.sh` after its Monday game.** Each pulls the week forward and pushes it to every consumer ([runbook A](#a-pull-the-in-progress-season-forward-the-weekly-run)) |
+| **In progress right now** | the 2026 season in both leagues — 452 college games (week 6 plus week 7's Tuesday and Wednesday games) and 79 NFL through week 5, as of 2026-10-15. **`bash scripts/refresh.sh`, any day:** it loads whatever has finished in either league and pushes it to every consumer, and does nothing if nothing has. The per-league `weekly_cfb.sh` / `weekly_nfl.sh` still work ([runbook A](#a-pull-the-in-progress-season-forward-the-weekly-run)) |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
-| **Open follow-ups** | `update_season.py` alone still leaves the EC2 mirror and the deployed explorer's snapshot stale. `scripts/weekly_cfb.sh` and `scripts/weekly_nfl.sh` close that, but they are run by hand rather than scheduled, and `web/league.py`'s `CORPUS` counts are still re-measured by hand afterwards. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
+| **Open follow-ups** | `update_season.py` alone still leaves the EC2 mirror and the deployed explorer's snapshot stale. `scripts/refresh.sh` closes that and has a launchd plist beside it for a daily 06:00 run, but `web/league.py`'s `CORPUS` counts are still re-measured by hand afterwards. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 
@@ -1398,6 +1402,40 @@ Every one of these is run from the repository root — several SQL files resolve
 relative to the caller.
 
 ### A. Pull the in-progress season forward (the weekly run)
+
+**Any day, either league, one command:**
+
+```bash
+bash scripts/refresh.sh               # load whatever has finished; a no-op if nothing has
+bash scripts/refresh.sh --check       # what is final-but-not-loaded, and what is still playing
+bash scripts/refresh.sh --force nfl   # run a league with nothing new (a late stat correction)
+```
+
+Games stopped being a weekend thing: college plays Tuesday through Saturday from October on,
+and the NFL Thursday, Sunday and Monday. `refresh.sh` asks ESPN first —
+`scripts/new_games.py`, one scoreboard call per league per day over the last ten Eastern
+days, compared against `pbp.fact_game`, about 4 seconds — and runs the pipeline below only
+for a league holding a finished game local Postgres lacks. When both leagues have one, each
+gets its `update_season.py` and they share one pass of the verifiers, the sync and the
+snapshot push. It ends by re-checking, and warns if a game that was final when it started is
+still missing (one that finished during the run is just the next run's). One run at a time:
+a second one exits on the lock in `data/state/`. The first run, on 2026-10-15, loaded four
+midweek college games in 17 minutes: 9 in `update_season.py`, 7 in the sync and verifiers,
+1 in the push.
+
+`update_season.py` itself got faster that day. `build_dims.py athlete` rebuilt a set of
+seasons once per play it already held, ~140 s of each college-inclusive build, and
+`update_season.py` ran the combined build a second time only to restore files the
+per-league builds had overwritten; it now sets them aside and puts them back. Both changes
+produce byte-identical output, checked by diffing all five athlete files.
+
+**To have it run itself daily at 06:00**, install
+`scripts/com.dustincremascoli.pbp-refresh.plist` (the install, run-now and remove lines are
+in the file). It posts a macOS notification when it loads something or fails. A quiet day is one line in `~/Library/Logs/pbp-refresh.log`; a run that
+loads writes `data/logs/refresh_<timestamp>.log`. If the laptop is asleep at 06:00, launchd
+runs it on the next wake.
+
+The weekly scripts below still work and are what `refresh.sh` is made of.
 
 **The college week, every Sunday morning, is one command:**
 
