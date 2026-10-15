@@ -42,6 +42,7 @@ NAVBAR = {"width": 320, "breakpoint": "sm", "collapsed": {"mobile": True}}
 
 S0, S1 = data.season_bounds()
 D0, D1 = data.dist_bounds()
+WPOST = data.last_week(league.DEFAULT) + 1      # the week slider's `Post` mark, at load
 META = data.snapshot_meta()
 
 
@@ -388,21 +389,43 @@ def season_band():
     It is in AppShellMain rather than on the explorer page because it is a GLOBAL
     filter. The profile pages honour it too; a control that existed only on `/` would
     leave the store holding a season range with nothing on screen saying so.
+
+    The WEEK range sits under it, one size down, because the two are read together --
+    "week 6 of 2026" is one question asked with two thumbs. Its marks are per league and
+    end in `Post`; see data.last_week for why the postseason is one mark. Its marks and
+    value are rewritten on a league switch by _week_slider, below.
     """
     return dmc.Paper(id="season-band", withBorder=True, radius="sm",
-                     className="st-season-band", mb="md",
-                     children=dmc.Group(align="center", wrap="nowrap", gap="xl",
-                                        children=[
-        dmc.Stack(gap=1, className="st-season-head", children=[
-            dmc.Text("Seasons", className="st-cap"),
-            dmc.Text(id="lbl-seasons", className="st-season-readout"),
+                     className="st-season-band", mb="md", children=[
+        dmc.Group(align="center", wrap="nowrap", gap="xl", children=[
+            dmc.Stack(gap=1, className="st-season-head", children=[
+                dmc.Text("Seasons", className="st-cap"),
+                dmc.Text(id="lbl-seasons", className="st-season-readout"),
+            ]),
+            dmc.RangeSlider(
+                id="f-seasons", min=S0, max=S1, step=1, value=[S0, S1], minRange=0,
+                size="md", className="st-season-slider",
+                marks=[{"value": s, "label": str(s)} for s in range(S0, S1 + 1)],
+            ),
         ]),
-        dmc.RangeSlider(
-            id="f-seasons", min=S0, max=S1, step=1, value=[S0, S1], minRange=0,
-            size="md", className="st-season-slider",
-            marks=[{"value": s, "label": str(s)} for s in range(S0, S1 + 1)],
-        ),
-    ]))
+        dmc.Group(align="center", wrap="nowrap", gap="xl", className="st-week-row",
+                  children=[
+            dmc.Stack(gap=1, className="st-season-head", children=[
+                dmc.Text("Weeks", className="st-cap"),
+                dmc.Text(id="lbl-weeks", className="st-week-readout"),
+            ]),
+            dmc.RangeSlider(
+                id="f-weeks", min=1, max=WPOST, step=1, value=[1, WPOST], minRange=0,
+                size="sm", className="st-season-slider st-week-slider",
+                marks=_week_marks(WPOST),
+            ),
+        ]),
+    ])
+
+
+def _week_marks(post: int) -> list[dict]:
+    return ([{"value": w, "label": str(w)} for w in range(1, post)]
+            + [{"value": post, "label": "Post"}])
 
 
 def header():
@@ -543,9 +566,8 @@ def _partial_badges(lg):
 def _corpus_line(lg):
     """The header's corpus line. Per league, because the two are different sizes and a
     single hardcoded total would be wrong for whichever one is not on screen."""
-    k = league.resolve(lg)
-    n = league.corpus(k, "plays") + league.corpus(k, "kicks")
-    return f"{n:,} plays · {league.corpus(k, 'games'):,} games · {league.corpus(k, 'seasons')}"
+    c = data.corpus(lg)
+    return f"{c['plays'] + c['kicks']:,} plays · {c['games']:,} games · {c['seasons']}"
 
 
 # --------------------------------------------------------------------------- lens
@@ -689,6 +711,7 @@ def _player_notes(key, lg):
 _FILTER_INPUTS = [
     ("phases", "f-phases", "value"),
     ("seasons", "f-seasons", "value"),
+    ("weeks", "f-weeks", "value"),
     ("teams", "f-teams", "value"),
     ("players", "f-players", "value"),
     ("outcomes", "f-outcomes", "value"),
@@ -726,7 +749,7 @@ _RESET = {
 # allows one writer per output, so they are not in the list the Reset button writes;
 # each of those callbacks takes f-reset as an Input instead.
 _RESET_TARGETS = [t for t in _FILTER_INPUTS
-                  if t[0] not in ("phases", "players", "outcomes", "divisions")]
+                  if t[0] not in ("phases", "players", "outcomes", "divisions", "weeks")]
 
 
 @app.callback(
@@ -791,7 +814,7 @@ _GROUPS = {
 _IDLE = {**_RESET, "players": [], "outcomes": [], "divisions": []}
 
 
-def _is_active(name: str, value, key: str) -> bool:
+def _is_active(name: str, value, key: str, league_key: str | None = None) -> bool:
     """Is this facet narrowing the selection right now?
 
     Lens-gated exactly the way data.where_from_filters is gated: down and field zone
@@ -804,6 +827,8 @@ def _is_active(name: str, value, key: str) -> bool:
         return False
     if name == "dist" and lens.is_scrimmage(key):
         return False
+    if name == "weeks":
+        return bool(value) and data.week_clause(value, league_key) != "TRUE"
     idle = _IDLE.get(name)
     if isinstance(idle, list):
         return bool(value) and list(value) != idle
@@ -812,7 +837,8 @@ def _is_active(name: str, value, key: str) -> bool:
 
 def _count(flt, names) -> int:
     key = lens.resolve((flt or {}).get("lens"))
-    return sum(1 for n in names if _is_active(n, (flt or {}).get(n), key))
+    lg = (flt or {}).get("league")
+    return sum(1 for n in names if _is_active(n, (flt or {}).get(n), key, lg))
 
 
 def _badge(n: int):
@@ -835,7 +861,7 @@ def _active_counts(flt):
     """
     per = {g: _count(flt, names) for g, names in _GROUPS.items()}
     key = lens.resolve((flt or {}).get("lens"))
-    visible = _count(flt, ("seasons", "teams", "players", "outcomes"))
+    visible = _count(flt, ("seasons", "weeks", "teams", "players", "outcomes"))
     phases = set((flt or {}).get("phases") or []) != set(lens.default_chips(key))
     any_on = sum(per.values()) + visible + int(phases)
     return (_badge(sum(per.values())), _badge(per["opp"]), _badge(per["sit"]),
@@ -864,6 +890,29 @@ def _season_label(rng):
     """
     lo, hi = (rng or [S0, S1])
     return f"{lo}" if lo == hi else f"{lo}\u2013{hi}"
+
+
+@app.callback(
+    Output("f-weeks", "max"), Output("f-weeks", "marks"), Output("f-weeks", "value"),
+    Input("league", "data"),
+    Input("f-reset", "n_clicks"),
+)
+def _week_slider(lg, _n_reset):
+    """The week track for whichever league is on screen, at its full range.
+
+    Reset with the league for the reason the division chips are: college's `Post` is 17
+    and the NFL's is 19, so a range carried across would put `Post` on week 17 of the
+    NFL. Reset also lands here rather than in _reset, because Dash allows one writer per
+    output and this callback already owns the value.
+    """
+    post = data.last_week(lg) + 1
+    return post, _week_marks(post), [1, post]
+
+
+@app.callback(Output("lbl-weeks", "children"),
+              Input("f-weeks", "value"), State("league", "data"))
+def _week_label(rng, lg):
+    return data.week_label(rng or [1, data.last_week(lg) + 1], lg)
 
 
 # --------------------------------------------------------------------------- routing

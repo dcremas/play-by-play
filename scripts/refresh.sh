@@ -17,7 +17,6 @@
 # When both leagues have new games they share that second half instead of running it twice.
 #
 # --notify posts a macOS notification at the end (the launchd job passes it).
-# Not done here, as in the weekly scripts: re-measuring CORPUS in web/league.py.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

@@ -221,7 +221,7 @@ explorer's header shows how old the snapshot is.
 | **In progress right now** | the 2026 season in both leagues — 452 college games (week 6 plus week 7's Tuesday and Wednesday games) and 79 NFL through week 5, as of 2026-10-15. **`bash scripts/refresh.sh`, any day:** it loads whatever has finished in either league and pushes it to every consumer, and does nothing if nothing has. The per-league `weekly_cfb.sh` / `weekly_nfl.sh` still work ([runbook A](#a-pull-the-in-progress-season-forward-the-weekly-run)) |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
-| **Open follow-ups** | `update_season.py` alone still leaves the EC2 mirror and the deployed explorer's snapshot stale. `scripts/refresh.sh` closes that and has a launchd plist beside it for a daily 06:00 run, but `web/league.py`'s `CORPUS` counts are still re-measured by hand afterwards. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
+| **Open follow-ups** | `update_season.py` alone still leaves the EC2 mirror and the deployed explorer's snapshot stale. `scripts/refresh.sh` closes that and has a launchd plist beside it for a daily 06:00 run. The explorer header's counts are read off the snapshot (`web/data.py` `corpus()`) since 2026-10-15, so nothing is re-measured by hand afterwards. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 
@@ -1448,9 +1448,8 @@ It runs `update_season.py` for college, then `verify_split.py --local`,
 `verify_mirror.py`, `verify_split.py --mirror` and `web/deploy/push.sh --data`. It checks local
 Postgres and `ssh awsvm` first, stops at the first failure, and logs to `data/logs/`. Every
 stage is idempotent, so an interrupted run is fixed by running it again. The first run, for
-week 6 on 2026-10-11, took 26 minutes, 17 of them in `update_season.py`. Afterwards,
-re-measure `CORPUS` in `web/league.py` if the explorer header should move; the script
-leaves that alone.
+week 6 on 2026-10-11, took 26 minutes, 17 of them in `update_season.py`. The explorer
+header's counts move on their own: they are read off the snapshot the push ships.
 
 The sync covers **both** leagues even though only college was pulled forward. It copies
 local Postgres, so the NFL stays at the last week loaded, and a one-league sync is what left

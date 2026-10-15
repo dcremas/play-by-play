@@ -503,6 +503,8 @@ def where_from_filters(f: dict | None, *, ignore: tuple[str, ...] = ()) -> str:
     if f.get("seasons"):
         lo, hi = f["seasons"]
         parts.append(f"season BETWEEN {int(lo)} AND {int(hi)}")
+    if use("weeks"):
+        parts.append(week_clause(f["weeks"], f.get("league")))
     if use("teams"):
         parts.append(in_list("team_id", [int(t) for t in f["teams"]]))
     if use("opponents"):
@@ -696,6 +698,72 @@ def season_bounds() -> tuple[int, int]:
     lo, hi = con().cursor().sql(
         "SELECT min(season), max(season) FROM cfb.season_status").fetchone()
     return int(lo), int(hi)
+
+
+@functools.lru_cache(maxsize=8)
+def last_week(league_key: str | None = None) -> int:
+    """The last REGULAR-season week in one corpus: 16 for college, 18 for the NFL.
+
+    The week slider runs 1..last_week and then one more mark, `Post`, at last_week + 1.
+    The postseason is a single mark rather than its own weeks because its week numbers
+    restart at 1 and mean different things in the two leagues -- every college bowl and
+    playoff game is postseason week 1, the NFL's run wild card, divisional, conference,
+    (Pro Bowl, dropped), Super Bowl -- so a slider position labelled `1` cannot mean both
+    the season opener and the playoffs. Per league, unlike dist_bounds, so that `Post`
+    sits directly after the last real week instead of after two that college never has.
+    """
+    lg = league.resolve(league_key)
+    return int(scalar(f"SELECT max(week) FROM {lg}.fact_game "
+                      f"WHERE season_type = 'regular'"))
+
+
+def week_clause(rng, league_key: str | None = None) -> str:
+    """The week slider's [lo, hi] as SQL. hi == last_week + 1 takes in the postseason."""
+    post = last_week(league_key) + 1
+    lo, hi = int(rng[0]), int(rng[1])
+    if lo <= 1 and hi >= post:
+        return "TRUE"           # every week and the postseason: nothing to narrow
+    terms = []
+    if lo < post:
+        terms.append(f"(season_type = 'regular' AND week BETWEEN {lo} AND {min(hi, post - 1)})")
+    if hi >= post:
+        terms.append("season_type = 'postseason'")
+    return "(" + " OR ".join(terms) + ")"
+
+
+def week_label(rng, league_key: str | None = None) -> str:
+    """`Week 5`, `Weeks 3–8`, `Week 12–Post`, `Regular season`, `Postseason`, `All weeks`."""
+    post = last_week(league_key) + 1
+    lo, hi = int(rng[0]), int(rng[1])
+    if lo <= 1 and hi >= post:
+        return "All weeks"
+    if lo >= post:
+        return "Postseason"
+    if lo <= 1 and hi == post - 1:
+        return "Regular season"
+    if lo == hi:
+        return f"Week {lo}"
+    return f"Weeks {lo}–{hi}" if hi < post else f"Week {lo}–Post"
+
+
+@functools.lru_cache(maxsize=8)
+def corpus(league_key: str | None = None) -> dict:
+    """What one corpus holds, for the header: kicks, scrimmage plays, games, seasons.
+
+    Counted off the attached snapshot. These were a hand-maintained dict in league.py,
+    re-measured after every load, and by 2026-10-15 loads came several times a week and
+    the header was behind after each. The cache is safe for the life of the process: the
+    snapshot is attached read-only, and a new one only arrives with a restart -- push.sh
+    --data restarts the service, and a local run has to be restarted to see a rebuild.
+    """
+    lg = league.resolve(league_key)
+    kicks, plays, games, lo, hi = con().cursor().sql(f"""
+        SELECT (SELECT count(*) FROM {lg}.play), (SELECT count(*) FROM {lg}.scrimmage),
+               (SELECT count(*) FROM {lg}.fact_game),
+               (SELECT min(season) FROM {lg}.fact_game),
+               (SELECT max(season) FROM {lg}.fact_game)""").fetchone()
+    return {"kicks": int(kicks), "plays": int(plays), "games": int(games),
+            "seasons": f"{lo}-{hi}"}
 
 
 @functools.lru_cache(maxsize=8)

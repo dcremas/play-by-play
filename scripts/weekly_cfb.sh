@@ -11,8 +11,6 @@
 # The NFL is deliberately not pulled forward -- its week runs Thu->Mon -- but the sync still
 # covers BOTH leagues. It copies local Postgres, so the NFL simply stays at the last week
 # loaded, and a one-league sync is what left the mirror a week behind on 2026-10-05.
-#
-# Not done here: re-measuring CORPUS in web/league.py (hand-maintained; see its comment).
 set -euo pipefail
 
 SEASON="${1:-$(date +%Y)}"

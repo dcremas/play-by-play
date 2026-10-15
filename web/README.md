@@ -180,6 +180,15 @@ store holding a season range with nothing on screen saying so on a profile page.
 **above** the `dcc.Loading` that wraps the page, not inside it, so a route change does not
 blink the control out from under a reader who is dragging it.
 
+**Weeks sits directly under it, one size down (added 2026-10-15),** because the two are
+read together: "week 6 of 2026" is one question asked with two sliders. Its marks are the
+regular-season weeks of the league on screen (1–16 college, 1–18 NFL, read from
+`fact_game`) and then one `Post` mark for the whole postseason. Postseason weeks restart
+at 1 and mean different things in the two leagues (every college bowl is week 1), so the
+regular-season week 1 and the playoffs can't share a position. A league switch, or
+Reset, puts it back to the full range of that league, the same way the Division chips
+clear. The filter is `data.week_clause()`; at full range it adds no predicate at all.
+
 Its CSS is the one place in this app where the Mantine part names are
 `mantine-RangeSlider-*` rather than `mantine-Slider-*` — RangeSlider is its own component,
 not a Slider with two thumbs, and a rule written against the Slider names matches nothing

@@ -11,8 +11,6 @@
 # game in ESPN's current week that is not final, so a partial week is never a surprise.
 #
 # The sync still covers BOTH leagues, for the same reason the college script's does.
-#
-# Not done here: re-measuring CORPUS in web/league.py (hand-maintained; see its comment).
 set -euo pipefail
 
 SEASON="${1:-$(date +%Y)}"

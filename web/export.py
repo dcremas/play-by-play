@@ -317,7 +317,8 @@ def _about_sheet(book, rows: list[tuple[str, str]]) -> None:
 # True" is a file that needs the source to read; this is the same table the panel is
 # labelled from, so the About sheet reads like the panel the reader just used.
 _FACET = {
-    "phases": "Phase", "seasons": "Seasons", "teams": "Team", "players": "Player",
+    "phases": "Phase", "seasons": "Seasons", "weeks": "Weeks", "teams": "Team",
+    "players": "Player",
     "outcomes": "Outcome", "opponents": "Opponent", "conferences": "Conference",
     "season_types": "Season type", "fbs_only": "FBS opponents only",
     "conf_game": "Conference game", "qtrs": "Quarter", "score_states": "Score state",
@@ -338,12 +339,16 @@ def _idle(name: str, value, lg: str) -> bool:
         return True
     if name == "seasons":
         return list(value) == list(data.season_bounds())
+    if name == "weeks":
+        return data.week_clause(value, lg) == "TRUE"
     if name == "dist":
         return list(value) == list(data.dist_bounds(lg))
     return False
 
 
-def _show(name: str, value, key: str) -> str:
+def _show(name: str, value, key: str, lg: str | None = None) -> str:
+    if name == "weeks":
+        return data.week_label(value, lg)
     if name == "phases":
         return ", ".join(lens.PHASES[key].get(p, p) for p in value)
     if name in ("seasons", "dist"):
@@ -389,7 +394,7 @@ def about(flt: dict | None, grain: str, *, grid_filters=None, order: str | None 
     # and printing it would name a filter that did nothing.
     shown = dict(flt, phases=data.chip_set(flt))
     active = [(label + (" (ignored on this page)" if name in ignore else ""),
-               _show(name, shown.get(name), key))
+               _show(name, shown.get(name), key, lg))
               for name, label in _FACET.items()
               if not _idle(name, shown.get(name), lg)]
     rows += active or [("Filters", "none — the whole corpus for this league and lens")]

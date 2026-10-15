@@ -456,3 +456,15 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
   content: ""; flex: 1 1 1.5rem; height: 1px;
   background: linear-gradient(to right, var(--st-border), var(--st-accent));
 }
+
+/* The week row: the season band's second track, one size down. Same head width so the
+   two tracks start at the same x and read as one control; nineteen NFL marks fit at
+   10px where thirteen years needed 11. */
+.st-week-row { margin-top: 12px; }
+.st-week-readout {
+  font-size: 13px; font-weight: 600; color: var(--st-ink);
+  line-height: 1.2; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.st-season-band .st-week-slider .mantine-RangeSlider-markLabel { font-size: 10px; }
+/* Below 900px the season band's own rule wraps this row and thins its marks too; `Post`
+   is mark 17 (college) or 19 (NFL), an odd wrapper, so it always survives the thinning. */

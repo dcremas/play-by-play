@@ -8,12 +8,13 @@ of six.
 The toggle itself is cheap because `league` is an ordinary column on both facts and
 web/data.py's filter layer is column-driven -- it interpolates a view name and a WHERE
 clause and never learns what is in either. What is NOT cheap, and is why this file exists,
-is that the corpus-specific SCALARS were previously hardcoded in lens.py's prose: the play
-counts, the coverage percentages, the leaderboard floors. Those are per-league facts, and a
+is that the corpus-specific SCALARS were previously hardcoded in lens.py's prose: the
+coverage percentages and the leaderboard floors. (The play and game counts were here too, and
+are now counted off the snapshot by web/data.py's corpus().) Those are per-league facts, and a
 sentence promising "98.7% of kicks carry an id" is wrong by half a point in one league and
 by more than a point in the other.
 
-Counts here are measured off the loaded warehouse on 2026-09-11, not estimated.
+Coverage figures here are measured off the loaded warehouse on 2026-09-11, not estimated.
 """
 from __future__ import annotations
 
@@ -23,34 +24,9 @@ DEFAULT = "cfb"
 LABEL = {"cfb": "College", "nfl": "NFL"}
 LONG = {"cfb": "D-I FBS college football", "nfl": "the NFL"}
 
-# What the corpus holds, per league. Used in prose, empty states and the header subtitle.
-# `kicks` is pbp.special_teams_play, `plays` is pbp.scrimmage_play.
-#
-# HAND-MAINTAINED, AND IT GOES STALE EVERY WEEK A LIVE SEASON IS PULLED FORWARD. These
-# were measured on 2026-09-11 and were wrong by 2026-09-29 in both corpora -- the header
-# was still reporting 3,297 NFL games against 3,343 actually loaded, and 10,470 college
-# against 10,702. Re-measure them after any run of scripts/update_season.py, including
-# the ones inside scripts/weekly_cfb.sh and weekly_nfl.sh, which deliberately leave these alone:
-#
-#   for lg in cfb nfl; do .venv/bin/python -c "
-#   import duckdb; c=duckdb.connect(f'data/out/pbp_$lg.duckdb', read_only=True)
-#   q=lambda s: c.execute(s).fetchone()[0]
-#   print('$lg', q('SELECT count(*) FROM play'), q('SELECT count(*) FROM scrimmage'),
-#         q('SELECT count(*) FROM fact_game'), q('SELECT count(*) FROM dim_team'),
-#         q('SELECT count(*) FROM drive'))"; done
-#
-# Reading them off the snapshot at import would end the drift, and is the obvious fix.
-# It is not done here because these numbers feed lens.py's generated PROSE as well as the
-# header, and that prose is written to read as a stable description of the corpus rather
-# than as a live counter -- a sentence about coverage that moves every Sunday is a
-# different design decision, not a bug fix. Measured 2026-10-13 against the snapshot
-# (college through week 6, NFL through week 5).
-CORPUS = {
-    "cfb": {"kicks": 326_480, "plays": 1_559_698, "games": 10_819,
-            "teams": 250, "seasons": "2014-2026", "drives": 266_948},
-    "nfl": {"kicks": 92_945, "plays": 458_058, "games": 3_374,
-            "teams": 32, "seasons": "2014-2026", "drives": 75_263},
-}
+# What the corpus holds -- kicks, plays, games, seasons -- is NOT here. It was, as a
+# hand-maintained dict re-measured after every load, and went stale as soon as loads came
+# midweek. web/data.py's corpus() counts it off the snapshot instead.
 
 # The word for the top-level grouping a team belongs to. Both leagues have a column called
 # `conference`, but "Conference" means a 16-team league in one and half the sport in the
@@ -91,10 +67,6 @@ def resolve(key: str | None) -> str:
 def segmented() -> list[dict]:
     """Data for the header's league selector, shaped like lens.segmented()."""
     return [{"value": k, "label": LABEL[k]} for k in KEYS]
-
-
-def corpus(key: str, field: str) -> int | str:
-    return CORPUS[resolve(key)][field]
 
 
 def division_column(key: str) -> str:
