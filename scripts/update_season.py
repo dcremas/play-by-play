@@ -161,9 +161,15 @@ def build_league(L, s, a):
          "--out-drives", drives_csv])
     # New players appear every week. This only fetches ids the store has not seen, so in a
     # steady week it is a few hundred calls, not 63,000.
+    #
+    # --participants-of, because the special-teams bridge does not exist yet: build_dims.py
+    # athlete writes play_athlete*.csv below, so that file is the previous run's, and a
+    # player seen only on kicks came out nameless until the next run. The season's
+    # participants files are what that bridge is built from. (play_athlete_<season>.csv
+    # used to be passed here too; nothing has written it since --only-season went.)
     run([PY, "scripts/fetch_athletes.py", "--league", L, "--sources",
-         f"play_athlete{x}_{s}.csv", scrim_bridge_csv, FULL_SCRIM_BRIDGE,
-         f"play_athlete{x}.csv"])
+         scrim_bridge_csv, FULL_SCRIM_BRIDGE, f"play_athlete{x}.csv",
+         "--participants-of", plays_csv])
 
     # A skipped conference fetch is only safe once the season is already in the CSV. On the
     # first run of a new season it is not, and load_dims.sql would replace dim_team_season

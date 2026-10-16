@@ -1436,9 +1436,13 @@ league, `update_season.py` rebuilt the athletes, re-split both schemas and rewro
 snapshot in each, and the second copy replaced the first: 957 s for both leagues that
 morning, 558 s for the merged pass, fetch included; the whole `refresh.sh` went from 24 to
 17 minutes.
-Output byte-identical except for 6 athletes whose profiles that run fetched — a pre-existing
-one-run lag: `fetch_athletes.py` reads the kick bridge `build_dims.py athlete` writes after
-it, so a kick-only player gets a name on the run after first appearing.
+Output byte-identical except for 6 athletes whose profiles that run fetched — a one-run lag
+older than the change: `fetch_athletes.py` read the kick bridge `build_dims.py athlete`
+writes after it, so a kick-only player got a name on the run after first appearing. Fixed
+the same day: `update_season.py` now passes `--participants-of st_plays<_league>_<season>.csv`,
+and `fetch_athletes.py` takes the season's athletes straight from the participants files the
+bridge is built from. Tested by deleting three of those six from the stores: the old sources
+missed all three, the new one fetched them in the same run.
 
 **To have it run itself daily at 06:00**, install
 `scripts/com.dustincremascoli.pbp-refresh.plist` (the install, run-now and remove lines are

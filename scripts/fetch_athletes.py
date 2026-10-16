@@ -25,6 +25,13 @@ before any load:
     data/out/play_athlete*.csv        special teams
     data/out/scrimmage_athlete.csv    scrimmage
 
+plus, with --participants-of, straight from the participants files of a season's games.
+The in-season update needs that third source: it runs this BEFORE build_dims.py athlete
+writes the special-teams bridge, so play_athlete*.csv is always the previous run's, and an
+athlete seen only on kicks -- a punter, a coverage tackler -- came out with no name and
+was fetched a run late. The scrimmage bridge has no such lag; build_scrimmage.py writes it
+first. (6 athletes on 2026-10-16.)
+
     python fetch_athletes.py                 fetch whatever is missing (college)
     python fetch_athletes.py --league nfl    the NFL, into data/espn_nfl/athletes.json.gz
     python fetch_athletes.py --refresh       re-fetch everything, e.g. after a transfer window
@@ -132,6 +139,31 @@ def wanted_ids(sources):
     return ids
 
 
+def participant_ids(plays_csv):
+    """Every athlete in the participants files of the games `plays_csv` has plays from.
+
+    A superset of what build_dims.py will put in the special-teams bridge for those games,
+    which takes only the participants of kick plays. It is a superset by design rather than
+    a copy of that matching, and costs nothing: on 2026-10-16 every 2026 participant in
+    both leagues was already in a bridge.
+    """
+    plays_csv = plays_csv if os.path.isabs(plays_csv) else os.path.join(OUT, plays_csv)
+    with open(plays_csv) as f:
+        gids = {r["play_uid"].split(":")[1] for r in csv.DictReader(f)}
+    ids, n = set(), 0
+    for gid in gids:
+        path = os.path.join(lg.data_dir(LEAGUE), "participants", f"{gid}.json.gz")
+        if not os.path.exists(path):
+            continue
+        with gzip.open(path, "rt") as f:
+            for parts in json.load(f).values():
+                ids.update(aid for _, aid in parts)
+        n += 1
+    print(f"  participants of {os.path.basename(plays_csv)}: {n:,} games, "
+          f"{len(ids):,} athletes", flush=True)
+    return ids
+
+
 def get(url, tries=5):
     for i in range(tries):
         _wait_out_cooldown()
@@ -171,6 +203,10 @@ def main():
     ap.add_argument("--workers", type=int, default=WORKERS)
     ap.add_argument("--sources", nargs="*", default=None)
     ap.add_argument("--league", default=lg.CFB, choices=sorted(lg.SPEC))
+    ap.add_argument("--participants-of", nargs="*", default=[], metavar="PLAYS_CSV",
+                    help="also every athlete in the participants files of these extracts' "
+                         "games, so a kick-only player is fetched before the special-teams "
+                         "bridge naming him is built")
     a = ap.parse_args()
     use(a.league)
     if a.sources is None:
@@ -179,6 +215,8 @@ def main():
     store = load_store()
     print(f"store holds {len(store):,} athletes", flush=True)
     ids = wanted_ids(a.sources)
+    for plays_csv in a.participants_of:
+        ids |= participant_ids(plays_csv)
     todo = sorted(ids if a.refresh else (ids - store.keys()), key=int)
     print(f"{len(ids):,} distinct athletes across the bridges, {len(todo):,} to fetch "
           f"({a.workers} workers)", flush=True)
