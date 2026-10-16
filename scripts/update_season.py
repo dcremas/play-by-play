@@ -2,6 +2,8 @@
 
     .venv/bin/python scripts/update_season.py 2026                 college (the default)
     .venv/bin/python scripts/update_season.py 2026 --league nfl    the NFL
+    .venv/bin/python scripts/update_season.py 2026 --league cfb nfl    both, sharing the
+                                                    both-league half (what refresh.sh runs)
 
 The two corpora are updated INDEPENDENTLY and both are live in 2026. Every stage below is
 scoped to the league named on the command line; the only thing that spans both is
@@ -124,28 +126,8 @@ def plays_for_all(season):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("season", type=int)
-    ap.add_argument("--league", default=lg.CFB, choices=sorted(lg.SPEC),
-                    help="which corpus to pull forward (default college). Both are "
-                         "in-progress in 2026 and each is updated independently.")
-    ap.add_argument("--db", default="pbp")
-    ap.add_argument("--refresh-days", type=int, default=21,
-                    help="re-pull summaries and participants for games that kicked off "
-                         "inside this window, so late stat corrections land (default 21)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="fetch and build every CSV, report what would change in Postgres, "
-                         "then stop without touching the database")
-    ap.add_argument("--skip-conf", action="store_true",
-                    help="skip the ~250-call conference re-fetch; conferences do not move "
-                         "mid-season, so this is safe after the season's first run")
-    ap.add_argument("--skip-fetch", action="store_true",
-                    help="rebuild and reload from summaries already on disk")
-    a = ap.parse_args()
-    s = a.season
-    L = a.league
+def build_league(L, s, a):
+    """Fetch and build ONE league's CSVs: everything up to the both-league athlete build."""
     x = sfx(L)
     FULL_PLAYS = f"{OUT}/st_plays{x}.csv"
     FULL_SCRIM_BRIDGE = f"{OUT}/scrimmage_athlete{x}.csv"
@@ -182,22 +164,6 @@ def main():
     run([PY, "scripts/fetch_athletes.py", "--league", L, "--sources",
          f"play_athlete{x}_{s}.csv", scrim_bridge_csv, FULL_SCRIM_BRIDGE,
          f"play_athlete{x}.csv"])
-    # The DIMENSION spans both leagues even when only one is being pulled forward: it is
-    # one row per person over both corpora, and rebuilding it from this league alone would
-    # drop every athlete who only appears in the other one.
-    # NO --only-season, deliberately, and this is a change from the pre-NFL pipeline.
-    #
-    # That flag narrowed the BRIDGE output to one season, because the old apply script
-    # TRUNCATEd pbp.play_athlete and reloaded it from the global file -- so writing one
-    # season under the global name would have destroyed the other twelve. The replacement,
-    # sql/load_athletes_league.sql, replaces the bridge wholesale from the global files for
-    # both leagues, so it wants the complete extract.
-    #
-    # It costs nothing. stage_athlete walks every participants file on disk either way --
-    # all 13,767 of them across both leagues -- and --only-season only ever filtered what
-    # got WRITTEN. The dimension was always global, because it is a career aggregate.
-    run([PY, "scripts/build_dims.py", "athlete", "--league", L,
-         "--leagues", *lg.SPEC, *plays_for_all(s)])
 
     # A skipped conference fetch is only safe once the season is already in the CSV. On the
     # first run of a new season it is not, and load_dims.sql would replace dim_team_season
@@ -210,25 +176,84 @@ def main():
                  f"loading it as-is would leave every {s} play with a NULL conference.")
     print(f"\ndim_team_season: {ts:,} team-seasons for {s}")
 
-    # ---------------------------------------------------------------- report
-    built = csv_rows(plays_csv)
-    built_scrim = csv_rows(scrim_csv)
+
+def report(L, s, db):
+    x = sfx(L)
+    built = csv_rows(f"{OUT}/st_plays{x}_{s}.csv")
+    built_scrim = csv_rows(f"{OUT}/scrimmage_plays{x}_{s}.csv")
     scope = f"season = {s} AND league = '{L}'"
-    live_scrim = scalar(a.db, f"SELECT count(*) FROM pbp.scrimmage_play WHERE {scope}")
-    live = scalar(a.db, f"SELECT count(*) FROM pbp.special_teams_play WHERE {scope}")
-    total = scalar(a.db, f"SELECT count(*) FROM pbp.special_teams_play "
-                         f"WHERE league = '{L}'")
-    games = scalar(a.db, f"SELECT count(DISTINCT game_id) FROM pbp.special_teams_play "
-                         f"WHERE {scope}")
+    live_scrim = scalar(db, f"SELECT count(*) FROM pbp.scrimmage_play WHERE {scope}")
+    live = scalar(db, f"SELECT count(*) FROM pbp.special_teams_play WHERE {scope}")
+    total = scalar(db, f"SELECT count(*) FROM pbp.special_teams_play "
+                       f"WHERE league = '{L}'")
+    games = scalar(db, f"SELECT count(DISTINCT game_id) FROM pbp.special_teams_play "
+                       f"WHERE {scope}")
     print(f"\n\033[1m{L} {s}\033[0m  in Postgres now: {live or '?'} plays over {games or '?'} games"
           f"\n      built from ESPN: {built:,} plays"
           f"\n      other {L} seasons ({int(total or 0) - int(live or 0):,} plays) are "
-          f"untouched by this load, as is the other league entirely")
+          f"untouched by this load, as is any league not named on the command line")
     print(f"      scrimmage: {live_scrim or '?'} in Postgres, {built_scrim:,} built from ESPN")
 
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("season", type=int)
+    ap.add_argument("--league", nargs="+", default=[lg.CFB], choices=sorted(lg.SPEC),
+                    help="which corpus to pull forward (default college), or both: "
+                         "`--league cfb nfl` fetches, builds and loads each, then runs the "
+                         "both-league half (athletes, split, snapshot) ONCE")
+    ap.add_argument("--db", default="pbp")
+    ap.add_argument("--refresh-days", type=int, default=21,
+                    help="re-pull summaries and participants for games that kicked off "
+                         "inside this window, so late stat corrections land (default 21)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="fetch and build every CSV, report what would change in Postgres, "
+                         "then stop without touching the database")
+    ap.add_argument("--skip-conf", action="store_true",
+                    help="skip the ~250-call conference re-fetch; conferences do not move "
+                         "mid-season, so this is safe after the season's first run")
+    ap.add_argument("--skip-fetch", action="store_true",
+                    help="rebuild and reload from summaries already on disk")
+    a = ap.parse_args()
+    s = a.season
+    leagues = list(dict.fromkeys(a.league))
+
+    # Everything from here to the load is per league, except the athlete build: it reads
+    # both corpora whichever league is being pulled forward, so with two leagues named it
+    # runs once, after both have fetched and built. So does everything after the load. Run
+    # as two invocations on a day both leagues played, that half ran twice -- ~6 of the
+    # ~24 minutes -- and the first run's copy was thrown away by the second.
+    for L in leagues:
+        build_league(L, s, a)
+
+    # The DIMENSION spans both leagues even when only one is being pulled forward: it is
+    # one row per person over both corpora, and rebuilding it from this league alone would
+    # drop every athlete who only appears in the other one. plays_for_all() names every
+    # league's extracts explicitly, so `--league` here is only build_dims' fallback and
+    # does not change the output.
+    # NO --only-season, deliberately, and this is a change from the pre-NFL pipeline.
+    #
+    # That flag narrowed the BRIDGE output to one season, because the old apply script
+    # TRUNCATEd pbp.play_athlete and reloaded it from the global file -- so writing one
+    # season under the global name would have destroyed the other twelve. The replacement,
+    # sql/load_athletes_league.sql, replaces the bridge wholesale from the global files for
+    # both leagues, so it wants the complete extract.
+    #
+    # It costs nothing. stage_athlete walks every participants file on disk either way --
+    # all 13,767 of them across both leagues -- and --only-season only ever filtered what
+    # got WRITTEN. The dimension was always global, because it is a career aggregate.
+    run([PY, "scripts/build_dims.py", "athlete", "--league", leagues[0],
+         "--leagues", *lg.SPEC, *plays_for_all(s)])
+
+    # ---------------------------------------------------------------- report
+    for L in leagues:
+        report(L, s, a.db)
+
     if a.dry_run:
-        print(f"\n--dry-run: the database was not modified. To apply:\n"
-              f"  psql -d {a.db} -v league={L} -v season={s} -f sql/load_league.sql\n"
+        print("\n--dry-run: the database was not modified. To apply:\n"
+              + "".join(f"  psql -d {a.db} -v league={L} -v season={s} -f sql/load_league.sql\n"
+                        for L in leagues) +
               f"  psql -d {a.db} -f sql/load_athletes_league.sql\n"
               f"  # then, per league: build_dims.py athlete --leagues <one>, and\n"
               f"  # per league: split_leagues -> setup_role -> comment_tables -> "
@@ -243,11 +268,13 @@ def main():
     #
     # The load, the dimension refresh and the game-context enrichment are all inside that
     # one transaction, which is why there is no separate enrich step here any more.
-    psql(a.db, "-v", f"league={L}", "-v", f"season={s}", "-f", "sql/load_league.sql")
+    for L in leagues:
+        psql(a.db, "-v", f"league={L}", "-v", f"season={s}", "-f", "sql/load_league.sql")
 
     # The athlete dimension is global across BOTH leagues and both facts, so it is replaced
     # wholesale from the extract build_dims just wrote. The bridge is per league and this
-    # reloads both, which is correct and cheap.
+    # reloads both, which is correct and cheap. It puts back the athlete ids every
+    # load_league.sql above just reloaded the facts without, so it follows the last of them.
     psql(a.db, "-f", "sql/load_athletes_league.sql")
 
     # ---------------------------------------------------------------- serving layer

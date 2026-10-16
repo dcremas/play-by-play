@@ -1415,11 +1415,13 @@ Games stopped being a weekend thing: college plays Tuesday through Saturday from
 and the NFL Thursday, Sunday and Monday. `refresh.sh` asks ESPN first —
 `scripts/new_games.py`, one scoreboard call per league per day over the last ten Eastern
 days, compared against `pbp.fact_game`, about 4 seconds — and runs the pipeline below only
-for a league holding a finished game local Postgres lacks. When both leagues have one, each
-gets its `update_season.py` and they share one pass of the verifiers, the sync and the
-snapshot push. It ends by re-checking, and warns if a game that was final when it started is
-still missing (one that finished during the run is just the next run's). One run at a time:
-a second one exits on the lock in `data/state/`. The first run, on 2026-10-15, loaded four
+for a league holding a finished game local Postgres lacks. When both leagues have one, a
+single `update_season.py --league cfb nfl` fetches, builds and loads each, then does the
+both-league half — the athlete builds, the schema split, the snapshot — once; one pass of
+the verifiers, the sync and the snapshot push follows. It ends by re-checking, and warns
+if a game that was final when it started is still missing (one that finished during the
+run is just the next run's). One run at a time: a second one exits on the lock in
+`data/state/`. The first run, on 2026-10-15, loaded four
 midweek college games in 17 minutes: 9 in `update_season.py`, 7 in the sync and verifiers,
 1 in the push.
 
@@ -1428,6 +1430,15 @@ seasons once per play it already held, ~140 s of each college-inclusive build, a
 `update_season.py` ran the combined build a second time only to restore files the
 per-league builds had overwritten; it now sets them aside and puts them back. Both changes
 produce byte-identical output, checked by diffing all five athlete files.
+
+On 2026-10-16 two-league days stopped paying for that half twice. Run as one invocation per
+league, `update_season.py` rebuilt the athletes, re-split both schemas and rewrote the
+snapshot in each, and the second copy replaced the first: 957 s for both leagues that
+morning, 558 s for the merged pass, fetch included; the whole `refresh.sh` went from 24 to
+17 minutes.
+Output byte-identical except for 6 athletes whose profiles that run fetched — a pre-existing
+one-run lag: `fetch_athletes.py` reads the kick bridge `build_dims.py athlete` writes after
+it, so a kick-only player gets a name on the run after first appearing.
 
 **To have it run itself daily at 06:00**, install
 `scripts/com.dustincremascoli.pbp-refresh.plist` (the install, run-now and remove lines are
@@ -1472,6 +1483,7 @@ The pieces, one at a time:
 ```bash
 .venv/bin/python scripts/update_season.py 2026                # college, the whole thing
 .venv/bin/python scripts/update_season.py 2026 --league nfl   # the NFL, same pipeline
+.venv/bin/python scripts/update_season.py 2026 --league cfb nfl   # both; shared half once
 .venv/bin/python scripts/update_season.py 2026 --dry-run      # fetch, build, change nothing
 .venv/bin/python scripts/update_season.py 2026 --skip-conf    # skip the ~250-call conf refetch
 .venv/bin/python scripts/update_season.py 2026 --skip-fetch   # rebuild from summaries on disk

@@ -12,9 +12,10 @@
 # runs the pipeline only for a league with a finished game local Postgres lacks -- so it is
 # safe to run any day, as often as you like, and it is what the daily launchd job runs.
 #
-# The pipeline is weekly_cfb.sh / weekly_nfl.sh's, unchanged: update_season.py per league,
-# then ONE pass of both verifiers, the both-league mirror sync and the explorer snapshot.
-# When both leagues have new games they share that second half instead of running it twice.
+# The pipeline is weekly_cfb.sh / weekly_nfl.sh's: update_season.py, then ONE pass of both
+# verifiers, the both-league mirror sync and the explorer snapshot. When both leagues have
+# new games they share all of the both-league work -- update_season.py --league cfb nfl
+# builds the athletes, splits the schemas and writes the snapshot once, not once per league.
 #
 # --notify posts a macOS notification at the end (the launchd job passes it).
 set -euo pipefail
@@ -91,10 +92,9 @@ step "Preflight: loading $LEAGUES ($SEASON)"
 ssh -o BatchMode=yes -o ConnectTimeout=15 awsvm true || { echo "cannot ssh to awsvm"; exit 1; }
 "$PY" scripts/new_games.py || echo "(could not read ESPN's scoreboard; carrying on)"
 
-for L in $LEAGUES; do
-    step "ESPN -> local Postgres -> snapshot ($L $SEASON)"
-    "$PY" scripts/update_season.py "$SEASON" --league "$L"
-done
+step "ESPN -> local Postgres -> snapshot ($LEAGUES $SEASON)"
+# $LEAGUES unquoted on purpose: one argument per league.
+"$PY" scripts/update_season.py "$SEASON" --league $LEAGUES
 
 step "Verify the cfb/nfl split, local"
 "$PY" scripts/verify_split.py --local
