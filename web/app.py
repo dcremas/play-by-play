@@ -1031,5 +1031,31 @@ def _close_on_nav(_path):
     return False, None
 
 
+# ------------------------------------------------------------------------- warm-up
+# Serve the index page once, in-process, before this worker takes a real request.
+#
+# Dash does its setup lazily, in a before_request hook (Dash._setup_server), and it
+# marks that setup done BEFORE doing it: the hook sets its flag, then builds the
+# registry of script paths it will serve and copies the @callback map in. Under
+# gunicorn's gthread workers a fresh worker's first few requests arrive together
+# -- the browser fetches a page's scripts in parallel -- and any that land while
+# the first is still building see the flag set, skip setup, and answer 500
+# '"dash" is not a registered library'. Lose react.js that way and the page never
+# starts. Every restart reopens the window, so it hit after deploys on 2026-10-10,
+# 10-12 and 10-19, and on 10-19 the 500 was cached in the browser (see the
+# suites location in deploy/pbp-plays.inc) and the page stayed stuck on reload.
+#
+# Running the setup here, at import, means it is complete before gunicorn hands
+# the worker a socket. It sits at the end of the module because the setup copies
+# the global @callback map, which must hold every callback by then. A failure
+# raises, so a worker that cannot serve its own page fails to boot (and the
+# deploy's verification fails with it) instead of serving a half-set-up app.
+with server.test_client() as _client:
+    _status = _client.get(routes.BASE).status_code
+    if _status != 200:
+        raise RuntimeError(f"warm-up: GET {routes.BASE} returned {_status}")
+del _client, _status
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=8060)

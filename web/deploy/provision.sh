@@ -239,6 +239,38 @@ code="$(curl -s -o /dev/null -w '%{http_code}' "https://pbp.dustincremascoli.com
 [[ "$code" == "200" ]] || fail "https://pbp.dustincremascoli.com${PREFIX}/ returned ${code}"
 echo "   ${PREFIX}/ returns 200 through nginx"
 
+# EVERY SCRIPT THE PAGE NEEDS, from every worker. A 200 on the index proves
+# nothing about the scripts: on 2026-10-10, 10-12 and 10-19 the index was fine
+# while a fresh worker answered react.js with a 500 (the Dash startup race the
+# warm-up in web/app.py closes), and without React the page hangs on "Loading".
+# Fetched in parallel, four rounds, so both workers answer and requests overlap
+# the way a browser's do.
+scripts="$(curl -s "https://pbp.dustincremascoli.com${PREFIX}/" \
+           | grep -oE "src=\"${PREFIX}/_dash-component-suites/[^\"]+\"" | cut -d'"' -f2 || true)"
+[[ -n "$scripts" ]] || fail "found no _dash-component-suites scripts on ${PREFIX}/"
+bad="$(for _ in 1 2 3 4; do
+           for s in $scripts; do
+               curl -s -o /dev/null -w "%{http_code} ${s}\n" "https://pbp.dustincremascoli.com${s}" &
+           done
+           wait
+       done | grep -v '^200 ' || true)"
+[[ -z "$bad" ]] || fail "page scripts did not all load:
+${bad}"
+echo "   all $(wc -w <<<"$scripts") page scripts return 200 through nginx (4 parallel rounds)"
+
+# AN ERROR MUST NEVER BE CACHED. The suites location marks its answers immutable
+# for a year; if that header ever reaches an error again (an `always` on the
+# add_header), one bad answer pins a broken page in a visitor's browser until
+# they clear it. Probed with a path Dash refuses, which answers 500.
+hdr="$(curl -s -D - -o /dev/null \
+       "https://pbp.dustincremascoli.com${PREFIX}/_dash-component-suites/no-such-package/x.v0m0.js")"
+code="$(awk 'NR==1{print $2}' <<<"$hdr")"
+[[ "$code" =~ ^[45] ]] || fail "the bad-path probe returned ${code}, expected an error"
+if grep -qi '^cache-control:.*max-age=[1-9]' <<<"$hdr"; then
+    fail "an error (${code}) under _dash-component-suites carries a cacheable Cache-Control -- an \`always\` is back in pbp-plays.inc"
+fi
+echo "   an error under the suites location is not cacheable (${code}, no max-age)"
+
 # The Streamlit agent at / must be UNDISTURBED. This is the assertion that makes
 # sharing a hostname safe: it is the thing a bad location block would break, and
 # it would break silently because nobody testing the new app would load the old one.

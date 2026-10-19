@@ -61,8 +61,16 @@ location ^~ /plays/_dash-component-suites/ {
     # was silently not being applied to the max-age it qualifies. Dropping the
     # add_header instead would also give one header, but loses `immutable`, which
     # is the directive that stops a reload revalidating ~4 MB of JavaScript.
+    #
+    # NO `always`. Without it nginx adds the header to 2xx/3xx answers only;
+    # with it, an ERROR got the year too. On 2026-10-19 a freshly restarted
+    # worker answered react.js with a 500 (the startup race now closed by the
+    # warm-up at the end of web/app.py), the browser kept that 500 as an
+    # immutable year-long copy, and every reload after it hung on "Loading".
+    # The hide above still strips Dash's own header from an error, so an error
+    # leaves here with no Cache-Control at all and is never stored.
     proxy_hide_header Cache-Control;
-    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header Cache-Control "public, max-age=31536000, immutable";
 }
 
 location ^~ /plays/assets/ {
@@ -76,9 +84,10 @@ location ^~ /plays/assets/ {
     # Dash sends `no-cache` here, which would revalidate app.css and resize.js on
     # every navigation. The ?m= buster already guarantees freshness across a
     # deploy, so five minutes is both safe and strictly better. Hidden and
-    # replaced rather than appended, for the same reason as above.
+    # replaced rather than appended, for the same reason as above, and without
+    # `always` for the same reason: an error is not cached even for five minutes.
     proxy_hide_header Cache-Control;
-    add_header Cache-Control "public, max-age=300" always;
+    add_header Cache-Control "public, max-age=300";
 }
 
 # Dash's machinery: the callback endpoint every interaction lands on, plus the
