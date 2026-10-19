@@ -33,7 +33,7 @@ SITES = [
 SITES_CURRENT = "plays"
 SITES_LABEL = "Everything here"
 BUILT_WITH = "Built with Python, Dash and DuckDB — self-hosted on AWS EC2 behind nginx."
-CREDIT = "Produced with the aid of Claude Code's Command Line tools..."
+CREDIT = "Produced with the help of Claude Code."
 SOCIALS = [
     ("GitHub", "https://github.com/dcremas"),
     ("LinkedIn", "https://www.linkedin.com/in/dustin-cremascoli-662105423"),

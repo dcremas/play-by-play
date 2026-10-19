@@ -37,7 +37,7 @@ SITES_CURRENT = "pbp"
 SITES_LABEL = "Everything here"
 # {model} is the provider's name, from agent.MODEL_FAMILY, so the footer follows a switch.
 BUILT_WITH = "Built with Python, Streamlit and {model} — self-hosted on AWS EC2 behind nginx."
-CREDIT = "Produced with the aid of Claude Code&#39;s Command Line tools..."
+CREDIT = "Produced with the help of Claude Code."
 SOCIALS = [
     ("GitHub", "https://github.com/dcremas"),
     ("LinkedIn", "https://www.linkedin.com/in/dustin-cremascoli-662105423"),
