@@ -97,8 +97,11 @@ def grid(gid: str, mode: str = "dark", *, infinite: bool = False,
     """
     opts = {
         **theme.GRID_OPTS,
-        "rowSelection": "single",          # AG Grid 32 string API
-        "suppressRowClickSelection": False,
+        # The object API (AG Grid 32.2+). The string "single" and
+        # suppressRowClickSelection still worked but logged a deprecation warning
+        # on every page load. Same behaviour: a click selects one row, no checkboxes.
+        "rowSelection": {"mode": "singleRow", "checkboxes": False,
+                         "enableClickSelection": True},
         "domLayout": "normal",
         "suppressMenuHide": False,
     }
@@ -126,7 +129,11 @@ def grid(gid: str, mode: str = "dark", *, infinite: bool = False,
     else:
         kw["rowData"] = rows or []
     if row_id:
-        kw["getRowId"] = f"params.data.{row_id}"
+        # AG Grid wants a string id; the ids here are integers (team_id, player_id),
+        # which it cast itself, with a console warning (#25) on every load. Concatenate
+        # rather than String(...): dash-ag-grid evaluates this with its own restricted
+        # expression parser, and String(...) came back undefined for every row.
+        kw["getRowId"] = f"'' + params.data.{row_id}"
     return dag.AgGrid(**kw)
 
 
