@@ -28,6 +28,10 @@ SITES = [
     ("plays", "Play Explorer", "https://pbp.dustincremascoli.com/plays/"),
     ("typing", "PromptPace", "https://typing.dustincremascoli.com/"),
     ("recipes", "Recipes", "https://recipes.dustincremascoli.com/"),
+    # The three games joined the row 2026-10-25.
+    ("mahjong", "Mahjong Solitaire", "https://mahjong.dustincremascoli.com/"),
+    ("dtiles", "D-Tiles", "https://dtiles.dustincremascoli.com/"),
+    ("solitaire", "Solitaire", "https://solitaire.dustincremascoli.com/"),
 ]
 
 SITES_CURRENT = "plays"
