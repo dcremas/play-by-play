@@ -353,6 +353,15 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
    that grew the page: CLS 0.26-0.33 on a phone, all of it the footer (Lighthouse,
    2026-10-27). A screen's height keeps it below the fold from the first paint. */
 #page { min-height: 100vh; }
+/* The explorer's tiles arrive by callback. Once the charts stopped mounting at load
+   (pages/explorer.py) the grain row under them painted first and was pushed down by
+   the tiles: CLS 0.09 of 0.13. While the block is still empty it holds the height
+   the landing view (offense, college) fills, measured 2026-10-27 at 412px, 768px
+   and 1350px; the breakpoints are SimpleGrid's (2 tiles a row, then 3, then 6).
+   Re-measure if the tiles or their notes change. */
+#ex-kpis:empty { min-height: 456px; }
+@media (min-width: 48em) { #ex-kpis:empty { min-height: 281px; } }
+@media (min-width: 75em) { #ex-kpis:empty { min-height: 132px; } }
 .st-footer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .st-footer a:hover { color: var(--st-ink); }
 .st-footer-source { margin: 0; }

@@ -25,20 +25,21 @@ def layout(mode: str = "dark"):
         # Collapsed by default since 2026-09-09. The plays grid is what this page is
         # for, and starting with three 340px charts above it pushed the first row of
         # detail off most screens. The section keeps its label and chevron, so it reads
-        # as collapsed rather than absent, and one click restores it. The chart
-        # callbacks still fire while it is shut -- they are cheap against a local
-        # snapshot, and gating them on the accordion would serve stale figures the
-        # moment it opened.
+        # as collapsed rather than absent, and one click restores it.
+        #
+        # The charts themselves do not exist until that first click (2026-10-27). Shut
+        # but mounted, they still loaded plotly.js and drew three figures nobody could
+        # see, on the main thread a phone needed for the tiles and the grid. The first
+        # open creates them (_mount_charts), which fires _charts against the CURRENT
+        # filters -- so nothing is ever stale -- and from then on they stay mounted and
+        # follow the sidebar as before.
         dmc.Accordion(
+            id="ex-shape",
             value=None, variant="separated", radius="sm", chevronPosition="right",
             children=[dmc.AccordionItem(value="shape", children=[
                 dmc.AccordionControl(dmc.Text("Shape of the current selection", size="xs",
                                               fw=600)),
-                dmc.AccordionPanel(dmc.SimpleGrid(
-                    id="ex-chartgrid", cols={"base": 1, "lg": 3}, spacing="sm",
-                    children=[ui.graph("ex-c1", 320), ui.graph("ex-c2", 320),
-                              ui.graph("ex-c3", 320)],
-                )),
+                dmc.AccordionPanel(html.Div(id="ex-chart-slot")),
             ])],
         ),
         dmc.Group(justify="space-between", align="flex-end", children=[
@@ -206,6 +207,24 @@ def _kpis(flt, mode):
 
 
 # --------------------------------------------------------------------------- charts
+@callback(
+    Output("ex-chart-slot", "children"),
+    Input("ex-shape", "value"),
+    State("ex-chart-slot", "children"),
+    prevent_initial_call=True,
+)
+def _mount_charts(opened, mounted):
+    """Create the three charts the first time the accordion opens; see layout().
+    Closing it again leaves them mounted, so a reopen is instant and the figures
+    _charts has kept current are still there."""
+    if opened != "shape" or mounted:
+        raise PreventUpdate
+    return dmc.SimpleGrid(
+        id="ex-chartgrid", cols={"base": 1, "lg": 3}, spacing="sm",
+        children=[ui.graph("ex-c1", 320), ui.graph("ex-c2", 320), ui.graph("ex-c3", 320)],
+    )
+
+
 @callback(
     Output("ex-c1", "figure"), Output("ex-c2", "figure"), Output("ex-c3", "figure"),
     Output("ex-c3", "style"), Output("ex-chartgrid", "cols"),

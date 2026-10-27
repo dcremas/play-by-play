@@ -543,9 +543,14 @@ is for and three 340px charts above it pushed the first row of detail off most s
 section keeps its label and chevron so it reads as collapsed rather than absent, and the grid
 grew from 620px to 720px with the space. Two consequences to know:
 
-- **The chart callbacks still fire while the section is shut.** They are cheap against a
-  local snapshot, and gating them on the accordion would serve stale figures the moment it
-  opened. If they ever stop being cheap, cache them — do not gate them.
+- **The charts are created on the section's first open, not at page load (2026-10-27).**
+  Shut but mounted, they loaded plotly.js and drew three figures nobody could see, on the
+  main thread a phone needed for the tiles and grid. The callbacks are still **not gated**:
+  `_mount_charts` only adds the three `dcc.Graph`s to the panel, and their appearing fires
+  `_charts` against the current filters, so the first figures are never stale. After that
+  they stay mounted through close and reopen and follow the sidebar as before. Do not
+  replace this with an `Input` on the accordion's value inside `_charts`: that is the
+  gating which serves stale figures.
 - **Stat-tile rows size to their content**, `min(len(tiles), 6)` columns rather than a fixed
   6. The kicks lens has five tiles since the Unknown-outcome one was dropped, and a
   six-column grid left the row stopping short with dead space on the right.
