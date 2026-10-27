@@ -33,6 +33,10 @@ app = dash.Dash(
     # unchanged -- so the routes Flask registers and the URLs the browser asks
     # for are the same strings. See web/routes.py.
     url_base_pathname=routes.BASE,
+    # Vendored files are fetched on demand, never as page-wide <script> tags: see
+    # assets/plotly-basic.js for the one that lives there. assets_path_ignore, not
+    # assets_ignore: the latter only ever sees bare file names, never a folder.
+    assets_path_ignore=[r"^vendor$"],
 )
 server = app.server
 
@@ -775,17 +779,26 @@ def _collect(*vals):
 
 @app.callback(
     Output("f-players", "data"),
+    Output("f-players", "nothingFoundMessage"),
+    Input("f-players", "searchValue"),
+    Input("f-players", "value"),
     Input("f-phases", "value"),
     Input("lens", "data"),
     Input("league", "data"),
 )
-def _player_options(phases, key, lg):
+def _player_options(search, picked, phases, key, lg):
     """Scope the player picker to the lens and the selected phases -- a punter is not
-    a candidate when only field goals are on screen, and neither is a quarterback."""
+    a candidate when only field goals are on screen, and neither is a quarterback.
+
+    Searched on the server, one keystroke at a time: see data.search_players for why
+    the browser no longer gets the whole list."""
     key = lens.resolve(key)
     chips = [c for c in (phases or []) if c in lens.PHASES[key]]
-    return data.player_options(key, tuple(sorted(chips or lens.default_chips(key))),
-                               league.resolve(lg))
+    opts = data.search_players(key, tuple(sorted(chips or lens.default_chips(key))),
+                               league.resolve(lg), search, tuple(picked or ()))
+    typed = len((search or "").strip()) >= data.PLAYER_SEARCH_MIN
+    return opts, ("Nobody over the volume floor" if typed
+                  else "Type two or more letters of a name")
 
 
 @app.callback(

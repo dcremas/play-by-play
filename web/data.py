@@ -934,6 +934,32 @@ def player_options(key: str, phases: tuple[str, ...] = (),
     ]
 
 
+# What the picker needs typed before it searches, and the most matches it returns.
+PLAYER_SEARCH_MIN = 2
+PLAYER_SEARCH_LIMIT = 100
+
+
+def search_players(key: str, phases: tuple[str, ...], league_key: str | None,
+                   text: str | None, keep: tuple[str, ...] = ()) -> list[dict]:
+    """The picker's options: what is already picked, plus matches for what is typed.
+
+    The whole list used to ship on every page load -- 670 KB of JSON for offense, the
+    largest response on the page and much of its 4.9 s of main-thread work on a phone
+    (Lighthouse, 2026-10-27). Now the browser holds only what it shows. Picked players
+    stay in the list so their pills keep their labels. Matching is the same
+    case-insensitive substring test on the label that Mantine applies client-side, so
+    the two filters never disagree about what belongs.
+    """
+    opts = player_options(key, phases, league_key)
+    keep_set = set(keep)
+    picked = [o for o in opts if o["value"] in keep_set]
+    t = (text or "").strip().lower()
+    if len(t) < PLAYER_SEARCH_MIN:
+        return picked
+    hits = [o for o in opts if o["value"] not in keep_set and t in o["label"].lower()]
+    return picked + hits[:PLAYER_SEARCH_LIMIT]
+
+
 # --------------------------------------------------------------------------- json safety
 def records(df: pd.DataFrame) -> list[dict]:
     """DataFrame -> JSON-safe records for AG Grid.

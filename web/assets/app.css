@@ -348,6 +348,11 @@ a.st-link:hover { border-bottom-color: var(--st-ink); }
   border-top: 1px solid var(--st-border);
   font-size: 11px; color: var(--st-muted); line-height: 1.3;
 }
+/* #page is empty until the route callback fills it, so without a floor the footer
+   painted just under the season band and was then shoved down, once per callback
+   that grew the page: CLS 0.26-0.33 on a phone, all of it the footer (Lighthouse,
+   2026-10-27). A screen's height keeps it below the fold from the first paint. */
+#page { min-height: 100vh; }
 .st-footer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .st-footer a:hover { color: var(--st-ink); }
 .st-footer-source { margin: 0; }

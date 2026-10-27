@@ -590,3 +590,22 @@ Three implementation notes that cost real debugging time:
   background tab neither fires and every chart measures stale — which looks exactly
   like the bug. A hidden tab reports `document.visibilityState === "hidden"` and zero
   animation frames; check that before believing a measurement.
+- **The page loads plotly.js's basic bundle, not the full one (2026-10-27).**
+  `assets/plotly-basic.js` points `dcc.Graph`'s lazy loader at
+  `assets/vendor/plotly-basic-4.0.0.min.js` (scatter, bar, pie: 1.2 MB, 395 KB gzipped)
+  instead of the 4.2 MB bundle inside the plotly package. Every chart here is `go.Scatter`
+  or `go.Bar`. Two things to keep in step:
+
+  | if you… | then… |
+  |---|---|
+  | upgrade the `plotly` package | check `get_plotlyjs_version()` and vendor the matching `plotly.js-basic-dist-min` from npm (`npm pack`, which checks the registry's integrity hash) |
+  | add a heatmap, histogram, box or any other trace type | delete `assets/plotly-basic.js` to go back to the full bundle |
+
+  `app.py` keeps `assets/vendor/` out of Dash's automatic `<script>` tags with
+  `assets_path_ignore`, which matches folders. `assets_ignore` only ever sees bare file
+  names, so a `vendor/` pattern there silently matches nothing and the bundle loads on
+  every page.
+- **The player picker is searched on the server (2026-10-27).** The full option list was
+  670 KB of JSON on every page load. `data.search_players` now returns only matches for
+  what has been typed (two letters minimum, 100 results at most), plus the players already
+  picked, so their pills keep their labels.
