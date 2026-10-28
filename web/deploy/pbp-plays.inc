@@ -71,6 +71,13 @@ location ^~ /plays/_dash-component-suites/ {
     # leaves here with no Cache-Control at all and is never stored.
     proxy_hide_header Cache-Control;
     add_header Cache-Control "public, max-age=31536000, immutable";
+    # Any add_header here cancels the vhost's own, so its security headers are
+    # repeated (missing on these JavaScript and CSS responses until 2026-10-28).
+    # These DO take `always`: unlike Cache-Control, they belong on an error too.
+    add_header X-Content-Type-Options    "nosniff"                         always;
+    add_header X-Frame-Options           "SAMEORIGIN"                      always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000"                always;
 }
 
 location ^~ /plays/assets/ {
@@ -88,6 +95,11 @@ location ^~ /plays/assets/ {
     # `always` for the same reason: an error is not cached even for five minutes.
     proxy_hide_header Cache-Control;
     add_header Cache-Control "public, max-age=300";
+    # Security headers repeated, as in the block above.
+    add_header X-Content-Type-Options    "nosniff"                         always;
+    add_header X-Frame-Options           "SAMEORIGIN"                      always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000"                always;
 }
 
 # Dash's machinery: the callback endpoint every interaction lands on, plus the
