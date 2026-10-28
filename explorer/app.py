@@ -423,3 +423,5 @@ estate.footer(
     "budget that resets at 00:00 UTC.",
     model=agent.MODEL_FAMILY,
 )
+# Last of all: shows the page, which static/first-paint.css hides until the script is done.
+style.reveal()

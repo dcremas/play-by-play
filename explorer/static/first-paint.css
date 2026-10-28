@@ -1,0 +1,17 @@
+/* Linked from Streamlit's index.html by mcp_server/deploy/provision.sh, so it applies
+   before the app's first paint -- unlike style.py's stylesheet, which arrives through
+   st.html. Streamlit loads st.html's code on demand, and until it lands every st.html
+   element (the stylesheet, the header, the eyebrows and labels) is a placeholder while
+   the widgets around it render, and the cards restyle once the stylesheet applies:
+   layout shifts of 0.08-0.29 per load (2026-10-28). So the app view stays hidden until
+   style.reveal(), the last thing app.py draws, shows it, and everything appears at
+   once, in place, on the dotted page (drawn by stApp, outside what is hidden). If that never happens, it
+   shows anyway after 6 seconds. provision.sh also preloads the Inter font, so the
+   text doesn't reflow when it lands. Same approach as Ask Weather's. */
+[data-testid="stAppViewContainer"] > * {
+  visibility: hidden;
+  animation: pp-first-paint 0s linear 6s forwards;
+}
+@keyframes pp-first-paint {
+  to { visibility: visible; }
+}

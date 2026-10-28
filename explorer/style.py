@@ -209,6 +209,17 @@ def inject() -> None:
     st.html(_CSS + _ASK_JS, unsafe_allow_javascript=True)
 
 
+def reveal() -> None:
+    """Show the page, which static/first-paint.css hides until now. Call once, last.
+
+    Last rather than in the stylesheet, so the page appears once the whole script has
+    rendered: the Reference card's tabs fill in from MCP calls, and revealed any
+    earlier they resized the card under a phone visitor's eyes (2026-10-28).
+    """
+    st.html("<style>[data-testid=\"stAppViewContainer\"] > * "
+            "{ visibility: visible; animation: none; }</style>")
+
+
 def header(tagline: str) -> None:
     st.html(
         '<h1 class="pp-brand">'
