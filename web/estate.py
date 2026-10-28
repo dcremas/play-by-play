@@ -32,6 +32,7 @@ SITES = [
     ("mahjong", "Mahjong Solitaire", "https://mahjong.dustincremascoli.com/"),
     ("dtiles", "D-Tiles", "https://dtiles.dustincremascoli.com/"),
     ("solitaire", "Solitaire", "https://solitaire.dustincremascoli.com/"),
+    ("sudoku", "Sudoku", "https://sudoku.dustincremascoli.com/"),
 ]
 
 SITES_CURRENT = "plays"
