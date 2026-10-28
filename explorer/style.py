@@ -214,10 +214,20 @@ def reveal() -> None:
 
     Last rather than in the stylesheet, so the page appears once the whole script has
     rendered: the Reference card's tabs fill in from MCP calls, and revealed any
-    earlier they resized the card under a phone visitor's eyes (2026-10-28).
+    earlier they resized the card under a phone visitor's eyes (2026-10-28). And only
+    once no loading placeholder (stSkeleton) is left: st.pills' code is loaded on
+    demand too, and on the live server the script finished first, so the example
+    chips appeared a moment after the reveal and pushed the page down. A browser
+    without :has() just reveals here.
     """
-    st.html("<style>[data-testid=\"stAppViewContainer\"] > * "
-            "{ visibility: visible; animation: none; }</style>")
+    st.html(
+        "<style>"
+        "[data-testid=\"stAppViewContainer\"]:not(:has([data-testid=\"stSkeleton\"])) > * "
+        "{ visibility: visible; animation: none; }"
+        "@supports not selector(:has(a)) {"
+        " [data-testid=\"stAppViewContainer\"] > * { visibility: visible; animation: none; } }"
+        "</style>"
+    )
 
 
 def header(tagline: str) -> None:
