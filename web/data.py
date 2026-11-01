@@ -832,12 +832,23 @@ def dist_bounds(league_key: str | None = None) -> tuple[int, int]:
     return int(lo), int(hi)
 
 
-@functools.lru_cache(maxsize=16)
-def team_options(key: str, league_key: str | None = None) -> list[dict]:
+@functools.lru_cache(maxsize=128)
+def team_options(key: str, league_key: str | None = None, conferences: tuple[str, ...] = (),
+                 seasons: tuple[int, int] | None = None) -> list[dict]:
+    """The subject-team list, optionally narrowed to the teams that played in
+    `conferences`. Membership is read off the plays rather than dim_team, because
+    conference resolves on (team_id, season) -- Texas is SEC only from 2024 -- so the
+    narrowing has to respect the season range, or it offers a team that the conference
+    filter would then match nothing for."""
+    scope = ""
+    if conferences:
+        scope = f" AND {in_list('conference', conferences)}"
+        if seasons:
+            scope += f" AND season BETWEEN {int(seasons[0])} AND {int(seasons[1])}"
     df = q(f"""
         SELECT team_id, any_value(team) AS team, count(*) AS n
         FROM {lens.view(lens.resolve(key), league_key)}
-        WHERE team_id IS NOT NULL AND {_lg(league_key)}
+        WHERE team_id IS NOT NULL AND {_lg(league_key)}{scope}
         GROUP BY team_id ORDER BY team
     """)
     return [{"value": str(r.team_id), "label": r.team} for r in df.itertuples()

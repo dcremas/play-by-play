@@ -120,6 +120,13 @@ def sidebar() -> list:
         dmc.MultiSelect(id="f-teams", data=data.team_options(key), value=[], size="sm",
                         searchable=True, clearable=True, hidePickedOptions=True,
                         placeholder="All teams", nothingFoundMessage="No team"),
+        # The subject's conference, so it sits with the subject. It lived under
+        # "Opponent & competition" behind the disclosure, which both hid it and filed it
+        # under the wrong side -- it narrows the team the lens is about, not the opponent.
+        _label("Conference", "lbl-conferences"),
+        dmc.MultiSelect(id="f-conferences", data=data.conference_options(key), value=[],
+                        size="sm", searchable=True, clearable=True, hidePickedOptions=True,
+                        placeholder="All conferences", nothingFoundMessage="No conference"),
         _label(lens.PLAYER[key], "lbl-players", hint_id="f-player-note"),
         dmc.MultiSelect(id="f-players", data=[], value=[], size="sm", searchable=True,
                         clearable=True, limit=200, hidePickedOptions=True,
@@ -162,12 +169,6 @@ def sidebar() -> list:
                                             value=[], size="xs", searchable=True,
                                             clearable=True,
                                             placeholder="All opponents"),
-                            _label("Conference", "lbl-conferences"),
-                            dmc.MultiSelect(id="f-conferences",
-                                            data=data.conference_options(key),
-                                            value=[], size="xs", searchable=True,
-                                            clearable=True,
-                                            placeholder="All conferences"),
                             _label("Season type"),
                             dmc.MultiSelect(id="f-season-types",
                                             data=["regular", "postseason"], value=[],
@@ -623,7 +624,41 @@ def _relabel(key):
 
 
 @app.callback(
-    Output("f-teams", "data"), Output("f-opponents", "data"),
+    Output("f-teams", "data"),
+    Output("f-teams", "value"),
+    Input("lens", "data"),
+    Input("league", "data"),
+    Input("f-conferences", "value"),
+    Input("f-seasons", "value"),
+    Input("f-reset", "n_clicks"),
+    State("f-teams", "value"),
+)
+def _team_list(key, lg, confs, seasons, _n_reset, picked):
+    """The Team picker, narrowed to the picked conferences over the picked seasons.
+
+    Its own callback rather than part of _option_lists because the opponent picker
+    shares that list and must NOT narrow -- the conference facet is the subject's, so
+    "SEC offenses against anyone" still needs every opponent on offer.
+
+    A picked team that falls outside the narrowed list is dropped from the selection,
+    not kept: conference and team AND together, so keeping it would only ever empty the
+    grid. That makes this callback a writer of the value, and Dash allows one writer per
+    output, so it also owns Reset for this control (see _RESET_TARGETS).
+    """
+    key, lg = lens.resolve(key), league.resolve(lg)
+    if ctx.triggered_id == "f-reset":
+        return data.team_options(key, lg), []
+    confs = tuple(sorted(confs or ()))
+    if not confs:
+        return data.team_options(key, lg), no_update
+    teams = data.team_options(key, lg, confs, tuple(seasons) if seasons else None)
+    have = {t["value"] for t in teams}
+    kept = [p for p in (picked or []) if p in have]
+    return teams, (kept if kept != list(picked or []) else no_update)
+
+
+@app.callback(
+    Output("f-opponents", "data"),
     Output("f-conferences", "data"), Output("f-surfaces", "data"),
     Output("f-outcomes", "data"), Output("f-zones", "data"),
     Output("f-division-chips", "children"),
@@ -643,7 +678,7 @@ def _option_lists(key, lg, _n_reset):
     divs = data.division_options(key, lg)
     chips = dmc.Group(gap=4, children=[
         dmc.Chip(d, value=d, size="xs", variant="light") for d in divs])
-    return (teams, teams, data.conference_options(key, lg), data.surface_options(key, lg),
+    return (teams, data.conference_options(key, lg), data.surface_options(key, lg),
             data.outcome_options(key, lg), data.zone_options(key, lg),
             # Cleared with the league: 'FBS' is not a value the NFL column can hold, so a
             # selection carried across leagues would match nothing and look like an empty
@@ -749,11 +784,13 @@ _RESET = {
 
 # phases, players, outcomes and divisions are reset by the lens/league-scoped
 # callbacks above, which already own those outputs -- divisions joined them when the
-# league axis arrived, because 'FBS' is not a value the NFL column can hold. Dash
+# league axis arrived, because 'FBS' is not a value the NFL column can hold. teams
+# joined when _team_list began dropping picks outside the chosen conference. Dash
 # allows one writer per output, so they are not in the list the Reset button writes;
 # each of those callbacks takes f-reset as an Input instead.
 _RESET_TARGETS = [t for t in _FILTER_INPUTS
-                  if t[0] not in ("phases", "players", "outcomes", "divisions", "weeks")]
+                  if t[0] not in ("phases", "players", "outcomes", "divisions", "weeks",
+                                  "teams")]
 
 
 @app.callback(
@@ -815,7 +852,7 @@ def _reset(_n):
 # three lists together are every facet EXCEPT the five that stayed above the fold --
 # those are visible, so they need no badge to announce themselves.
 _GROUPS = {
-    "opp": ("opponents", "conferences", "season_types", "fbs_only", "conf_game"),
+    "opp": ("opponents", "season_types", "fbs_only", "conf_game"),
     "sit": ("qtrs", "score_states", "downs", "zones", "dist", "clutch_only"),
     "env": ("surfaces", "divisions", "neutral", "roof", "linked_only"),
 }
