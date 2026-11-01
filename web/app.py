@@ -1100,12 +1100,17 @@ def _close_on_nav(_path):
 # the global @callback map, which must hold every callback by then. A failure
 # raises, so a worker that cannot serve its own page fails to boot (and the
 # deploy's verification fails with it) instead of serving a half-set-up app.
-with server.test_client() as _client:
-    _status = _client.get(routes.BASE).status_code
-    if _status != 200:
-        raise RuntimeError(f"warm-up: GET {routes.BASE} returned {_status}")
-del _client, _status
-
-
+#
+# Skipped under `python -m web.app`. app.run(debug=True) registers Dash's dev-tools
+# error handler, and Flask refuses any setup call once the app has served a request
+# -- so warming up first killed the dev server at startup ("The setup method
+# 'errorhandler' can no longer be called"). The race is gunicorn's to lose; the
+# development server is one person's browser and never serves the deployment.
 if __name__ == "__main__":
     app.run(debug=True, port=8060)
+else:
+    with server.test_client() as _client:
+        _status = _client.get(routes.BASE).status_code
+        if _status != 200:
+            raise RuntimeError(f"warm-up: GET {routes.BASE} returned {_status}")
+    del _client, _status
