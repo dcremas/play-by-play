@@ -386,14 +386,16 @@ def load_identity(leagues=None):
     return out
 
 
-def _dedup_view(con, name, paths):
+def _dedup_view(con, name, paths, cols="*"):
     """One view over several extracts, later files winning on play_uid.
+
+    `cols` narrows what is read from each file; it must include play_uid and season.
 
     Same rule as --plays above: the in-season run has a frozen global CSV plus a
     single-season one, and the season file is the fresher truth for the rows it holds.
     """
     parts = " UNION ALL BY NAME ".join(
-        f"SELECT *, {i} AS _ord FROM read_csv_auto('{p}', sample_size=-1)"
+        f"SELECT {cols}, {i} AS _ord FROM read_csv_auto('{p}', sample_size=-1)"
         for i, p in enumerate(paths))
     # Superseding is per SEASON, not per play_uid, for the reason spelled out in
     # stage_athlete: ESPN renumbers a corrected game's plays, so the frozen extract's copy
@@ -421,8 +423,28 @@ def scrimmage_rollup(fact_csvs, bridge_csvs):
     defender on the wrong roster, and primary_team_id is derived from exactly this count.
     """
     import duckdb
-    con = duckdb.connect()
-    _dedup_view(con, "f", fact_csvs)
+    # DuckDB's default ceiling is 80% of the machine's RAM. On the EC2 box that is ~6 GB of an
+    # 8 GB host every site shares, so the daily job caps it (PBP_DUCKDB_MEMORY in
+    # pbp-daily.service) and DuckDB spills the join to disk instead. Same result either way.
+    # Capped, it also needs fewer threads (each holds its own buffers) and no insertion-order
+    # guarantee: at 1 GB with one thread per laptop core it ran out of memory on 2026-11-05.
+    # Row order never mattered here -- the vote below breaks ties on the key, not on order.
+    # An in-memory connection has NO spill directory unless given one, so a cap alone just
+    # fails; it goes under data/, not /tmp, which on the box is RAM-backed.
+    cap = os.environ.get("PBP_DUCKDB_MEMORY")
+    cfg = {}
+    if cap:
+        cfg = {"memory_limit": cap, "preserve_insertion_order": False,
+               "threads": int(os.environ.get("PBP_DUCKDB_THREADS", "2")),
+               "temp_directory": f"{OUT}/.duckdb_spill"}
+    con = duckdb.connect(config=cfg)
+    _dedup_view(con, "f_all", fact_csvs,
+                cols="play_uid, season, offense_team_id, defense_team_id")
+    # `f` and `b` are TABLES, not views, and only the four fact columns used below are kept.
+    # As views, both final queries re-read the CSVs and recomputed the bridge join inside one
+    # plan, which needed several GB and could not spill. Materialised step by step, no step
+    # holds more than ~450 MB (profiled 2026-11-05).
+    con.execute("CREATE TEMP TABLE f AS SELECT * FROM f_all")
     con.execute("CREATE VIEW b_all AS " + " UNION ALL BY NAME ".join(
         f"SELECT play_uid, role, athlete_id, ordinal, {i} AS _ord "
         f"FROM read_csv_auto('{p}', sample_size=-1)" for i, p in enumerate(bridge_csvs)))
@@ -434,7 +456,7 @@ def scrimmage_rollup(fact_csvs, bridge_csvs):
     # contributes BOTH participant sets -- the frozen extract's and the fresh one's -- and
     # the union credits the play twice over. Joining f also drops rows for plays the fresh
     # fact no longer has, which is what makes the count below right.
-    con.execute("""CREATE VIEW b AS
+    con.execute("""CREATE TEMP TABLE b AS
                    WITH j AS (SELECT b_all.*, f.season FROM b_all
                               JOIN f ON f.play_uid = b_all.play_uid),
                         owner AS (SELECT season, max(_ord) AS top FROM j GROUP BY season)

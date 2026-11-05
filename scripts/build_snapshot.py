@@ -61,6 +61,9 @@ def build(db: str, league: str, out: str) -> None:
     if os.path.exists(out):
         os.remove(out)
     con = duckdb.connect(out)
+    # Capped on the EC2 box (PBP_DUCKDB_MEMORY in pbp-daily.service); see build_dims.py.
+    if os.environ.get("PBP_DUCKDB_MEMORY"):
+        con.execute(f"SET memory_limit = '{os.environ['PBP_DUCKDB_MEMORY']}'")
     con.execute("INSTALL postgres; LOAD postgres;")
     # The scanner parallelises a table read by opening one COPY stream per ctid range, up to
     # pg_connection_limit (64 by default). At 321k rows that is fine; at 1.5M it exhausted
