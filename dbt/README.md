@@ -13,7 +13,7 @@ ESPN → scripts/ → CSVs → sql/load_league.sql ────────→ p
 **Status: serving.** On the EC2 box, `update_season.py --transform dbt` builds `cfb_next` /
 `nfl_next` with this project every morning and swaps them into place (`deploy/README.md`). Before
 cutover every table matched what `split_leagues.sql` built, row for row (`tests/parity/`). A plain
-`dbt build` on the laptop lands in `cfb_dbt` / `nfl_dbt` and touches nothing live.
+`dbt build` in a development checkout lands in `cfb_dbt` / `nfl_dbt` and touches nothing live.
 
 ## Run it
 

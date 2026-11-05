@@ -427,7 +427,7 @@ def scrimmage_rollup(fact_csvs, bridge_csvs):
     # 8 GB host every site shares, so the daily job caps it (PBP_DUCKDB_MEMORY in
     # pbp-daily.service) and DuckDB spills the join to disk instead. Same result either way.
     # Capped, it also needs fewer threads (each holds its own buffers) and no insertion-order
-    # guarantee: at 1 GB with one thread per laptop core it ran out of memory on 2026-11-05.
+    # guarantee: at 1 GB with one thread per core on an 8-core machine it ran out of memory on 2026-11-05.
     # Row order never mattered here -- the vote below breaks ties on the key, not on order.
     # An in-memory connection has NO spill directory unless given one, so a cap alone just
     # fails; it goes under data/, not /tmp, which on the box is RAM-backed.

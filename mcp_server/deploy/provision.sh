@@ -108,7 +108,7 @@ log "Code"
 mkdir -p /opt/pbp-mcp
 # --delete keeps the target a mirror, but must never remove the venv.
 #
-# .env IS EXCLUDED DELIBERATELY. The laptop's .env holds the real password at
+# .env IS EXCLUDED DELIBERATELY. A development checkout's .env holds the real password at
 # mode 600; copying it to /opt would put the credential in a world-traversable
 # directory AND in a second place to rotate. On the box the password comes from
 # /etc/pbp-mcp/mcp.env via the unit's EnvironmentFile, and db.py's _load_env()
@@ -225,7 +225,7 @@ ANTHROPIC_API_KEY=
 # Uncomment to switch models (bare gemini-*/claude-*, or provider:model). This file overrides the unit's Environment= line, so a
 # switch is this line plus `systemctl restart pbp-explorer` -- no redeploy.
 #PBPX_MODEL=claude-sonnet-5-5
-# Spend caps. Tighter than the laptop defaults: this endpoint is public. nginx cannot
+# Spend caps. Tighter than the development defaults: this endpoint is public. nginx cannot
 # enforce them -- see explorer/budget.py.
 PBPX_MAX_SESSION_QUESTIONS=10
 PBPX_MAX_DAILY_TOKENS=1500000
@@ -387,7 +387,7 @@ for L in "${LEAGUES[@]}"; do
     # THE ENVIRONMENT IS LOAD-BEARING. Connection settings live as `Environment=`
     # lines in the unit; the env files hold only the password and the port. Invoked
     # without the unit's environment, db.py falls back to its development default of
-    # port 15432 -- the laptop's SSH tunnel -- and every check fails with
+    # port 15432 -- a development SSH tunnel -- and every check fails with
     # "connection refused" against a perfectly healthy local database.
     #
     # `env $UNIT_ENV` is deliberately unquoted: systemctl returns space-separated

@@ -10,7 +10,7 @@
 -- ----------------------------------
 -- `mcp_ro` is one role shared by the weather warehouse MCP and, formerly, this
 -- one. Two things were wrong with that once this server became a public
--- text-to-SQL backend rather than a laptop tool:
+-- text-to-SQL backend rather than a developer's tool:
 --
 --   1. ONE PASSWORD IN TWO SERVICES. Both servers run as separate systemd users
 --      specifically so neither can read the other's credential file -- and then

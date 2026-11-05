@@ -22,7 +22,7 @@ measured numbers are in §10i.
 2. **Scope:** all games with at least one FBS team, including FBS-vs-FCS. Flag
    `is_conference_game` and `opponent_division`; filter at query time, never at ingest.
 3. **PATs:** in scope, as `play_kind IN ('pat','two_point')`.
-4. **Home:** local Postgres first, EC2 later if it earns it.
+4. **Home:** a development Postgres first, EC2 later if it earns it.
 
 ---
 
@@ -53,7 +53,7 @@ Measured directly from the 2021 season (840 games, 137,046 total plays):
 Rare events are still well-populated across ten years: 86 onside kicks and 92 blocked
 punts in 2021 alone → roughly 850 and 900 respectively over the full window.
 
-**200k rows is nothing.** This lives comfortably in the local Postgres or on EC2 alongside
+**200k rows is nothing.** This lives comfortably in a development Postgres or on EC2 alongside
 `weatherdata`. Storage is not a design constraint; data quality and parsing are.
 
 ## 3. Source evaluation
@@ -496,7 +496,7 @@ they are excluded rather than assigned meaningless outdoor conditions.
 3. **PAT scope:** include extra points and two-point attempts as rows? They are placekicks
    (mostly), they are ~32k rows, and they are cheap to carry. Recommend yes, with
    `play_kind='pat'`.
-4. **Where it lives:** local Postgres first, or straight onto EC2 next to `weatherdata`?
+4. **Where it lives:** a development Postgres first, or straight onto EC2 next to `weatherdata`?
 
 ## 9. Risks
 
@@ -520,7 +520,7 @@ sequence that was followed. Three of the design's estimates turned out wrong and
 are corrected in §10i; the largest was `dim_athlete`, predicted at 42,676 athletes and
 actually 62,879.
 
-Numbers in §10a–§10h were measured against the local files, not estimated.
+Numbers in §10a–§10h were measured against the downloaded files, not estimated.
 
 ### 10a. Verdict
 
@@ -688,7 +688,7 @@ not ~170 MB.
 ### 10i. Decisions — settled 2026-09-08
 
 The four questions below were open when §10 was written. All are now decided. Numbers were
-re-measured against the local files on 2026-09-08, so where they differ from §10a–§10h the
+re-measured against the downloaded files on 2026-09-08, so where they differ from §10a–§10h the
 figure here is the current one: §10 counted 2014–2025, this counts 2014–2026-to-date and
 uses `build_table.classify()` itself as the special-teams exclusion rather than a
 hand-listed type set.

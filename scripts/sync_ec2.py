@@ -1,4 +1,4 @@
-"""Push the warehouse from local Postgres to the EC2 mirror.
+"""EMERGENCY ONLY: push a development checkout's warehouse over the EC2 box's.
 
     python scripts/sync_ec2.py                      # both leagues, whole window
     python scripts/sync_ec2.py --season 2026        # the weekly in-season push
@@ -8,10 +8,11 @@
 
 WHAT THIS IS, AND WHAT IT IS NOT
 --------------------------------
-Local Postgres stays the system of record. This makes EC2 a MIRROR of it, so the
-MCP server (and anything else without a tunnel to this laptop) can read the same
-corpus. Nothing here builds data -- it replays the same loaders the local
-warehouse was built with, against a second target.
+Since 2026-11 the EC2 box is the system of record and loads itself every morning
+(scripts/daily_box.sh, deploy/README.md). Before that, a development checkout held the
+warehouse and this made the box a MIRROR of it. It now runs only with PBP_DEV_LOAD=1, to
+load the box from a checkout when the box cannot load itself. Nothing here builds data --
+it replays the same loaders the checkout's warehouse was built with, against the box.
 
 **It syncs the CSV EXTRACTS, not Postgres itself.** That is deliberate and it is
 the only version-safe route: local runs PostgreSQL 18 and the EC2 box runs 16, so
@@ -174,11 +175,11 @@ def main() -> None:
     dry = args.dry_run
 
     # Since 2026-11 the box loads itself every morning (scripts/daily_box.sh) and its Postgres
-    # is the system of record. This script pushes the laptop's copy over it, which would now
+    # is the system of record. This script pushes this checkout's copy over it, which would now
     # replace newer data with older. scripts/pull_from_box.sh goes the other way.
-    if not dry and os.environ.get("PBP_LAPTOP_LOAD") != "1":
+    if not dry and os.environ.get("PBP_DEV_LOAD") != "1":
         sys.exit("refused: the EC2 box is the system of record -- see scripts/pull_from_box.sh\n"
-                 "(PBP_LAPTOP_LOAD=1 overrides, for an emergency load from this laptop)")
+                 "(PBP_DEV_LOAD=1 overrides, for an emergency load from a development checkout)")
 
     print(f"target: {SSH_HOST}:{REMOTE_DB}  leagues: {', '.join(leagues)}"
           + (f"  season: {args.season}" if args.season else "  (whole window)"))
@@ -274,7 +275,7 @@ def main() -> None:
 # deleted -- it is stranded permanently. That happens whenever a play_uid changes
 # under a re-parse, which the `#n` duplicate-sequence suffix does by design.
 #
-# Local Postgres has accumulated 73 such orphans (two 2026 week-1 college games,
+# The development copy accumulated 73 such orphans (two 2026 week-1 college games,
 # 11 of them `#n`-suffixed). A MIRROR LOADED FROM SCRATCH HAS NONE, because the
 # orphans were never in the extracts -- they are an artefact of loading in place,
 # repeatedly, over time.

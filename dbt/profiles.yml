@@ -1,4 +1,5 @@
-# Local Postgres `pbp`, the system of record. Point dbt here with --profiles-dir . (or
+# Postgres `pbp` on this host, over its socket: the system of record on the EC2 box, a
+# development copy anywhere else. Point dbt here with --profiles-dir . (or
 # DBT_PROFILES_DIR=dbt from the repo root); nothing secret lives in this file.
 pbp:
   target: local

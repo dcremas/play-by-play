@@ -10,14 +10,15 @@
 # and the NFL Thursday, Sunday and Monday, so "run it Sunday" left every midweek game out of
 # both apps for most of a week. This asks ESPN first (scripts/new_games.py, ~4 seconds) and
 # runs the pipeline only for a league with a finished game local Postgres lacks -- so it is
-# safe to run any day, as often as you like, and it is what the daily launchd job runs.
+# safe to run any day, as often as you like. It was the daily job until the EC2 box began
+# loading itself (scripts/daily_box.sh); it is now an emergency tool for a development checkout.
 #
 # The pipeline is weekly_cfb.sh / weekly_nfl.sh's: update_season.py, then ONE pass of both
 # verifiers, the both-league mirror sync and the explorer snapshot. When both leagues have
 # new games they share all of the both-league work -- update_season.py --league cfb nfl
 # builds the athletes, splits the schemas and writes the snapshot once, not once per league.
 #
-# --notify posts a macOS notification at the end (the launchd job passes it).
+# --notify posts a desktop notification at the end, where osascript exists.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,10 +51,10 @@ fi
 
 # Since 2026-11 the EC2 box loads the warehouse itself every morning (scripts/daily_box.sh) and
 # its Postgres is the system of record. Loading here and syncing would overwrite the box's
-# newer data with this laptop's older copy. scripts/pull_from_box.sh goes the other way.
-if [[ "${PBP_LAPTOP_LOAD:-}" != 1 ]]; then
+# newer data with this checkout's older copy. scripts/pull_from_box.sh goes the other way.
+if [[ "${PBP_DEV_LOAD:-}" != 1 ]]; then
     echo "refused: the EC2 box is the system of record -- see scripts/pull_from_box.sh" >&2
-    echo "(PBP_LAPTOP_LOAD=1 overrides, for an emergency load from this laptop)" >&2
+    echo "(PBP_DEV_LOAD=1 overrides, for an emergency load from a development checkout)" >&2
     exit 1
 fi
 

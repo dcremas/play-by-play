@@ -33,7 +33,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=15 "$SSH_HOST" true \
 echo "   ${SSH_HOST} ok"
 
 log "Staging the code"
-# .env is EXCLUDED. The laptop's copy holds the real password at mode 600; the
+# .env is EXCLUDED. A development checkout's copy holds the real password at mode 600; the
 # box gets its credential from /etc/pbp-mcp/mcp.env instead, so there is exactly
 # one place to rotate it on each machine. provision.sh asserts the file did not
 # arrive.

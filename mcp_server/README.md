@@ -35,13 +35,13 @@ progress — `data_coverage` is the live answer, this table is orientation.
 
 ## 1. Why this exists
 
-The warehouse lives in local Postgres on the Mac and is read by two local apps
-through a DuckDB snapshot. Neither is reachable from Claude Desktop, claude.ai or
-a phone. This server puts the same corpus behind an MCP interface against the EC2
-mirror, so the data is available anywhere.
+The warehouse lives in PostgreSQL on the EC2 box, and its two web apps read it
+through a DuckDB snapshot. Neither is something Claude Desktop, claude.ai or a phone
+can query. This server puts the same corpus behind an MCP interface, so the data is
+available anywhere.
 
-In Claude Code on this machine it is *partly* redundant — the assistant already
-has a shell, `psql` and the tunnel. What it still buys, even there, is that **the
+From a development shell it is *partly* redundant — an assistant there already
+has `psql` and an SSH tunnel to the box. What it still buys, even there, is that **the
 domain's traps are encoded in the tools** rather than having to be remembered:
 
 - Conference membership is grained `(team, season)` and 83 of 275 teams changed
@@ -85,41 +85,33 @@ than a bare "connection refused".
 ## 3. Setup
 
 ```bash
-cd ~/projects/pbp/mcp_server
+cd play-by-play/mcp_server
 
 # 3a. Dependencies
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 
-# 3b. The two serving schemas, from the system of record. Runs on the box.
-for L in cfb nfl; do
-  ssh awsvm "sudo -u postgres psql -d pbp -v root=/var/lib/pgsql/staging -v league=$L -v schema=$L \
-             -f /var/lib/pgsql/staging/sql/split_leagues.sql"
-done
+# 3b. The role (idempotent; an administrator's step, as postgres).
+ssh awsvm 'sudo -u postgres psql -d pbp -f /opt/pbp-etl/mcp_server/setup_role_pbp.sql'
 
-# 3c. The role and its grants (idempotent). Must run AFTER 3b: split_leagues.sql
-#     does DROP SCHEMA CASCADE, and privileges go with a dropped table.
-ssh awsvm 'sudo -u postgres psql -d pbp -f /var/lib/pgsql/staging/mcp_setup/setup_role_pbp.sql'
+# 3c. The two serving schemas, with pbp_ro's grants and the caveats as COMMENTs. The
+#     box's daily job rebuilds all of it every morning (../deploy/README.md); this
+#     runs it now.
+ssh awsvm 'sudo -u pbpetl touch /opt/pbp-etl/data/state/force && sudo systemctl start pbp-daily'
 
-# 3d. The caveats, as COMMENTs — ONCE PER CORPUS. COMMENT requires ownership.
-for L in cfb nfl; do
-  ssh awsvm "sudo -u postgres psql -d pbp -v schema=$L \
-             -f /var/lib/pgsql/staging/mcp_setup/comment_tables.sql"
-done
-
-# 3e. The credential. pbp_ro is created WITHOUT a password; set one. It is this
+# 3d. The credential. pbp_ro is created WITHOUT a password; set one. It is this
 #     server's role alone, so the value is yours to choose and yours to rotate.
 ssh awsvm "sudo -u postgres psql -d pbp -c \"ALTER ROLE pbp_ro PASSWORD '<value>'\""
 cp .env.example .env && chmod 600 .env       # put the same value in MCP_DB_PASSWORD
 
-# 3f. Verify — once per corpus. MCP_DB_SCHEMA is required; there is no default.
+# 3e. Verify — once per corpus. MCP_DB_SCHEMA is required; there is no default.
 MCP_DB_SCHEMA=cfb ./.venv/bin/python -m pbp_mcp.selftest
 MCP_DB_SCHEMA=nfl ./.venv/bin/python -m pbp_mcp.selftest
 ```
 
-`scripts/sync_ec2.py` ships `setup_role_pbp.sql` and `comment_tables.sql` to
-`/var/lib/pgsql/staging/mcp_setup/` and re-runs both on every sync, so steps 3b
-and 3c are only manual on a first install.
+On a box that already serves, 3b and 3c are done: the daily job re-grants and re-comments
+every table it rebuilds. On a brand-new install, 3b creates the role and then stops at its
+grants, because the schemas do not exist yet; run 3c, then 3b again.
 
 ### One schema per league, and why the athlete dimension is rebuilt
 
@@ -221,9 +213,9 @@ the box:
 for lg in cfb nfl; do
   claude mcp add pbp-$lg \
     --scope user \
-    -e PYTHONPATH=/Users/dustincremascoli/projects/pbp/mcp_server \
+    -e PYTHONPATH=/path/to/play-by-play/mcp_server \
     -e MCP_DB_SCHEMA=$lg \
-    -- /Users/dustincremascoli/projects/pbp/mcp_server/.venv/bin/python \
+    -- /path/to/play-by-play/mcp_server/.venv/bin/python \
        -m pbp_mcp.server
 done
 ```
@@ -239,24 +231,24 @@ second, and sat failing to connect from 2026-09-25 until 2026-10-13.
 
 ### Claude Desktop
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Add to Claude Desktop's `claude_desktop_config.json` (Settings → Developer → Edit Config):
 
 ```json
 {
   "mcpServers": {
     "pbp-cfb": {
-      "command": "/Users/dustincremascoli/projects/pbp/mcp_server/.venv/bin/python",
+      "command": "/path/to/play-by-play/mcp_server/.venv/bin/python",
       "args": ["-m", "pbp_mcp.server"],
       "env": {
-        "PYTHONPATH": "/Users/dustincremascoli/projects/pbp/mcp_server",
+        "PYTHONPATH": "/path/to/play-by-play/mcp_server",
         "MCP_DB_SCHEMA": "cfb"
       }
     },
     "pbp-nfl": {
-      "command": "/Users/dustincremascoli/projects/pbp/mcp_server/.venv/bin/python",
+      "command": "/path/to/play-by-play/mcp_server/.venv/bin/python",
       "args": ["-m", "pbp_mcp.server"],
       "env": {
-        "PYTHONPATH": "/Users/dustincremascoli/projects/pbp/mcp_server",
+        "PYTHONPATH": "/path/to/play-by-play/mcp_server",
         "MCP_DB_SCHEMA": "nfl"
       }
     }
@@ -270,8 +262,8 @@ Restart Desktop — it reads that file only at launch. **Use the absolute path t
 
 ### On the EC2 box — DEPLOYED
 
-The modes above run the server **on the Mac**, reaching the box through the
-tunnel, which needs this laptop awake and the tunnel up. Since 2026-09-25 it also
+The modes above run the server **on your machine**, reaching the box's Postgres
+through an SSH tunnel, which has to be up. Since 2026-09-25 it also
 runs **on the box**, the way `weather-mcp.service` does, which is what lets
 anything else on that host — a web app in particular — reach it without a tunnel.
 
@@ -288,11 +280,10 @@ bash deploy/push.sh --tls        # …and issue the certificate, once DNS resolv
 | **Code** | `/opt/pbp-mcp`, `ReadOnlyPaths`, no `.env` — the credential comes from `/etc/pbp-mcp/mcp.env` (mode `640 root:pbpmcp`) |
 | **Connection** | local, so `MCP_DB_HOST=127.0.0.1` and `MCP_DB_PORT=5432` — no tunnel. `MCP_DB_SCHEMA=%i` picks the corpus |
 
-**`deploy/push.sh` is the code sync story `scripts/sync_ec2.py` does not have**,
-and they are deliberately separate. `sync_ec2.py` ships *data and SQL* — the CSV
-extracts, the loaders, the grant and comment files — on a weekly cadence; a full
-run takes about an hour. The server changes when its code changes. Coupling them
-would mean an hour-long data sync to ship a one-line fix.
+**`deploy/push.sh` is the code sync story the daily data job does not have**, and
+they are deliberately separate. `pbp-daily` changes *data* every morning; the server
+changes when its code changes. Coupling them would mean a 15-minute warehouse rebuild
+to ship a one-line fix.
 
 **The endpoint has no authentication, and that is the whole reason it binds
 loopback only.** `provision.sh` asserts two things every run because both fail
@@ -461,13 +452,13 @@ select table_name, string_agg(privilege_type,',') from information_schema.table_
 where grantee='pbp_ro' and table_schema='pbp' group by 1 order by 1;"
 ```
 
-**The grants do not stay granted by themselves.** `sql/split_leagues.sql` does
-`DROP TABLE` + `CREATE TABLE AS` on `play_wide`, `scrimmage_wide` and
-`season_status`, and privileges and comments go with a dropped table.
-`scripts/sync_ec2.py` therefore re-runs `setup_role_pbp.sql` and
-`comment_tables.sql` after it, every time. If someone reorders those steps, the
-next sync silently revokes access to the three tables the server depends on most —
-and the selftest's "guard allow-list matches the grants" check is what catches it.
+**The grants do not stay granted by themselves.** Every table in the serving schemas
+is rebuilt every morning, into a stage that is then swapped into place, and privileges
+and comments go with a dropped table. dbt re-grants `SELECT` to `pbp_ro` on each table
+it builds, and the daily job runs `comment_tables.sql` on the stage before the swap. If
+either step is lost, the next morning silently revokes access to the tables the server
+depends on most — and the selftest's "guard allow-list matches the grants" check is
+what catches it.
 
 **Network exposure: nothing new is reachable from outside.** The service binds
 `127.0.0.1:8771` and nothing else. No firewall rule was added, no port opened;
@@ -482,7 +473,7 @@ above exist. If it ever needs to be reachable off-box, it needs an auth story
 first; do not reach for a proxy.
 
 **The credential** lives in exactly one place per machine: `.env` (mode 600,
-gitignored) on the Mac, `/etc/pbp-mcp/mcp.env` (mode `640 root:pbpmcp`) on the
+gitignored) in a development checkout, `/etc/pbp-mcp/mcp.env` (mode `640 root:pbpmcp`) on the
 box. `provision.sh` excludes `.env` from what it ships and then **asserts the file
 did not arrive**, so there is no second copy on the box to forget. It also checks
 that `weathermcp` cannot read the pbp credential file, because that separation is
@@ -509,7 +500,7 @@ rather than letting the kernel's OOM killer pick the website on a box already
 | Tools missing in Claude Desktop | `command` is not the absolute venv python path, or Desktop was not restarted. |
 | `run_sql` says a table is "not readable" that `list_schema` lists | `guard.ALLOWED_TABLES` and the grants have drifted. They are two separate lists on purpose; the selftest compares them. |
 | A query times out at 60s | Usually a join across both facts before aggregating. Aggregate each side in a CTE, then join the CTEs — 2M scrimmage rows against 400k kick rows is a large fan-out on a 2-vCPU box. |
-| Counts differ from README.md | The mirror is only as fresh as the last `scripts/sync_ec2.py`. Check `data_coverage` against the local warehouse. |
+| Counts differ from README.md | The README's counts are dated; the box reloads every morning. `data_coverage` is the live answer, and `journalctl -u pbp-daily` shows the last load. |
 | `ModuleNotFoundError: mcp.server.mcpserver` | You are on MCP SDK v1, where the class was `FastMCP` in `mcp.server.fastmcp`. This server uses v2. |
 
 Reproduce any tool outside MCP for debugging:
@@ -557,22 +548,20 @@ mcp_server/
 Elsewhere in the repo, load-bearing for this server:
 
 ```
-sql/split_leagues.sql    builds cfb.* and nfl.* from pbp.*, one league per run.
-                         DROP SCHEMA ... CASCADE first, so it revokes grants and
-                         comments -- which is why sync_ec2.py re-applies both
-                         afterwards. Replaced sql/wide_tables.sql.
+dbt/                     builds cfb.* and nfl.* from pbp.*, one league per run,
+                         into a <league>_next stage that sql/swap_schema.sql moves
+                         into place. Grants pbp_ro itself; comment_tables.sql
+                         re-applies the comments. sql/split_leagues.sql is the
+                         older SQL-only build, kept as a fallback.
 scripts/verify_split.py  proves the two schemas are a faithful, lossless split of
                          the system of record. Run after any rebuild.
 scripts/build_dims.py    `athlete --leagues <one league>` builds the per-league
-                         dimension split_leagues.sql loads. NOT a filter of the
+                         dimension the serving layer loads. NOT a filter of the
                          combined one -- see section 3.
-scripts/sync_ec2.py      pushes local Postgres -> the EC2 mirror and rebuilds
-                         the serving layer. The only supported way to refresh.
-                         It ships DATA and SQL, never this server's code --
-                         deploy/push.sh does that, on its own cadence.
-scripts/verify_mirror.py diffs both catalogs and checksums every row, local vs
-                         mirror. It allow-lists the pbp_ro grants as mirror-only,
-                         because the role exists on the box and not on the Mac.
+scripts/daily_box.sh     the box's 06:00 job (pbp-daily.timer): loads finished
+                         games and rebuilds the serving layer with dbt. Ships
+                         DATA, never this server's code -- deploy/push.sh does
+                         that, on its own cadence. Runbook: ../deploy/README.md.
 ```
 
 ---

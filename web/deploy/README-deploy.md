@@ -138,8 +138,8 @@ would think to load the old one.
 
 `requirements-deploy.txt` is separate from the repo's `requirements.txt` and the
 difference is two lines. The pins that shape a number — `duckdb` and `pandas` —
-are identical to local, because those do the arithmetic. `numpy` is **2.4.6 on the
-box against 2.5.2 locally**, because numpy 2.5 publishes no wheel for Python 3.11.
+are identical to development, because those do the arithmetic. `numpy` is **2.4.6 on the
+box against 2.5.2 in development**, because numpy 2.5 publishes no wheel for Python 3.11.
 
 That divergence is free only because **nothing in `web/` imports numpy** — it is
 there solely as a pandas dependency. The file says so, and says what to do if that
@@ -243,17 +243,18 @@ sentence in its tooltip.
 
 ## Refreshing the snapshot
 
-The corpus on the box is a copy, and it goes stale the moment
-`scripts/update_season.py` runs. `bash scripts/weekly_cfb.sh` (college, Sunday morning)
-and `bash scripts/weekly_nfl.sh` (the NFL, after its Monday game) do all of this and the
-mirror sync -- runbook A of the top-level README. Nothing runs them on a schedule. By hand:
+The box's daily job refreshes it. `pbp-daily` (06:00 Central) loads every finished game,
+rebuilds the serving schemas, writes a new snapshot of each league and installs both into
+`/var/lib/pbp-web`, then restarts the app -- only on a day something loaded, and only after
+the run passed its checks. Runbook: `deploy/README.md` at the top of the repo. To refresh
+now, or reload after a stat correction:
 
 ```bash
-.venv/bin/python scripts/update_season.py 2026               # college
-.venv/bin/python scripts/update_season.py 2026 --league nfl  # NFL
-.venv/bin/python scripts/build_snapshot.py                   # rebuild both files
-bash web/deploy/push.sh --data                               # ship them
+ssh awsvm 'sudo -u pbpetl touch /opt/pbp-etl/data/state/force && sudo systemctl start pbp-daily'
 ```
+
+`push.sh --data` still ships a snapshot from a development checkout, for testing a build
+before the box makes one.
 
 The app reports the build time of the snapshot it is reading — the `snapshot`
 badge in the header — so the page itself says how stale it is.

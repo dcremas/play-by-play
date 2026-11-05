@@ -22,10 +22,10 @@ cd "$REPO"                             # sql/load_dims.sql resolves CSV paths fr
 
 # Since 2026-11 the EC2 box loads the warehouse itself every morning (scripts/daily_box.sh) and
 # its Postgres is the system of record. Loading here and syncing would overwrite the box's
-# newer data with this laptop's older copy. scripts/pull_from_box.sh goes the other way.
-if [[ "${PBP_LAPTOP_LOAD:-}" != 1 ]]; then
+# newer data with this checkout's older copy. scripts/pull_from_box.sh goes the other way.
+if [[ "${PBP_DEV_LOAD:-}" != 1 ]]; then
     echo "refused: the EC2 box is the system of record -- see scripts/pull_from_box.sh" >&2
-    echo "(PBP_LAPTOP_LOAD=1 overrides, for an emergency load from this laptop)" >&2
+    echo "(PBP_DEV_LOAD=1 overrides, for an emergency load from a development checkout)" >&2
     exit 1
 fi
 mkdir -p "$(dirname "$LOG")"

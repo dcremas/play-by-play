@@ -115,7 +115,7 @@ and is not.
 
 ## The look
 
-PromptPace's (`~/projects/typing/app/static/styles.css`): the palette lives twice, in
+PromptPace's (`app/static/styles.css` in the promptpace repository): the palette lives twice, in
 `.streamlit/config.toml` for what Streamlit draws and in `style.py` for the cards, header
 and footer, and the two must stay equal. Light or dark follows the visitor's OS.
 `charts.py` picks at most one chart per answer and documents each rule with the wrong

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time AWS wiring for the morning job, run from the laptop with its admin credentials.
+# One-time AWS wiring for the morning job, run from a development machine with admin credentials.
 #
 #     bash deploy/aws-setup.sh
 #

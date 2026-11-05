@@ -27,7 +27,7 @@
 \endif
 \if :{?root}
 \else
-  \set root '/Users/dustincremascoli/projects/pbp'
+  \set root '/opt/pbp-etl'
 \endif
 -- Optional. With `-v season=2026` this becomes the IN-SEASON loader: it reads the
 -- season-scoped extracts and replaces only that season within the league, leaving the other
@@ -48,7 +48,8 @@
 -- own parser and does NOT interpolate :'variables' -- it silently loads ZERO rows rather
 -- than erroring, which is the worst possible failure for a loader. COPY is ordinary SQL, so
 -- the paths below expand correctly. It needs an absolute path and a superuser (or
--- pg_read_server_files) connection; `root` defaults to this checkout.
+-- pg_read_server_files) connection; `root` defaults to the EC2 box's
+-- checkout, /opt/pbp-etl; pass -v root=... from anywhere else.
 SELECT r || '/data/out/st_plays'           || s || y || '.csv' AS st_csv,
        r || '/data/out/scrimmage_plays'    || s || y || '.csv' AS scrim_csv,
        r || '/data/out/scrimmage_athlete'  || s || y || '.csv' AS bridge_csv,

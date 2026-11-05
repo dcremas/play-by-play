@@ -5,9 +5,9 @@
 #     sudo systemctl start pbp-daily      # what the timer runs, as the pbpetl user
 #     sudo journalctl -u pbp-daily -e     # its output
 #
-# The box's Postgres is the system of record (since 2026-11). This is refresh.sh without the
-# laptop: no mirror to sync and no snapshot to ship over ssh, because the data, the database
-# and both apps all live here.
+# The box's Postgres is the system of record (since 2026-11). This is refresh.sh run where
+# the data lives: no mirror to sync and no snapshot to ship over ssh, because the data, the
+# database and both apps are all on this box.
 #
 # What it does NOT do, and who does instead:
 #   * install the snapshot where pbp-web reads it and restart the app -- that needs root, so

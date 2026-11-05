@@ -43,7 +43,7 @@ Group=pbpmcp
 WorkingDirectory=/opt/pbp-mcp
 
 # On the box Postgres is LOCAL, so there is no SSH tunnel and the port is 5432,
-# not the 15432 the laptop uses. Setting these as environment variables rather
+# not the 15432 a development tunnel uses. Setting these as environment variables rather
 # than editing .env keeps one checked-out tree working in both places -- and
 # note /opt/pbp-mcp has no .env at all: provision.sh excludes it, so the only
 # credential on the box is the EnvironmentFile below.

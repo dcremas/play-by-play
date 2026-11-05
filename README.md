@@ -7,7 +7,7 @@ be audited back to what the feed actually said.
 
 **2,436,997 plays** over **14,022 games** and **13 seasons**, across two leagues and two fact
 tables that are disjoint by construction. Counted 2026-10-12, through college week 6 and NFL
-week 5, in local Postgres and the EC2 mirror, which agree table for table:
+week 5, in the original development copy and the EC2 copy, which agreed table for table:
 
 | fact | college | NFL | what it holds |
 |---|---|---|---|
@@ -17,10 +17,11 @@ week 5, in local Postgres and the EC2 mirror, which agree table for table:
 | games with plays | 10,650 | 3,372 | `fact_game` holds 10,819 and 3,373 (14,192): ESPN carries no play-by-play for the other 170 |
 
 The numbers grow every in-season week. The live count is on
-[dustincremascoli.com](https://www.dustincremascoli.com/), refreshed hourly from the mirror.
+[dustincremascoli.com](https://www.dustincremascoli.com/), refreshed hourly from the warehouse.
 
 Built from ESPN play-by-play and nothing else — the same two endpoints for both leagues.
-Stored in local Postgres, read through a DuckDB snapshot by two applications.
+Stored in PostgreSQL on an EC2 box that loads itself every morning, and read through a
+DuckDB snapshot by two applications.
 
 > **The special-teams half is not deprecated** — it is the older, more heavily parsed, and
 > better validated of the two facts, and most of this document is still about it.
@@ -45,11 +46,11 @@ implementation notes) are kept, but nothing here depends on them.
 | **Grain** | one row per play, per league. Kicks: `kickoff` \| `punt` \| `field_goal` \| `pat` \| `two_point` \| `defensive_conversion`. Scrimmage: `rush` \| `pass` \| `sack` \| `penalty` \| `other` |
 | **Window** | 2014–2026 in both leagues. 2026 is in progress in both and flagged as such |
 | **Source** | ESPN site API (play text, venue) + ESPN core API (per-play athlete ids, athlete identity), under `college-football` and `nfl`. No API key, no other feed |
-| **Warehouse** | PostgreSQL 18.6, database `pbp`, schema `pbp`, 11 tables — **the system of record**. Mirrored to PostgreSQL 16.15 on the EC2 box ([runbook H](#h-push-the-warehouse-to-the-ec2-mirror)), where `sql/split_leagues.sql` projects it into two per-league serving schemas, `cfb` and `nfl`, of 14 tables each. `pbp-mcp@cfb` and `pbp-mcp@nfl` read one corpus apiece over the loopback |
-| **Read path** | `data/out/pbp_cfb.duckdb` (246 MB) and `pbp_nfl.duckdb` (82 MB) — **one snapshot per league**, wide `play` and `scrimmage` plus `drive`, rebuilt from Postgres in one command. No `league` column in either |
+| **Warehouse** | PostgreSQL 16.15 on the EC2 box, database `pbp`, schema `pbp`, 11 tables — **the system of record**, loaded every morning at 06:00 Central by `pbp-daily` ([runbook A](#a-pull-the-in-progress-season-forward-the-daily-job)). dbt (`dbt/`) projects it into two per-league serving schemas, `cfb` and `nfl`, of 14 tables each, and its tests gate the swap into place; `sql/split_leagues.sql` builds the same thing and is kept as a fallback. `pbp-mcp@cfb` and `pbp-mcp@nfl` read one corpus apiece over the loopback |
+| **Read path** | `data/out/pbp_cfb.duckdb` (246 MB) and `pbp_nfl.duckdb` (82 MB) — **one snapshot per league**, wide `play` and `scrimmage` plus `drive`, rebuilt from Postgres in one command. The daily job rebuilds both and installs them in `/var/lib/pbp-web`, where the deployed explorer reads them. No `league` column in either |
 | **Parse quality** | kicks: **98.04% `exact` college, 98.19% NFL**. Two different dialects, two parser modules. Scrimmage needs no parser in either league — `statYardage` and `down` are structured fields at 100% coverage |
 | **People** | one shared `dim_athlete` of 66,426 athletes, 100% named and positioned from ESPN; 32,582 appear in both facts and 2,779 in both leagues. 98.7% of college kicks and 99.9% of NFL kicks carry a kicker id |
-| **Apps** | Dash instance explorer (all 2.44M plays, through a League toggle and an Offense / Defense / Special teams lens) — **live at [pbp.dustincremascoli.com/plays/](https://pbp.dustincremascoli.com/plays/)** · Excel reports (kicks) · one-page ERD (both facts) · a 25-tool read-only MCP server over the EC2 mirror · a Streamlit text-to-SQL agent at the root of the same host |
+| **Apps** | Dash instance explorer (all 2.44M plays, through a League toggle and an Offense / Defense / Special teams lens) — **live at [pbp.dustincremascoli.com/plays/](https://pbp.dustincremascoli.com/plays/)** · Excel reports (kicks) · one-page ERD (both facts) · a 25-tool read-only MCP server over the serving schemas · a Streamlit text-to-SQL agent at the root of the same host |
 
 Does it behave like football? These come out of the data, not out of a reference book, and
 the two leagues are checked separately because they are different sports at the margin:
@@ -126,20 +127,22 @@ pbp/
 │   │                                                          scrimmage_athlete.csv, drives.csv
 │   ├── build_dims.py          conf | venue | athlete       -> the dimension CSVs
 │   ├── build_snapshot.py      Postgres cfb.*/nfl.*         -> data/out/pbp_<league>.duckdb
-│   ├── update_season.py       the weekly in-season driver; calls all of the above
-│   ├── refresh.sh             any day, both leagues: runs the two below' pipeline only
-│   │                          for a league with a finished game not yet loaded. Its
-│   │                          launchd plist sits beside it. Runbook A
+│   ├── update_season.py       the in-season driver; calls all of the above
+│   ├── daily_box.sh           THE daily job, on the EC2 box at 06:00: new_games,
+│   │                          update_season --transform dbt, verify_split. Runbook A
 │   ├── new_games.py           ESPN's finished games vs pbp.fact_game; read-only
-│   ├── weekly_cfb.sh          the Sunday college run, end to end: update_season,
-│   │                          both verifiers, the mirror, the explorer. Runbook A
-│   ├── weekly_nfl.sh          the same for the NFL, after its Monday game
-│   ├── sync_ec2.py            local Postgres -> the EC2 mirror, then the serving
-│   │                          layer, the grants and the comments. Runbook H.
+│   ├── pull_from_box.sh       the box's data/ and Postgres -> a development checkout
+│   ├── refresh.sh             EMERGENCY ONLY, from a development checkout: the loader
+│   │                          before the box loaded itself. Refuses without
+│   │                          PBP_DEV_LOAD=1, as do the three below it. Runbook H
+│   ├── weekly_cfb.sh          the same, college only, end to end
+│   ├── weekly_nfl.sh          the same for the NFL
+│   ├── sync_ec2.py            a development checkout's Postgres -> the box, then the
+│   │                          serving layer, the grants and the comments. Runbook H.
 │   ├── verify_split.py        proves cfb.*/nfl.* are a faithful, lossless split
 │   │                          of the system of record. Run after any rebuild.
-│   ├── verify_mirror.py       diffs both catalogs and checksums every row, local
-│   │                          vs mirror. The deep check behind runbook H.
+│   ├── verify_mirror.py       diffs both catalogs and checksums every row, a
+│   │                          development checkout vs the box. Runbook H.
 │   └── build_erd.py           live Postgres                -> reports/pbp_erd.pdf (2 sheets)
 │
 ├── sql/               DDL and loaders
@@ -167,9 +170,12 @@ pbp/
 ├── reports/           formatted Excel workbooks + the ERD output
 ├── explorer/          the text-to-SQL app at pbp.dustincremascoli.com — Streamlit +
 │                      a language model over the two MCP servers. Its own README.
-├── mcp_server/        read-only MCP over the EC2 mirror — 25 tools, its own README
+├── mcp_server/        read-only MCP over the box's cfb/nfl — 25 tools, its own README
 │   └── deploy/        on-box deployment: systemd unit, nginx vhost, TLS, and
-│                      push.sh, which is the code sync sync_ec2.py does not do
+│                      push.sh, which ships its code
+├── dbt/               builds the serving schemas cfb/nfl on the box; its own README
+├── deploy/            the box's daily job: systemd units, provisioning, heartbeat,
+│                      push.sh. Its README is the runbook
 │
 └── data/              ~1.2 GB, all of it re-derivable from ESPN
     ├── espn/                            COLLEGE. The NFL is data/espn_nfl/, same shape,
@@ -199,13 +205,16 @@ pbp/
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt   # first time only
-.venv/bin/python scripts/build_snapshot.py                          # Postgres -> DuckDB
+bash scripts/pull_from_box.sh --files                               # the box's data/, snapshots included
 .venv/bin/python -m web.app                                         # the explorer, :8060
 ```
 
-**Python 3.14 is required, and not by choice.** The pyenv 3.12 and 3.13 builds on this
-machine were compiled without `blake2`, which breaks `hashlib` and therefore pip. The venv
-runs 3.14.7.
+That is a development checkout. Production needs none of it: the box loads, rebuilds and
+serves on its own ([runbook A](#a-pull-the-in-progress-season-forward-the-daily-job)).
+
+**Python 3.14 is required, and not by choice.** The pyenv 3.12 and 3.13 builds this was
+developed on were compiled without `blake2`, which breaks `hashlib` and therefore pip. The
+venv runs 3.14.7.
 
 Nothing in either app talks to Postgres at runtime. They open `data/out/pbp_<league>.duckdb`
 read-only, so the explorer starts cold in about a second, any number of readers can share
@@ -216,12 +225,12 @@ explorer's header shows how old the snapshot is.
 
 | | |
 |---|---|
-| **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts in BOTH leagues; both applications, with a league toggle; the weekly in-season update per league; the ERD; the EC2 mirror and the MCP server over it |
-| **Where the data lives** | **local Postgres is the system of record.** `data/out/pbp_cfb.duckdb` and `pbp_nfl.duckdb` are the local read path for both apps; the EC2 box carries a full mirror, refreshed by [runbook H](#h-push-the-warehouse-to-the-ec2-mirror), which is what `mcp_server/` reads. Three copies, one direction of travel |
-| **In progress right now** | the 2026 season in both leagues — 452 college games (week 6 plus week 7's Tuesday and Wednesday games) and 79 NFL through week 5, as of 2026-10-15. **`bash scripts/refresh.sh`, any day:** it loads whatever has finished in either league and pushes it to every consumer, and does nothing if nothing has. The per-league `weekly_cfb.sh` / `weekly_nfl.sh` still work ([runbook A](#a-pull-the-in-progress-season-forward-the-weekly-run)) |
+| **Built and trusted** | fetch → parse → load → enrich → snapshot for BOTH facts in BOTH leagues; both applications, with a league toggle; the daily in-season load on the EC2 box, with dbt tests gating the serving layer; the ERD; the MCP server |
+| **Where the data lives** | **Postgres on the EC2 box is the system of record.** `pbp.*` is loaded there; dbt rebuilds `cfb` / `nfl` from it, which is what `mcp_server/` reads; `data/out/pbp_cfb.duckdb` and `pbp_nfl.duckdb` are built there too and installed for the deployed explorer. A development checkout holds a copy, pulled with `scripts/pull_from_box.sh`. One direction of travel |
+| **In progress right now** | the 2026 season in both leagues — 452 college games (week 6 plus week 7's Tuesday and Wednesday games) and 79 NFL through week 5, as of 2026-10-15. **Nobody runs anything:** at 06:00 Central the box loads whatever has finished in either league and refreshes every consumer, and does nothing if nothing has ([runbook A](#a-pull-the-in-progress-season-forward-the-daily-job)) |
 | **Rollback tables in Postgres** | none. The four from the expansion were dropped on 2026-09-08 once the coverage was trusted; `reparse.sql` and `load_athletes_2_apply.sql` each recreate the one they own the next time they run |
 | **Deferred by decision** | weather (Phase 5 — tabled, everything needed to start is in place); derived player stat lines and team box scores (both are `GROUP BY`s over the facts and need no reload); player-grain leaderboards and profile pages on the scrimmage side |
-| **Open follow-ups** | `update_season.py` alone still leaves the EC2 mirror and the deployed explorer's snapshot stale. `scripts/refresh.sh` closes that and has a launchd plist beside it for a daily 06:00 run. The explorer header's counts are read off the snapshot (`web/data.py` `corpus()`) since 2026-10-15, so nothing is re-measured by hand afterwards. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
+| **Open follow-ups** | `sql/split_leagues.sql` is still `update_season.py`'s default `--transform`, kept as a fallback while the box runs `--transform dbt`; retire it once dbt has served a full week. The explorer header's counts are read off the snapshot (`web/data.py` `corpus()`) since 2026-10-15, so nothing is re-measured by hand afterwards. The bridge-orphan fix in [Known limits](#known-limits) §14 is a decided-against-for-now one-liner. A defensive leaderboard off `scrimmage_athlete`, and role-aware profile pages, both scoped in [Not built](#not-built); decide whether anything refits the two baselines that went with the console on 2026-09-09; 38 conversions on return touchdowns sit on the wrong team ([Known limits](#known-limits) §9); `emit_pat` should null the touchdown's `down`, `distance` and `yards_to_goal` on derived conversion rows — one line plus runbook B, held at the view for now ([Known limits](#known-limits) §12) |
 
 ---
 
@@ -1291,7 +1300,7 @@ snapshot is a build artifact — delete it and rebuild rather than repairing it.
 | play text | `fetch_espn.py summaries` | one summary per game | `summaries/*.json.gz` | 6 workers, ~0.4 s/game |
 | athlete ids | `fetch_participants.py` | core-API plays, paged at 400 | `participants/*.json.gz` | 6 workers |
 | conferences | `build_dims.py conf` | core-API season groups | `dim_team_season.csv`, `dim_conference.csv` | ~250 API calls |
-| venues, teams, games | `build_dims.py venue` | every stored summary on disk | `dim_venue.csv`, `dim_team.csv`, `fact_game.csv` | the slow local stage — re-reads all 10,470 summaries |
+| venues, teams, games | `build_dims.py venue` | every stored summary on disk | `dim_venue.csv`, `dim_team.csv`, `fact_game.csv` | the slow offline stage — re-reads all 10,470 summaries |
 | athlete identity | `fetch_athletes.py` | core-API `/athletes/<id>` | `athletes.json.gz` | 6 workers, ~20 min once, then incremental. **Do not raise it** — see runbook C3 |
 | the kicks fact | `build_table.py` | summaries + `st_parser_cfb` | `st_plays.csv` — 40 columns, 80 MB | a few minutes for the full window |
 | the scrimmage fact | `build_scrimmage.py` | summaries + participants, **no parser** | `scrimmage_plays.csv`, `scrimmage_athlete.csv`, `drives.csv` | 50 s for the full window, 8 workers |
@@ -1359,7 +1368,7 @@ aside every week to protect a load that only ever touches one season would cost 
 the thing it protects, and that season is re-derivable by running the script again.
 
 
-### 14. The bridge strands rows when a `play_uid` changes — 73 in local Postgres
+### 14. The bridge strands rows when a `play_uid` changes — 73 in the original development copy
 
 `sql/load_league.sql` deletes bridge rows by joining the fact:
 
@@ -1376,16 +1385,17 @@ self-healing.
 
 A `play_uid` changes whenever the `#n` duplicate-sequence suffix is reassigned on a re-parse
 ([§10](#10-espn-reuses-one-sequencenumber-for-two-different-plays--507-rows-carry-a-n-suffix)),
-which is by design. Local Postgres currently carries **73 orphaned `pbp.scrimmage_athlete`
-rows** across two 2026 week-1 college games (401858433 and 401868140), 11 of them
+which is by design. The original development copy, the system of record until 2026-11,
+carried **73 orphaned `pbp.scrimmage_athlete` rows** across two 2026 week-1 college games (401858433 and 401868140), 11 of them
 `#n`-suffixed. `pbp.play_athlete` has none.
 
 **It is small and it is not benign in one specific way:** an orphan joins to nothing, so no
 query over the fact is wrong — but `count(*)` on the bridge overstates, and the number only
-grows, once per re-parse that moves a suffix. Found on 2026-09-25 because the EC2 mirror,
+grows, once per re-parse that moves a suffix. Found on 2026-09-25 because the EC2 copy,
 loaded into empty tables, came out 73 rows *lower* and the reconciliation in
-`scripts/sync_ec2.py` refused to call that a match. **The mirror is the clean copy; local is
-the one carrying the residue.**
+`scripts/sync_ec2.py` refused to call that a match. **The EC2 copy started clean; the
+development copy was the one carrying the residue.** The box loads through the same
+`load_league.sql`, so the defect travels with it.
 
 The fix is one of two lines and has deliberately **not** been applied: either delete the
 bridge *before* replacing the fact, or scope the delete by `game_id` rather than by
@@ -1401,29 +1411,49 @@ run and does not fail on them.
 Every one of these is run from the repository root — several SQL files resolve CSV paths
 relative to the caller.
 
-### A. Pull the in-progress season forward (the weekly run)
+### A. Pull the in-progress season forward (the daily job)
 
-**Any day, either league, one command:**
+**Nobody runs it.** Every morning at 06:00 Central, `pbp-daily.timer` on the EC2 box runs
+`scripts/daily_box.sh` as user `pbpetl` from `/opt/pbp-etl`. `deploy/README.md` is the
+runbook — the units, how to check on it, how to deploy a change — and this is the summary:
+
+```
+new_games.py                        nothing new in either league? record success, stop
+update_season.py --transform dbt    ESPN → CSVs → sql/load_league.sql → pbp.*
+                                    sql/load_raw_athletes.sql → raw.*
+                                    dbt builds cfb_next / nfl_next; its tests gate the swap
+                                    comment_tables.sql → swap_schema.sql → cfb / nfl
+                                    build_snapshot.py → data/out/pbp_*.duckdb
+verify_split.py --local
+then, as root: install the snapshot in /var/lib/pbp-web, restart the Play Explorer
+```
+
+**A failing dbt test stops the run before the swap**, so `cfb` / `nfl` keep serving the
+previous day, and a failed run never installs a snapshot. A failure emails at once, through
+the unit's `OnFailure`. The CloudWatch alarm `pbp-daily-stale` emails if there has been no
+success in 27 hours, whatever the cause — a quiet day with no games counts as a success, so
+the alarm means the job stopped working, not that nobody played.
 
 ```bash
-bash scripts/refresh.sh               # load whatever has finished; a no-op if nothing has
-bash scripts/refresh.sh --check       # what is final-but-not-loaded, and what is still playing
-bash scripts/refresh.sh --force nfl   # run a league with nothing new (a late stat correction)
+ssh awsvm 'sudo journalctl -u pbp-daily -e --no-pager'     # the last run's output
+ssh awsvm 'sudo systemctl start --no-block pbp-daily'      # run it now, after fixing a failure
+ssh awsvm 'sudo -u pbpetl touch /opt/pbp-etl/data/state/force && sudo systemctl start --no-block pbp-daily'
+                                                           # reload both leagues' current season
+bash deploy/push.sh                                        # ship a code change; the next run uses it
 ```
 
 Games stopped being a weekend thing: college plays Tuesday through Saturday from October on,
-and the NFL Thursday, Sunday and Monday. `refresh.sh` asks ESPN first —
+and the NFL Thursday, Sunday and Monday. So the job asks ESPN first —
 `scripts/new_games.py`, one scoreboard call per league per day over the last ten Eastern
-days, compared against `pbp.fact_game`, about 4 seconds — and runs the pipeline below only
-for a league holding a finished game local Postgres lacks. When both leagues have one, a
-single `update_season.py --league cfb nfl` fetches, builds and loads each, then does the
-both-league half — the athlete builds, the schema split, the snapshot — once; one pass of
-the verifiers, the sync and the snapshot push follows. It ends by re-checking, and warns
-if a game that was final when it started is still missing (one that finished during the
-run is just the next run's). One run at a time: a second one exits on the lock in
-`data/state/`. The first run, on 2026-10-15, loaded four
-midweek college games in 17 minutes: 9 in `update_season.py`, 7 in the sync and verifiers,
-1 in the push.
+days, compared against `pbp.fact_game`, about 4 seconds — and runs the pipeline only for a
+league holding a finished game the warehouse lacks. When both leagues have one, a single
+`update_season.py --league cfb nfl` fetches, builds and loads each, then does the
+both-league half — the athlete builds, the schema build, the snapshot — once. It ends by
+re-checking, and fails if a game that was final when it started is still missing (one that
+finished during the run is just the next run's). Before the box loaded itself, the same
+logic ran as `scripts/refresh.sh` from a development checkout; its first run, on
+2026-10-15, loaded four midweek college games in 17 minutes: 9 in `update_season.py`, 7 in
+the sync and verifiers, 1 in the push.
 
 `update_season.py` itself got faster that day. `build_dims.py athlete` rebuilt a set of
 seasons once per play it already held, ~140 s of each college-inclusive build, and
@@ -1444,45 +1474,22 @@ and `fetch_athletes.py` takes the season's athletes straight from the participan
 bridge is built from. Tested by deleting three of those six from the stores: the old sources
 missed all three, the new one fetched them in the same run.
 
-**To have it run itself daily at 06:00**, install
-`scripts/com.dustincremascoli.pbp-refresh.plist` (the install, run-now and remove lines are
-in the file). It posts a macOS notification when it loads something or fails. A quiet day is one line in `~/Library/Logs/pbp-refresh.log`; a run that
-loads writes `data/logs/refresh_<timestamp>.log`. If the laptop is asleep at 06:00, launchd
-runs it on the next wake.
+**`refresh.sh`, `weekly_cfb.sh` and `weekly_nfl.sh` are emergency tools now.** They load a
+development checkout's Postgres and push it over the box, so they refuse to run unless
+`PBP_DEV_LOAD=1` ([runbook H](#h-load-from-a-development-checkout-emergency-only)). The
+weekly scripts run `update_season.py` for one league, then `verify_split.py --local`,
+`sync_ec2.py --season`, `verify_mirror.py`, `verify_split.py --mirror` and
+`web/deploy/push.sh --data`, stopping at the first failure. Their first runs: college week
+6 on 2026-10-11 in 26 minutes, 17 of them in `update_season.py`; NFL week 5 less its Monday
+game (14 games) on 2026-10-12 in 23 minutes, 15 of them in `update_season.py`. A
+one-league sync is what left the EC2 copy a week behind on 2026-10-05, which is why the
+sync always covers both leagues.
 
-The weekly scripts below still work and are what `refresh.sh` is made of.
+The NFL's week runs Thu→Mon. Only completed games are fetched, so a game still being played
+at 06:00 is the next morning's (`--refresh-days` re-pulls anything recent).
 
-**The college week, every Sunday morning, is one command:**
-
-```bash
-bash scripts/weekly_cfb.sh          # season defaults to the current year
-```
-
-It runs `update_season.py` for college, then `verify_split.py --local`,
-`sync_ec2.py --season` ([runbook H](#h-push-the-warehouse-to-the-ec2-mirror)),
-`verify_mirror.py`, `verify_split.py --mirror` and `web/deploy/push.sh --data`. It checks local
-Postgres and `ssh awsvm` first, stops at the first failure, and logs to `data/logs/`. Every
-stage is idempotent, so an interrupted run is fixed by running it again. The first run, for
-week 6 on 2026-10-11, took 26 minutes, 17 of them in `update_season.py`. The explorer
-header's counts move on their own: they are read off the snapshot the push ships.
-
-The sync covers **both** leagues even though only college was pulled forward. It copies
-local Postgres, so the NFL stays at the last week loaded, and a one-league sync is what left
-the mirror a week behind on 2026-10-05.
-
-**The NFL week is the same thing with `--league nfl` on the first step:**
-
-```bash
-bash scripts/weekly_nfl.sh          # after the Monday game; Tuesday morning is natural
-```
-
-Its week runs Thu→Mon. Only completed games are fetched, so a run before the Monday game
-ends loads the week without it, and the next run picks it up (`--refresh-days` re-pulls
-anything recent). The preflight lists every game in ESPN's current week that is not final,
-so a partial week is announced rather than discovered. The first run, on 2026-10-12, loaded week 5
-less its Monday game (14 games) in 23 minutes, 15 of them in `update_season.py`.
-
-The pieces, one at a time:
+The pieces, one at a time. On a development checkout they load its own Postgres and touch
+nothing on the box:
 
 ```bash
 .venv/bin/python scripts/update_season.py 2026                # college, the whole thing
@@ -1493,8 +1500,9 @@ The pieces, one at a time:
 .venv/bin/python scripts/update_season.py 2026 --skip-fetch   # rebuild from summaries on disk
 ```
 
-**Both leagues are live in 2026 and are updated independently** — two runs, one per league.
-Each is scoped to its own corpus and provably leaves the other alone; the only thing that
+**Both leagues are live in 2026 and each is loaded in its own scope** — the daily job pulls
+forward only a league with a newly finished game, in one shared run when both have one.
+Each load is scoped to its own corpus and provably leaves the other alone; the only thing that
 spans both is `pbp.dim_athlete`, which is one row per person across the two leagues and is
 therefore rebuilt from both on every run regardless of which one was pulled forward.
 
@@ -1749,58 +1757,54 @@ that is a rewrite whichever way it is scoped.
 ```bash
 # Largest first: VACUUM FULL needs free disk equal to the table it is rewriting, and
 # scrimmage_play is the biggest object in the database.
-psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.scrimmage_play"
-psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.scrimmage_athlete"
-psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.drive"
-psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.special_teams_play"
-psql -d pbp -c "VACUUM (FULL, ANALYZE) pbp.play_athlete"
+for t in scrimmage_play scrimmage_athlete drive special_teams_play play_athlete fact_game; do
+  ssh awsvm "sudo -u postgres psql -d pbp -c 'VACUUM (FULL, ANALYZE) pbp.$t'"
+done
 ```
 
 Autovacuum frees the space for reuse but cannot shrink the file. `VACUUM FULL` takes an
 exclusive lock and rewrites the table; **nothing reads `pbp.*` live** — the apps read the
-DuckDB snapshots and the MCP servers read `cfb`/`nfl` on the box — so it can run any time.
+DuckDB snapshots, the MCP servers read `cfb`/`nfl`, and `pbp_ro` holds no grants on `pbp.*`
+— so it can run any time outside the 06:00 job, which writes it.
 
-**How to know it is needed, without guessing.** The EC2 mirror holds the same rows but is
-built from scratch every sync, so it never bloats. Comparing the two is a direct measure:
+**How to know it is needed, without guessing.** A development checkout restored by
+`scripts/pull_from_box.sh` holds the same rows, loaded from a dump into empty tables, so it
+starts tight. Comparing the two straight after a pull is a direct measure:
 
 ```bash
 python3 - <<'EOF'
 import subprocess
 q = ("SELECT c.relname||' '||pg_total_relation_size(c.oid) FROM pg_class c "
      "JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pbp' AND c.relkind='r'")
-loc = dict(x.split() for x in subprocess.run(["psql","-d","pbp","-Atc",q],
+dev = dict(x.split() for x in subprocess.run(["psql","-d","pbp","-Atc",q],
            capture_output=True, text=True).stdout.split("\n") if x)
-rem = dict(x.split() for x in subprocess.run(["ssh","awsvm",
+box = dict(x.split() for x in subprocess.run(["ssh","awsvm",
            f'sudo -u postgres psql -d pbp -Atc "{q}"'],
            capture_output=True, text=True).stdout.split("\n") if x)
-for t in sorted(loc, key=lambda t: -int(loc[t])):
-    if t in rem and int(rem[t]):
-        print(f"  {t:22} local {int(loc[t])/2**20:7.0f}M  mirror {int(rem[t])/2**20:7.0f}M"
-              f"  {int(loc[t])/int(rem[t]):5.2f}x")
+for t in sorted(box, key=lambda t: -int(box[t])):
+    if t in dev and int(dev[t]):
+        print(f"  {t:22} box {int(box[t])/2**20:7.0f}M  fresh {int(dev[t])/2**20:7.0f}M"
+              f"  {int(box[t])/int(dev[t]):5.2f}x")
 EOF
 ```
 
-Measured 2026-09-25, before any of this ran: `scrimmage_play` 2,379 MB local against
-1,408 MB on the mirror, `scrimmage_athlete` 1,352 against 746, `drive` 191 against 108 —
-**1.7× across the board, about 2.3 GB of dead space** carrying 142k and 139k dead tuples.
-Anything at 1.3× or above is worth reclaiming; 1.0× means the table is already tight.
+Measured 2026-09-25, before any of this ran, when the comparison ran the other way — the
+original development copy was the system of record and the EC2 copy was the fresh one:
+`scrimmage_play` 2,379 MB on the development copy against 1,408 MB on the EC2 copy,
+`scrimmage_athlete` 1,352 against 746, `drive` 191 against 108 — **1.7× across the board,
+about 2.3 GB of dead space** carrying 142k and 139k dead tuples. Anything at 1.3× or above
+is worth reclaiming; 1.0× means the table is already tight.
 
-**The mirror needs this too, and its dead-tuple count will say otherwise.** `pbp.*` on the
-box is loaded by the same delete-and-reinsert path, so it bloats the same way — but
-autovacuum there reports `n_dead_tup = 0` because it has already reclaimed the space *for
-reuse*, which does not shrink the file. Compare sizes, not dead tuples. Nothing reads
-`pbp.*` on the box either (`pbp_ro` holds no grants there), so it is equally safe:
+**The box's dead-tuple count will say it does not need this.** `pbp.*` there is loaded by the
+delete-and-reinsert path every morning, so it bloats — but autovacuum reports
+`n_dead_tup = 0` because it has already reclaimed the space *for reuse*, which does not
+shrink the file. Compare sizes, not dead tuples.
 
-```bash
-for t in scrimmage_play scrimmage_athlete special_teams_play drive fact_game; do
-  ssh awsvm "sudo -u postgres psql -d pbp -c 'VACUUM (FULL, ANALYZE) pbp.$t'"
-done
-```
-
-Run 2026-09-25 on both: local `pbp` 7,355 MB → **4,639 MB**, mirror 5,662 MB → **4,637 MB**,
-about 3.7 GB between them. `scrimmage_play` alone went 2,379 → 764 MB locally and
-1,408 → 764 MB on the box — the two agreeing afterwards is itself a check that the
-reclaim was storage and not content, and `scripts/verify_mirror.py` confirms it.
+Run 2026-09-25 on both copies: the development copy's `pbp` 7,355 MB → **4,639 MB**, the EC2
+copy's 5,662 MB → **4,637 MB**, about 3.7 GB between them. `scrimmage_play` alone went
+2,379 → 764 MB on the development copy and 1,408 → 764 MB on the box — the two agreeing
+afterwards is itself a check that the reclaim was storage and not content, and
+`scripts/verify_mirror.py` confirms it.
 
 An earlier run took `pbp` from 612 MB to 232 MB on 2026-08-31, though dropping five
 rollback tables accounted for 173 MB of that.
@@ -1821,82 +1825,39 @@ confidence, athlete coverage on the right denominators, the team-only versus tea
 conference comparison run side by side, field goals by surface (empty if the enrichment was
 skipped), and four referential-integrity counts.
 
-### H. Push the warehouse to the EC2 mirror
+### H. Load from a development checkout (emergency only)
 
-Local Postgres stays the system of record. The EC2 box carries a **mirror** of it, so the
-MCP server — and anything else without a tunnel to this laptop — can read the same corpus.
-
-```bash
-.venv/bin/python scripts/sync_ec2.py                  # both leagues, whole window (~1 hour)
-.venv/bin/python scripts/sync_ec2.py --season 2026    # the weekly push, after runbook A
-                                                      # (weekly_cfb.sh / weekly_nfl.sh run it for you)
-.venv/bin/python scripts/sync_ec2.py --league nfl     # one league
-.venv/bin/python scripts/sync_ec2.py --dry-run        # print the plan, change nothing
-```
-
-It stages the CSV extracts on the box, replays `load_league.sql` and
-`load_athletes_league.sql` there, rebuilds both schemas with `sql/split_leagues.sql`, re-applies the grants and
-the comments, and finishes by **reconciling every table's row count against local Postgres
-and failing if any differ**. That last step is the one that makes it a mirror rather than an
-approximation — everything before it can succeed and still leave a silent shortfall.
-
-Four things about it are worth knowing before the first run:
-
-1. **It syncs the extracts, not Postgres.** Local runs PostgreSQL 18 and the box runs 16, so
-   a `pg_dump` from here cannot be restored there — dumping a newer server and restoring
-   into an older one is the unsupported direction. Replaying the same CSVs the local load
-   read reproduces the tables rather than approximating them. **So run the local pipeline
-   first and confirm it; if `data/out/` is stale, this faithfully mirrors stale data.**
-
-2. **The load runs on the box, not through the tunnel**, because `load_league.sql` uses
-   server-side `COPY ... FROM '<path>'`. No loader needed changing — they already take
-   `-v root=`. The staging directory is `/var/lib/pgsql/staging`, on the Postgres EBS volume
-   rather than the root volume, which only has ~8 GB free.
-
-3. **A full run takes about an hour**, nearly all of it in the closing enrichment `UPDATE`
-   on `scrimmage_play` — 1.5M rows against ten indexes on 2 vCPU. A `--season` run is quick.
-
-4. **`split_leagues.sql` does `DROP SCHEMA ... CASCADE`**, and privileges and comments go
-   with a dropped table. `sync_ec2.py` re-runs `setup_role_pbp.sql` and `comment_tables.sql`
-   (once per league) immediately afterwards for exactly that reason. Reorder those steps and
-   the next sync silently revokes both MCP servers' access to everything.
-
-The schema itself was applied once, from `pg_dump --schema-only` with the single PG17+ line
-(`SET transaction_timeout`) stripped. Nothing else in the DDL was version-sensitive.
-
-Verify the mirror end to end:
+**The box loads itself; this is for when it cannot** — the daily job is broken and a load
+cannot wait for the fix. `scripts/sync_ec2.py` is how the EC2 copy was kept current before
+the box became the system of record, and it now pushes a development checkout's warehouse
+over the box's. It refuses to run without the override:
 
 ```bash
-cd mcp_server && ./.venv/bin/python -m pbp_mcp.selftest
+PBP_DEV_LOAD=1 .venv/bin/python scripts/sync_ec2.py --season 2026   # one season, both leagues
+PBP_DEV_LOAD=1 .venv/bin/python scripts/sync_ec2.py                 # whole window (~1 hour)
+.venv/bin/python scripts/sync_ec2.py --dry-run                      # print the plan, change nothing
 ```
 
-**And to prove it is a mirror rather than the right shape:**
+It stages the checkout's CSV extracts on the box, replays `load_league.sql` and
+`load_athletes_league.sql` there, rebuilds both schemas with `sql/split_leagues.sql`,
+re-applies the grants and the comments, and finishes by **reconciling every table's row
+count against the checkout and failing if any differ**. It replays extracts rather than a
+`pg_dump` because the checkout runs PostgreSQL 18 and the box 16, and restoring a newer
+server's dump into an older one is unsupported. **So if `data/out/` is stale, it faithfully
+copies stale data over the box.** The script's comments have the rest, including why the grants must
+follow `split_leagues.sql`'s `DROP SCHEMA ... CASCADE` immediately.
+
+Then prove the two agree, in structure and content:
 
 ```bash
 .venv/bin/python scripts/verify_mirror.py              # structure + content, ~40s
-.venv/bin/python scripts/verify_mirror.py --structure  # catalogs only, seconds
-.venv/bin/python scripts/verify_mirror.py --content --table drive
+cd mcp_server && ./.venv/bin/python -m pbp_mcp.selftest
 ```
 
-`sync_ec2.py`'s closing reconcile counts rows, which is the right check to run on every
-sync and cannot catch **a row present on both sides and different**, nor say anything at
-all about the schema. `verify_mirror.py` is the deeper one: it diffs both catalogs — every
-column, constraint, index, view, routine, grant — and then checksums every row of every
-table. Run it after a schema change, after a full resync, or whenever the mirror's answers
-stop agreeing with local. On a mismatch it re-hashes column by column, so the failure names
-the column rather than the table.
-
-Three divergences are correct, and it prints each as a note rather than hiding it:
-`loaded_at` is `DEFAULT now()` and is excluded from the hash; the serving layer and the
-`mcp_ro` grants exist on the mirror only; and the bridges are compared **through their
-fact**, so the stranded local orphans of [Known limits](#known-limits) §14 are reported
-separately instead of failing every run.
-
-Two things will make it lie if you change it. It reads both catalogs **as a superuser** —
-`information_schema` shows only what the current role may see, so probing the mirror as
-`mcp_ro` would omit whatever it cannot read and report a match. And **PG18 catalogs `NOT
-NULL` in `pg_constraint` while PG16 does not**, so it drops those rows and compares
-`attnotnull` per column instead; a naive constraint diff reports ~33 phantom differences.
+`verify_mirror.py` diffs both catalogs and checksums every row of `pbp.*`, which catches a
+row present on both sides and different; its docstring names the three divergences it
+reports as notes rather than failures. To back out of the daily job entirely,
+`deploy/README.md` has the two commands.
 
 ### Rollback points currently in Postgres
 
@@ -1932,13 +1893,13 @@ including what breaks when the `/plays/` prefix is set in one place and not the 
 The deployed copy is the same code, with two things set by environment rather than
 branched on: `PBP_WEB_PREFIX` (where it is mounted — see `web/routes.py`) and
 `PBP_WEB_DATA_DIR` (the snapshot lives outside the code tree on the box). Both are unset
-locally, which is why `python -m web.app` is unchanged. There was a third, `PBP_WEB_WIP`,
+in a development checkout, which is why `python -m web.app` is unchanged. There was a third, `PBP_WEB_WIP`,
 behind a work-in-progress banner; the banner was removed on 2026-09-29 and so was it.
 
-**The deployed snapshot is a copy and goes stale.** Nothing refreshes it on a schedule —
-the same open follow-up the EC2 mirror has. `scripts/weekly_cfb.sh` and `weekly_nfl.sh`
-rebuild and reship it as their last step; after a bare `update_season.py`, rebuild and
-reship by hand: `build_snapshot.py`, then `push.sh --data`. The `snapshot` badge in the header reports the
+**The deployed snapshot is rebuilt every morning.** The daily job builds it on the box,
+installs it in `/var/lib/pbp-web` and restarts the app
+([runbook A](#a-pull-the-in-progress-season-forward-the-daily-job)); a failed run installs
+nothing, so the app keeps the previous day's. The `snapshot` badge in the header reports the
 build time of whatever is being read, so the page says how stale it is.
 
 It answers "show me the actual instances and let me take them apart", over every play in
@@ -2180,10 +2141,10 @@ no derivable margin — **6.4% in 2021** and 4.8% in 2022, under 1% in most seas
 rate is the metric to quote**; `team_record.missing` is exposed so a caller can restrict to
 complete schedules. 1,240 of 1,513 team-seasons are complete.
 
-### `mcp_server/` — read-only MCP over the EC2 mirror
+### `mcp_server/` — read-only MCP on the EC2 box
 
 **Twenty-five tools against `pbp` on the EC2 box**, so the corpus is reachable from Claude
-Desktop, claude.ai and mobile rather than only from this laptop. It has its own README
+Desktop, claude.ai and mobile rather than only through an SSH tunnel. It has its own README
 (`mcp_server/README.md`); what matters here is why it is shaped the way it is.
 
 It is a close adaptation of `ec2-nginx/weather-sql-explorer/mcp_server`, which has run
@@ -2195,7 +2156,7 @@ tested, and a second half-considered version of it would be strictly worse.
 **The tools encode the traps.** That is the part specific to this warehouse and the reason
 the surface is twenty-five tools rather than just `run_sql`:
 
-- Every tool reads `pbp.play_wide` / `pbp.scrimmage_wide`, where the `(team_id, season)`
+- Every tool reads `play_wide` / `scrimmage_wide` in its league's schema, where the `(team_id, season)`
   conference join is already resolved. A caller cannot make the 2018 Pac-12 mistake.
 - No tool coalesces a NULL flag. `fg_by_distance` and `leaderboard` exclude
   `fg_made IS NULL` from the denominator; `kick_outcomes` returns `pct_unstated` beside every
@@ -2212,7 +2173,7 @@ the surface is twenty-five tools rather than just `run_sql`:
 **The selftest asserts the football, not just the plumbing** — the monotonic field-goal
 curve in both leagues, NFL yards-per-carry *below* college, the 2018 college touchback step
 and the NFL's two-stage 2024/2025 collapse. Those are the cheapest available proof that a
-mirror load landed correctly, and they are the same properties the [opening](#play-by-play--college-football-and-the-nfl)
+load landed correctly, and they are the same properties the [opening](#play-by-play--college-football-and-the-nfl)
 uses to argue the corpus behaves like football.
 
 ### The ERD
@@ -2401,8 +2362,8 @@ fixed are in [Known limits](#known-limits).
 | 2026-09-11 | **One loader replaced five** | the in-season scripts `TRUNCATE`, which was right for one corpus and would now delete the other league to make room | `sql/load_league.sql` is scoped to `(league, season)` and folds the game-context enrichment into the same transaction, so it can no longer be forgotten. Proven by reloading the **college** corpus through it end to end: identical counts, NFL untouched |
 | 2026-09-11 | **The NFL workbook said FBS** | `reports/fg_by_distance.py` was scoped by league in its **queries** from the start but not in its **prose**, so `fg_by_distance_nfl.xlsx` was titled "FBS field goals by distance" over NFL kicks and reported "1,019 FBS attempts" per season | a `TIER` term per league drives every heading and note, and the non-FBS exclusion paragraph is replaced for the NFL by one saying there is no second division to exclude. Found by reading the generated workbook, not the code |
 | 2026-09-11 | **A shadowed name in the same file** | `build()` took the corpus as a parameter named `league` and then rebound it to `rollup()`'s all-teams dict. It worked only because the query ran before the rebind | the dict is `all_teams`; `league` means the corpus and nothing else |
-| 2026-09-25 | **The warehouse mirrored to EC2, and an MCP server over it** | the corpus existed only on this laptop, so nothing without a tunnel to it could read the data — Claude Desktop, claude.ai and mobile included. Phase 6 had been costed as "a small job" on the strength of the weather-warehouse pattern porting, which was true of the server and ignored the mirroring | `pbp` on the EC2 box: 11 tables loaded through the existing loaders, plus `play_wide`, `scrimmage_wide` and `season_status` as a materialised serving layer. `scripts/sync_ec2.py` is the refresh path and **reconciles every row count against local, failing on any difference**. `mcp_server/` is 25 read-only tools over it |
-| 2026-09-25 | **PG18 → PG16 is the unsupported direction** | the first plan was `pg_dump` from local to the box. Local runs PostgreSQL 18.6 and the box 16.15, and dumping a newer server to restore into an older one is not supported. Only the schema turned out to be portable, and only after one line | the data path replays the CSV extracts through `load_league.sql` on the box instead — no version skew, and it reuses code `verify.sql` already trusts. The schema went across as `pg_dump --schema-only` with `SET transaction_timeout` (PG17+) stripped; nothing else in the DDL was version-sensitive |
+| 2026-09-25 | **The warehouse mirrored to EC2, and an MCP server over it** | before any of the warehouse was on EC2, nothing without a tunnel to it could read the data — Claude Desktop, claude.ai and mobile included. Phase 6 had been costed as "a small job" on the strength of the weather-warehouse pattern porting, which was true of the server and ignored the mirroring | `pbp` on the EC2 box: 11 tables loaded through the existing loaders, plus `play_wide`, `scrimmage_wide` and `season_status` as a materialised serving layer. `scripts/sync_ec2.py` is the refresh path and **reconciles every row count against the development copy, failing on any difference**. `mcp_server/` is 25 read-only tools over it |
+| 2026-09-25 | **PG18 → PG16 is the unsupported direction** | the first plan was `pg_dump` from the development copy to the box. That copy ran PostgreSQL 18.6 and the box 16.15, and dumping a newer server to restore into an older one is not supported. Only the schema turned out to be portable, and only after one line | the data path replays the CSV extracts through `load_league.sql` on the box instead — no version skew, and it reuses code `verify.sql` already trusts. The schema went across as `pg_dump --schema-only` with `SET transaction_timeout` (PG17+) stripped; nothing else in the DDL was version-sensitive |
 | 2026-09-25 | **`\copy` cannot load a remote target, and `load_league.sql` already knew** | converting the loaders' server-side `COPY` to `\copy` looked like the obvious way to load across the tunnel. psql's `\copy` does **not** interpolate `:'variables'` — it takes `:'st_csv'` as a literal filename and loads **zero rows without erroring**, which for a loader is the worst possible failure. Confirmed empirically, then found already written in the loader's own header | no loader changed. The CSVs are staged on the box and `-v root=` — which every loader already took — points them there. The lesson is the cheaper one: the header was right, and reading it first would have saved the experiment |
 | 2026-09-29 | **`/experience` — the development question, with the arithmetic it actually needs** | "does a kicker improve with experience" is the question the kicker data is most often asked, and the one-line `GROUP BY` that answers it is wrong three ways over | `web/career.py` + `web/pages/experience.py`. The naive college placekicker curve climbs 73.9% → 77.0% across years one to three and the rise is mostly the washout: year-one kickers who never appeared again made 69.6% against 75.6% for the ones who came back, both measured in year one before either group gained a season. Compared with themselves a year later the same 368 men go 75.6% → 76.2%, 176 better and 181 worse. Counts and rates over counts only — a first version carried a fitted make-probability baseline and a sign test, and both were removed the same day: the reader cannot reconstruct an adjusted figure from anything on the page, and putting mean attempt distance in the next column does the same work out of two numbers they can add up. Two bugs caught while building it: 62 college field goals carry no distance and were being averaged over a denominator that counted them; and the came-back flag was written to a column named `returned`, which already held a punter's returned-punt count — `ret_rate` divided a boolean by a season of punts and reported 1.9% against a corpus that returns 25.5% |
 
@@ -2548,31 +2509,31 @@ Both are the user's words and both are currently unstarted:
 ### ~~An MCP server~~ — built 2026-09-25, with the warehouse mirrored to EC2
 
 **Kept as a record of an estimate against its outcome.** The original Phase 6 was a
-read-only MCP server over the schema. This section used to end "the pattern is already
-proven elsewhere on this machine against a different warehouse, so this is a small job
-whenever it is wanted."
+read-only MCP server over the schema. This section used to end by calling it "a small job
+whenever it is wanted", because the pattern was already proven against a different
+warehouse.
 
 That was right about the pattern and wrong about the size, because it costed only half the
 job. The MCP server *was* small — `mcp_server/` is a close adaptation of
 `ec2-nginx/weather-sql-explorer/mcp_server`, with the same four-layer read-only model, the
 same `sqlglot` guard and the same "caveats live in the database as `COMMENT`s, not in a
-prompt" discipline. What the estimate missed is that **the warehouse was on this laptop and
+prompt" discipline. What the estimate missed is that **the warehouse was not yet on EC2 and
 the MCP had to read it from anywhere**, which meant mirroring 4.5 GB to the EC2 box first.
-That half was the work. See [Runbook H](#h-push-the-warehouse-to-the-ec2-mirror) and
+That half was the work. See [Runbook H](#h-load-from-a-development-checkout-emergency-only) and
 `mcp_server/README.md`.
 
 | predicted | actual |
 |---|---|
 | the weather-warehouse pattern ports | **right**, almost verbatim — `db.py`, `guard.py` and the four-layer security model needed only the table allow-list changed |
 | "a small job" | **right for the server, wrong for the job.** The server is ~1,900 lines; getting the data reachable was the larger half |
-| *(not considered)* | **local runs PostgreSQL 18, the EC2 box runs 16.** `pg_dump` from here cannot be restored there — that is the unsupported direction. Mirroring replays the CSV extracts through the existing loaders instead, which sidesteps version skew entirely and reuses code `verify.sql` already trusts |
+| *(not considered)* | **the development copy ran PostgreSQL 18, the EC2 box 16.** A `pg_dump` from one cannot be restored on the other — that is the unsupported direction. Mirroring replays the CSV extracts through the existing loaders instead, which sidesteps version skew entirely and reuses code `verify.sql` already trusts |
 | *(not considered)* | **the loaders were already remote-ready and nobody knew.** `load_league.sql` takes `-v root=`, so pointing it at a staging directory on the box needed no change to any loader. Its own header had already worked out why `\copy` cannot be used, which is the thing that would otherwise have been rediscovered the hard way |
 | *(not considered)* | **a view over the facts is too slow on a 2-vCPU box.** `sql/split_leagues.sql` materialises the wide tables instead, mirroring what `build_snapshot.py` does for DuckDB |
 
 **The one live cost worth knowing.** `load_league.sql`'s closing enrichment `UPDATE` rewrites
-every row of `scrimmage_play` with ten indexes on it, which takes ~2 minutes locally and
-**~20 minutes on the EC2 box**. A full two-league mirror is therefore an hour-ish job, not a
-five-minute one. A season-scoped sync (`--season 2026`, the weekly case) touches a fraction
+every row of `scrimmage_play` with ten indexes on it, which took ~2 minutes on the original development copy and
+**~20 minutes on the EC2 box**. A full two-league load on the box is therefore an hour-ish
+job, not a five-minute one. A season-scoped load (the daily job's case) touches a fraction
 of the rows and is quick. If the full path ever needs to be faster, dropping and recreating
 the indexes around the load is the obvious fix and has not been done.
 

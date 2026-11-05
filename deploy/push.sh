@@ -9,7 +9,7 @@
 # web/deploy/push.sh. Data goes straight to /opt/pbp-etl/data instead: /tmp on the box is a
 # RAM-backed tmpfs, and 1.5 GB there would squeeze every site on it.
 #
-# --seed copies the LAPTOP's data, which is right exactly once, at cutover. After that the box
+# --seed copies this checkout's data, which is right exactly once, at cutover. After that the box
 # is the system of record and data flows the other way (scripts/pull_from_box.sh); a second
 # --seed would overwrite newer ESPN fetches with older ones, so it refuses.
 set -euo pipefail
@@ -35,9 +35,9 @@ log "Checking the box is reachable"
 ssh -o BatchMode=yes -o ConnectTimeout=15 "$SSH_HOST" true || fail "cannot ssh to $SSH_HOST"
 
 if (( SEED )); then
-    log "Seeding $APP/data from this laptop"
+    log "Seeding $APP/data from this checkout"
     if ssh "$SSH_HOST" "sudo test -e $APP/data/state/last_success"; then
-        fail "the box has already run the job -- its data is newer than this laptop's"
+        fail "the box has already run the job -- its data is newer than this checkout's"
     fi
     ssh "$SSH_HOST" "sudo mkdir -p $APP/data"
     # ALL of data/, not a list: each league keeps its raw ESPN files in its own directory

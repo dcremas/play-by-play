@@ -13,7 +13,7 @@
 #                   stages), may read server files for COPY, and may create schemas.
 #                   Creating and configuring pbp_ro stays an administrator's job
 #                   (mcp_server/setup_role_pbp.sql, run as postgres).
-#   /opt/pbp-etl    the repo, owned by pbpetl, with data/ beside the code as on the laptop.
+#   /opt/pbp-etl    the repo, owned by pbpetl, with data/ beside the code as in any checkout.
 #   two venvs       .venv on Python 3.14.7 from uv (the pipeline's pin), dbt/.venv on the
 #                   uv-managed 3.13 (dbt does not import on 3.14). Rebuilt only when a
 #                   requirements file changes.

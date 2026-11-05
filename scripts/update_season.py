@@ -278,8 +278,8 @@ def main():
     # The load, the dimension refresh and the game-context enrichment are all inside that
     # one transaction, which is why there is no separate enrich step here any more.
     for L in leagues:
-        # root= on every loader: their default is the laptop's checkout, and server-side COPY
-        # reads that path on the database host -- which on the EC2 box is not this one.
+        # root= on every loader: server-side COPY reads that path on the database host, so
+        # a run from any checkout must name its own data/out rather than the box's default.
         psql(a.db, "-v", f"league={L}", "-v", f"season={s}", "-v", f"root={HOME}",
              "-f", "sql/load_league.sql")
 

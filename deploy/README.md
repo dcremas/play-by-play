@@ -1,8 +1,8 @@
 # The daily job on the EC2 box
 
 Every morning at 06:00 Central, `pbp-daily.timer` loads every game that finished since the last
-run, in both leagues, and refreshes everything that reads the warehouse. Nobody has to be awake
-and no laptop has to be on.
+run, in both leagues, and refreshes everything that reads the warehouse. Nothing has to be
+started by hand.
 
 ```
 06:00 CT  pbp-daily.timer
@@ -56,22 +56,24 @@ ssh awsvm 'journalctl -u pbp-daily -f'       # follow it; ec2-user is in systemd
 bash deploy/push.sh        # code + provision; the next 06:00 run uses it
 ```
 
-## Developing on the laptop
+## Developing against current data
 
-The laptop no longer loads. Pull the box's data when you want it current:
+A development checkout does not load the warehouse. It pulls the box's copy when it needs
+current data:
 
 ```bash
 bash scripts/pull_from_box.sh           # data/ files and Postgres (pbp, raw, cfb, nfl)
 bash scripts/pull_from_box.sh --files   # just data/, which is all the apps read
 ```
 
-`refresh.sh`, `weekly_*.sh` and `sync_ec2.py` refuse to run, because they would push the laptop's
-older copy over the box. `PBP_LAPTOP_LOAD=1` overrides them for an emergency.
+`refresh.sh`, `weekly_*.sh` and `sync_ec2.py` refuse to run, because they would push a development
+checkout's older copy over the box. `PBP_DEV_LOAD=1` overrides them for an emergency.
 
 ## The cutover (2026-11, once)
 
-1. **Make the box current.** One last laptop-to-box sync, then compare the two row by row:
-   `PBP_LAPTOP_LOAD=1 .venv/bin/python scripts/sync_ec2.py --season 2026 && .venv/bin/python scripts/verify_mirror.py`
+1. **Make the box current.** One last sync from the development checkout that had been loading the
+   warehouse, then compare the two row by row:
+   `PBP_DEV_LOAD=1 .venv/bin/python scripts/sync_ec2.py --season 2026 && .venv/bin/python scripts/verify_mirror.py`
 2. **Install.** `bash deploy/push.sh --seed` copies all of `data/` (~1.6 GB, both leagues), creates
    `pbpetl`, builds both venvs, hands the warehouse schemas to the `pbpetl` role and installs the units.
 3. **First run, by hand, forced** so the dbt build runs even with nothing new: `ssh awsvm 'sudo -u pbpetl mkdir -p /opt/pbp-etl/data/state && sudo -u pbpetl touch /opt/pbp-etl/data/state/force && sudo systemctl start --no-block pbp-daily'`, then read the journal.
@@ -82,5 +84,5 @@ older copy over the box. `PBP_LAPTOP_LOAD=1` overrides them for an emergency.
    because the alarm treats missing data as a failure and would email at once over an empty metric.
 
 To back out: `ssh awsvm 'sudo systemctl disable --now pbp-daily.timer pbp-daily-heartbeat.timer'`,
-then `PBP_LAPTOP_LOAD=1 bash scripts/refresh.sh` loads from the laptop as before. The schema ownership
+then `PBP_DEV_LOAD=1 bash scripts/refresh.sh` loads from a development checkout as before. The schema ownership
 change is harmless to leave in place; `sync_ec2.py` runs as `postgres`.

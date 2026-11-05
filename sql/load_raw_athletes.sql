@@ -17,7 +17,7 @@
 \set ON_ERROR_STOP on
 \if :{?root}
 \else
-  \set root '/Users/dustincremascoli/projects/pbp'
+  \set root '/opt/pbp-etl'
 \endif
 
 \set cfb_csv :root '/data/out/dim_athlete_cfb.csv'

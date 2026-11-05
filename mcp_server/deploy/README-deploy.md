@@ -1,7 +1,7 @@
 # Deploying the pbp MCP server on the EC2 box
 
 The database has been on the box since 2026-09-25. **The server now is too.**
-Before that it ran on the Mac against the box through the SSH tunnel, which meant
+Before that it ran on a development machine against the box through an SSH tunnel, which meant
 nothing else on that host could reach it — including a web app living there.
 That was the blocker for building a text-to-SQL explorer, and this directory is
 what removed it.
@@ -51,7 +51,7 @@ corpus, and `config.py` refuses to start on any name that is not a real corpus.
 2. **`push.sh` → `provision.sh`** — user, code, venv, credential file, unit,
    nginx vhost (HTTP only), start, verify.
 3. **DNS** — a manual A record at GoDaddy. There is no Route53 zone and no API
-   credential on the Mac, so this cannot be scripted.
+   credential anywhere, so this cannot be scripted.
 4. **`enable-tls.sh`** — certbot, then swap the HTTP vhost for the TLS one.
 
 **Steps 3 and 4 cannot be reordered.** certbot validates over HTTP against a host
@@ -75,7 +75,7 @@ Each of these is in `provision.sh` because the failure is invisible otherwise.
 | `/opt/pbp-mcp/.env` does not exist | a second copy of the password on the box, and a second place to rotate it |
 | `pbp.conf` does not sort first in `conf.d` | **stealing `default_server`.** nginx gives it to the first `listen` it parses, which is the alphabetically-first `.conf` holding a server block. Take it, and every unknown-Host request on the box is answered by this vhost with this certificate |
 | the venv's Python matches the chosen interpreter | a venv built by root's 3.9, which cannot install `mcp` and cannot be upgraded in place |
-| the selftest runs **per instance, with that unit's environment** | the deploy's own false negative: invoked without it, `db.py` falls back to its development default of port 15432 — the laptop's tunnel — and every check fails with "connection refused" against a perfectly healthy local database |
+| the selftest runs **per instance, with that unit's environment** | the deploy's own false negative: invoked without it, `db.py` falls back to its development default of port 15432 — a development tunnel — and every check fails with "connection refused" against a perfectly healthy local database |
 
 A note on that last one. `provision.sh` reads the connection settings back off the
 unit with `systemctl show pbp-mcp -p Environment --value` rather than repeating

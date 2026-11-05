@@ -1,4 +1,4 @@
-"""Prove the EC2 mirror matches local Postgres -- in structure AND in content.
+"""Prove the EC2 box matches a development checkout's Postgres -- in structure AND content.
 
     python scripts/verify_mirror.py                  # everything (~2 min)
     python scripts/verify_mirror.py --structure      # catalogs only, seconds

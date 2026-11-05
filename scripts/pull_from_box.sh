@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Refresh this laptop's copy of the warehouse from the EC2 box, the system of record since
+# Refresh this checkout's copy of the warehouse from the EC2 box, the system of record since
 # 2026-11. Run it when you want to develop against current data; nothing else needs it.
 #
 #     bash scripts/pull_from_box.sh            # data/ files and Postgres
@@ -36,7 +36,7 @@ ls -lh "$DUMP" | awk '{print "   " $5}'
 
 log "Restoring into local $DB"
 psql -d "$DB" -q -c "DROP SCHEMA IF EXISTS cfb_dbt_staging, nfl_dbt_staging CASCADE"
-# --no-owner: the box's objects belong to pbpetl, a role this laptop does not have.
+# --no-owner: the box's objects belong to pbpetl, a role a development database does not have.
 pg_restore -d "$DB" --clean --if-exists --no-owner --exit-on-error "$DUMP"
 psql -d "$DB" -Atc "SELECT 'pbp.special_teams_play ' || count(*) FROM pbp.special_teams_play
                     UNION ALL SELECT 'pbp.scrimmage_play ' || count(*) FROM pbp.scrimmage_play" \

@@ -51,7 +51,7 @@ _ABOUT = "About"
 
 # The report palette, restated rather than imported. web/deploy/push.sh ships `web/`
 # and nothing else, so an import of reports/workbook.py would be a NameError on the
-# box and fine on the laptop -- the worst shape a dependency can have. Four hex codes
+# box and fine in development -- the worst shape a dependency can have. Four hex codes
 # are a cheaper price than that, and they are here so a workbook off this app and one
 # off reports/ read as the same product.
 _ACCENT, _INK, _MUTED, _RULE = "#3b7dd8", "#1f2933", "#6b7785", "#c9d2dc"

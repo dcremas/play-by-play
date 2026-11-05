@@ -3,14 +3,14 @@
 # Separate from the repo's requirements.txt, and the difference is exactly two
 # lines. Everything that shapes a number on the page is pinned identically:
 # duckdb and pandas do the arithmetic, dash and its component libraries only draw
-# it, so those are the pins that must not drift between the laptop and the box.
+# it, so those are the pins that must not drift between development and the box.
 #
 #   duckdb 1.5.5   same as local -- it is the query engine
 #   pandas 3.0.5   same as local -- every result set comes back through it
 #
 # THE ONE DELIBERATE DIVERGENCE: numpy.
 #
-# The repo pins numpy==2.5.2, which the laptop runs on Python 3.14. numpy 2.5
+# The repo pins numpy==2.5.2, which development runs on Python 3.14. numpy 2.5
 # publishes no wheel for 3.11, which is the interpreter this box runs (the only
 # one available to a systemd unit here -- see the interpreter trap in
 # mcp_server/deploy/README-deploy.md). So the box gets 2.4.6, the newest release
@@ -49,9 +49,9 @@ numpy==2.4.6
 #
 # It used to arrive on its own: pandas depended on pytz up to 2.x. pandas 3.0
 # dropped that dependency, so on a clean install it is simply absent, and the
-# laptop only keeps working because its virtualenv predates the change and still
-# has the old transitive copy. That makes this the one dependency the local
-# environment cannot be trusted to reveal.
+# development environment only keeps working because its virtualenv predates the
+# change and still has the old transitive copy. That makes this the one dependency
+# an existing environment cannot be trusted to reveal.
 pytz==2026.3.post1
 
 # The WSGI server. Not in the repo's requirements.txt because nothing local needs

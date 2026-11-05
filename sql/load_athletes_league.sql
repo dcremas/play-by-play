@@ -20,7 +20,7 @@
 \set ON_ERROR_STOP on
 \if :{?root}
 \else
-  \set root '/Users/dustincremascoli/projects/pbp'
+  \set root '/opt/pbp-etl'
 \endif
 
 SELECT r || '/data/out/dim_athlete.csv'          AS dim_csv,

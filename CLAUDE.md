@@ -10,7 +10,7 @@ Start with `README.md` (Conventions section is binding) and `PLAN.md` (design re
 `cfb` / `nfl` → `scripts/build_snapshot.py` → `/var/lib/pbp-web`. Runbook: `deploy/README.md`.
 
 The laptop's Postgres (PG 18) is a downstream copy, refreshed by `scripts/pull_from_box.sh`.
-`refresh.sh`, `weekly_*.sh` and `sync_ec2.py` refuse to run unless `PBP_LAPTOP_LOAD=1`: they would
+`refresh.sh`, `weekly_*.sh` and `sync_ec2.py` refuse to run unless `PBP_DEV_LOAD=1`: they would
 overwrite the box's newer data with the laptop's.
 
 - `web/` — Dash explorer; reads the DuckDB snapshot only, never Postgres
