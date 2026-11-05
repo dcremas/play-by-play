@@ -157,7 +157,38 @@ header[data-testid="stHeader"], [data-testid="stDecoration"], [data-testid="stTo
 .pp-limit .pp-todo { color: var(--pp-text); }
 .pp-limit .pp-todo::before { content: "→ "; color: var(--pp-accent); font-weight: 700; }
 
+/* About the data: what you can ask about, at a glance. Three across on a laptop, one on a
+   phone; every tile the same shape so the sizes line up down the right edge. */
+.pp-subjects { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px; margin: 8px 0 14px; }
+.pp-subject { border: 1px solid var(--pp-border); border-radius: 10px; padding: 10px 12px;
+  background: var(--pp-surface); }
+.pp-subject-head { display: flex; justify-content: space-between; align-items: baseline;
+  gap: 8px; margin: 0; }
+.pp-subject-head b { color: var(--pp-text); font-weight: 600; font-size: .95rem; }
+.pp-subject-head span { font-family: var(--pp-mono); font-size: .8rem; color: var(--pp-muted);
+  font-variant-numeric: tabular-nums; }
+.pp-subject p:last-child { margin: 4px 0 0; font-size: .85rem; line-height: 1.45;
+  color: var(--pp-text-2); }
+.pp-know { margin: 2px 0 0; padding-left: 1.1rem; color: var(--pp-text-2); font-size: .9rem;
+  line-height: 1.5; }
+.pp-know li { margin: 0 0 6px; }
+.pp-know b { color: var(--pp-text); font-weight: 600; }
+.pp-tables { display: grid; gap: 0; }
+.pp-trow { display: grid; grid-template-columns: 11rem 4rem minmax(0, 1fr); gap: 10px;
+  padding: 7px 0; border-top: 1px solid var(--pp-border); font-size: .85rem;
+  color: var(--pp-text-2); line-height: 1.45; }
+.pp-trow:first-child { border-top: 0; }
+.pp-trow code { font: .82rem var(--pp-mono); color: var(--pp-text); font-weight: 600;
+  overflow-wrap: anywhere; }
+.pp-trow .pp-trows { font-family: var(--pp-mono); color: var(--pp-muted); text-align: right;
+  font-variant-numeric: tabular-nums; }
+.pp-trow span code { font-weight: 400; background: var(--pp-surface-2); padding: 1px 4px;
+  border-radius: 4px; }
+
 @media (max-width: 640px) {
+  .pp-trow { grid-template-columns: minmax(0, 1fr) auto; }
+  .pp-trow > span:last-child { grid-column: 1 / -1; }
   [class*="st-key-card"] { padding: 16px; }
   .pp-wordmark { font-size: 1.5rem; }
   .pp-question { font-size: 1.15rem; }

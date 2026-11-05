@@ -35,6 +35,12 @@ class Corpus:
     # for why these are not written into prose.
     unstated_pct: str = ""
     notes: str = ""
+    # The Reference card's "Good to know", for a visitor rather than the model: the few
+    # caveats that change how an answer should be read, in plain words. The model's own
+    # list (known_limits on the server) is longer and technical, and stays under "For SQL
+    # readers". Each line here must be true of THIS league -- the 1-in-10 / 1-in-30 split
+    # below is the same trap as unstated_pct.
+    good_to_know: list[str] = field(default_factory=list)
 
 
 CFB = Corpus(
@@ -55,6 +61,24 @@ CFB = Corpus(
         "Which teams gained the most yards per rush in 2024?",
         "Did touchback rate really jump in 2018?",
     ],
+    good_to_know=[
+        "<b>The current season is still being played.</b> Its totals are partial, so "
+        "trends compare completed seasons.",
+        "<b>FBS teams' games against FCS opponents are included.</b> For player or kicker "
+        "rankings, ask for FBS-vs-FBS games only if you want like-for-like.",
+        "<b>2020 was about two-thirds of a normal season.</b> Its totals run low; compare "
+        "rates, not totals.",
+        "<b>About 1 in 10 punts and kickoffs never says whether the ball was returned.</b> "
+        "Return and touchback rates leave those out.",
+        "<b>A kick wiped out by a penalty is neither a make nor a miss.</b>",
+        "<b>Extra-point and two-point trends start in 2015.</b> The 2014 rates are not "
+        "comparable.",
+        "<b>Conferences are by season.</b> A team that changed conference counts where it "
+        "played that year.",
+        "<b>College and NFL numbers are separate.</b> A player who reached the NFL has a "
+        "separate record there, so no career here spans both.",
+        "<b>Not in the data:</b> weather, injuries, betting lines or official box scores.",
+    ],
 )
 
 NFL = Corpus(
@@ -74,6 +98,20 @@ NFL = Corpus(
         "How did touchback rate change after the 2024 kickoff rule?",
         "Which teams ran most often on third and short in 2024?",
         "Which defenses forced the most turnovers in 2025?",
+    ],
+    good_to_know=[
+        "<b>The current season is still being played.</b> Its totals are partial, so "
+        "trends compare completed seasons.",
+        "<b>Kickoff rules changed in 2024 and again in 2025.</b> Touchback and return rates "
+        "shift sharply across those seasons, so compare them separately.",
+        "<b>About 1 in 30 punts and kickoffs never says whether the ball was returned.</b> "
+        "Return and touchback rates leave those out.",
+        "<b>A kick wiped out by a penalty is neither a make nor a miss.</b>",
+        "<b>Extra-point and two-point trends start in 2015.</b> The 2014 rates are not "
+        "comparable.",
+        "<b>College and NFL numbers are separate.</b> A player's college record lives in "
+        "the college data, so no career here spans both.",
+        "<b>Not in the data:</b> weather, injuries, betting lines or official box scores.",
     ],
 )
 

@@ -156,7 +156,7 @@ can_ask = status.get("healthy") and status["remaining"] > 0 and left_q > 0 and n
 
 _UNAVAILABLE = {
     "billing": ("<b>Answers are paused.</b> The language model behind this page is out of "
-                "credit. The tables and known limits below still work, and the warehouse "
+                "credit. The data notes below still work, and the warehouse "
                 "itself is unaffected."),
     "rate": ("<b>The language model is busy.</b> It refused the last request as too many "
              "at once. Try again in a minute."),
@@ -272,6 +272,42 @@ def _frame(payload) -> pd.DataFrame | None:
     return None
 
 
+# Integers that are labels, not quantities: "2,014" is not a season.
+_PLAIN_INT = ("season", "year", "week", "down", "quarter", "period", "game_month", "month",
+              "fg_dist_bucket", "jersey")
+
+
+def _column_config(df: pd.DataFrame) -> dict:
+    """Readable headers and number formats for a result table.
+
+    The table is the evidence under every answer, so it should read like one: "Conversion
+    rate (%)" over 51.9%, not conversion_rate_pct over 51.9; 2,598 attempts, not 2598;
+    seasons without a thousands separator. The data itself is untouched -- sorting and the
+    CSV download still see the raw values.
+    """
+    if df.columns.duplicated().any():
+        return {}
+    cfg = {}
+    for col in df.columns:
+        name, s = str(col).lower(), df[col]
+        title = charts.label(col)
+        if not pd.api.types.is_numeric_dtype(s) or pd.api.types.is_bool_dtype(s):
+            cfg[col] = st.column_config.Column(title)
+            continue
+        values = s.dropna()
+        whole = values.empty or bool((values == values.round()).all())
+        if name in _PLAIN_INT or name.endswith(("_id", "_uid")):
+            fmt = "%d"
+        elif name.endswith("_pct") or "_pct_" in name or name == "pct":
+            fmt = "%.1f%%"
+        elif whole:
+            fmt = "localized"
+        else:
+            fmt = "%.2f" if values.abs().max() < 10 else "%.1f"
+        cfg[col] = st.column_config.NumberColumn(title, format=fmt)
+    return cfg
+
+
 def _result(q: dict, primary: bool) -> None:
     """One run_sql call: its SQL, then its rows or the reason it has none."""
     payload = q.get("result")
@@ -294,13 +330,45 @@ def _result(q: dict, primary: bool) -> None:
         if payload.get("truncated") and payload.get("limit_source") != "caller":
             style.notice(f"<b>Truncated at {payload.get('row_limit')} rows</b> — this is a "
                          "partial answer.", "warn")
-        st.dataframe(df, hide_index=True, height="auto" if len(df) <= 12 else 420)
+        # Every row of a ranking or a season trend on screen at once -- "auto" stopped at
+        # about ten, so a top fifteen scrolled. 35 px is the grid's row height; past twenty
+        # rows the table scrolls, as a long result should.
+        st.dataframe(df, hide_index=True, height=35 * (min(len(df), 20) + 1) + 3,
+                     column_config=_column_config(df))
     elif isinstance(payload, dict) and payload.get("error"):
         # Shown rather than hidden: a refused query is the guard working, and watching it
         # refuse is more informative than a generic failure.
         style.notice("<b>Refused or failed:</b> " + html.escape(str(payload["error"])), "warn")
     elif payload is not None:
         st.write(payload)
+
+
+# The prompt ends every answer with "Next: q1 | q2 | q3". Markdown emphasis around the label
+# is tolerated, because models add it.
+_NEXT = re.compile(r"^[ \t>*_-]*next[*_]*\s*[:：][*_]*\s*(.+?)\s*$", re.I | re.M)
+
+
+def _split_next(answer: str) -> tuple[str, list[str]]:
+    """The answer without its "Next:" line, and the follow-up questions that line offered.
+
+    An answer without one comes back unchanged with no follow-ups: they are an offer, not
+    part of the finding, so a model that skips them costs the reader nothing.
+    """
+    found = list(_NEXT.finditer(answer or ""))
+    if not found:
+        return answer, []
+    last = found[-1]
+    asks = [q.strip(" *_`\"'“”") for q in last.group(1).split("|")]
+    asks = list(dict.fromkeys(q for q in asks if 8 <= len(q) <= 160))[:3]
+    return (answer[:last.start()] + answer[last.end():]).rstrip(), asks
+
+
+def _pick_next(answer_id: int) -> None:
+    """A follow-up click asks it, carrying the conversation as any typed follow-up does."""
+    key = f"next-{answer_id}"
+    if st.session_state.get(key):
+        st.session_state.pending = st.session_state[key]
+    st.session_state[key] = None
 
 
 def _new_conversation() -> None:
@@ -329,8 +397,9 @@ for item in st.session_state.history:
             f'<p class="pp-meta"><b>{item.get("elapsed", 0):.1f}s</b> · {charged}</p></div>'
             f'<p class="pp-question">{html.escape(item["question"])}</p>'
         )
-        if item.get("answer"):
-            st.markdown(_md(item["answer"]))
+        body, follow_ups = _split_next(item.get("answer") or "")
+        if body:
+            st.markdown(_md(body))
         else:
             style.notice("The model returned no written answer. Its queries are below.")
 
@@ -344,6 +413,11 @@ for item in st.session_state.history:
                 for q in queries[:-1]:
                     _result(q, primary=False)
 
+        if follow_ups:
+            st.html('<p class="pp-label">Ask next</p>')
+            st.pills("Ask next", follow_ups, key=f"next-{item['id']}", disabled=not can_ask,
+                     on_change=_pick_next, args=(item["id"],), label_visibility="collapsed")
+
 
 # --------------------------------------------------------------------------- #
 # Reference -- no model involved, so it costs nothing and works when the model is down
@@ -356,44 +430,99 @@ def _prose(text: str) -> str:
     return re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
 
 
+# What a visitor can ask about, one tile per subject, in the order people ask. Each names
+# the table whose size it shows; the descriptions are for a reader, not for SQL.
+_SUBJECTS = (
+    ("scrimmage_wide", "Plays", "Rushes, passes, sacks and penalties: down, distance, field "
+     "position, yards gained and who was involved."),
+    ("play_wide", "Kicks", "Kickoffs, punts, field goals, extra points and two-point tries, "
+     "with distances and outcomes."),
+    ("drive", "Drives", "Every possession: where it started, how many plays and yards, and "
+     "how it ended."),
+    ("fact_game", "Games", "Date, week, home and away teams, venue and attendance."),
+    ("dim_athlete", "Players", "Everyone named on a play, by ESPN ID, with position and the "
+     "seasons they appear in."),
+    ("dim_team", "Teams", "Each team, with its conference season by season."),
+)
+# The serving tables first: they are the ones a query should start from.
+_TABLE_ORDER = ("play_wide", "scrimmage_wide", "drive", "fact_game")
+
+
+def _approx(n) -> str:
+    """A table size as a reader wants it. Rounded on purpose: these are the planner's
+    estimates, and an exact-looking 1,585,215 beside 1,585,270 reads as a discrepancy."""
+    if not isinstance(n, int) or n < 0:
+        return ""
+    if n >= 1_000_000:
+        return f"{n / 1e6:.2f}M"
+    if n >= 10_000:
+        return f"{n / 1e3:.0f}k"
+    return f"{n:,}"
+
+
+def _first_sentence(text: str | None, limit: int = 170) -> str:
+    text = " ".join((text or "").split())
+    cut = re.search(r"(?<=[.!?])\s", text)
+    text = text[:cut.start()] if cut else text
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
+def _subjects_html(c: corpus.Corpus, tables: list[dict]) -> str:
+    rows = {t.get("table_name"): t.get("approx_rows") for t in tables}
+    tiles = []
+    for table, title, text in _SUBJECTS:
+        if c.key == "nfl" and table == "dim_team":
+            text = "Each team, with its conference and division season by season."
+        size = _approx(rows.get(table))
+        tiles.append(
+            '<div class="pp-subject"><p class="pp-subject-head">'
+            f"<b>{html.escape(title)}</b>"
+            + (f"<span>{size}</span>" if size else "")
+            + f"</p><p>{html.escape(text)}</p></div>")
+    return f'<div class="pp-subjects">{"".join(tiles)}</div>'
+
+
+def _tables_html(tables: list[dict]) -> str:
+    rank = {name: i for i, name in enumerate(_TABLE_ORDER)}
+    ordered = sorted(tables, key=lambda t: (rank.get(t.get("table_name"), 99),
+                                            t.get("table_name") or ""))
+    return '<div class="pp-tables">' + "".join(
+        f'<div class="pp-trow"><code>{html.escape(t.get("table_name") or "")}</code>'
+        f'<span class="pp-trows">{_approx(t.get("approx_rows"))}</span>'
+        f'<span>{_prose(_first_sentence(t.get("description")))}</span></div>'
+        for t in ordered) + "</div>"
+
+
+def _limits_html(limits: list[dict]) -> str:
+    return "".join(
+        '<div class="pp-limit">'
+        f'<h4>{_prose(lim.get("topic"))}</h4>'
+        f'<p class="pp-applies">{_prose(lim.get("applies_to"))}</p>'
+        f'<p>{_prose(lim.get("limit"))}</p>'
+        + (f'<p class="pp-todo">{_prose(lim["what_to_do"])}</p>'
+           if lim.get("what_to_do") else "")
+        + "</div>"
+        for lim in limits)
+
+
+# ONE CARD, NO TABS (2026-11-05). It used to be three tabs, the first a fourteen-row list of
+# database tables, which put the warehouse's internals between a visitor and the footer.
+# Now: what you can ask about, at a glance; then the caveats in plain words; then how it
+# works; and the tables and the model's own caveat list, collapsed, for the reader who
+# checks the SQL.
 with st.container(key="card-reference"):
-    st.html('<p class="pp-eyebrow">Reference</p>')
-    tab_schema, tab_limits, tab_how = st.tabs(["Tables", "Known limits", "How it works"])
+    st.html('<p class="pp-eyebrow">About the data</p>')
+    try:
+        tables = _schema_for(c.key)
+    except Exception:  # noqa: BLE001 - the card is reference, not the page
+        tables = []
+    st.html(_subjects_html(c, tables))
 
-    with tab_schema:
-        st.caption("Straight from the database: the same table documentation the model "
-                   "reads before it writes a query.")
-        try:
-            for t in _schema_for(c.key):
-                rows = t.get("approx_rows")
-                label = f"**{t.get('table_name')}**" + (
-                    f" · {rows:,} rows" if isinstance(rows, int) and rows >= 0 else "")
-                with st.expander(label):
-                    st.html(f'<p class="pp-scope">{_prose(t.get("description"))}</p>')
-                    if t.get("note"):
-                        st.html(f'<p class="pp-scope">{_prose(t["note"])}</p>')
-        except Exception:  # noqa: BLE001
-            style.notice("The table list is unavailable right now.", "warn")
+    with st.expander("Good to know before you read a number"):
+        st.html('<ul class="pp-know">'
+                + "".join(f"<li>{line}</li>" for line in c.good_to_know) + "</ul>")
 
-    with tab_limits:
-        st.caption("The cases that return a plausible wrong number rather than an error. "
-                   "The model is told to read these first.")
-        try:
-            blocks = "".join(
-                '<div class="pp-limit">'
-                f'<h4>{_prose(lim.get("topic"))}</h4>'
-                f'<p class="pp-applies">{_prose(lim.get("applies_to"))}</p>'
-                f'<p>{_prose(lim.get("limit"))}</p>'
-                + (f'<p class="pp-todo">{_prose(lim["what_to_do"])}</p>'
-                   if lim.get("what_to_do") else "")
-                + "</div>"
-                for lim in _limits_for(c.key)
-            )
-            st.html(blocks or '<p class="pp-scope">None listed.</p>')
-        except Exception:  # noqa: BLE001
-            style.notice("The known limits are unavailable right now.", "warn")
-
-    with tab_how:
+    with st.expander("How answers are made"):
         st.markdown(f"""
 **The chain.** Your question goes to `{agent.MODEL}`, which can reach data only by calling
 MCP tools. The tool that runs SQL parses it first, forces a `LIMIT`, refuses anything but a
@@ -404,12 +533,26 @@ single read-only `SELECT` over an allow-listed table, and runs it as a role that
 it were compromised the warehouse would be unaffected.
 
 **One server per league.** {c.label} is served by its own MCP process against its own
-schema. No tool takes a league, so a cross-league query is not something the model can
-write by accident.
+schema, so a question about one league cannot reach the other's data.
 
 **Why it can still be wrong.** It writes the query; nothing checks that the query answers
-*your* question. Read the SQL. That is what it is there for.
+*your* question. Read the SQL and the *Basis* line under each answer. That is what they are
+there for.
 """)
+
+    with st.expander("For SQL readers: tables and the model's caveats"):
+        if tables:
+            st.html('<p class="pp-label">Tables · straight from the database</p>'
+                    + _tables_html(tables))
+        else:
+            style.notice("The table list is unavailable right now.", "warn")
+        try:
+            limits = _limits_for(c.key)
+        except Exception:  # noqa: BLE001
+            limits = []
+        if limits:
+            st.html('<p class="pp-label">Known limits · the model reads these first</p>'
+                    + _limits_html(limits))
 
 
 # The cross-site footer, last on the page -- see estate.py.

@@ -22,6 +22,8 @@ browser. Every rule below was a wrong chart on a real answer first:
 """
 from __future__ import annotations
 
+import re
+
 import altair as alt
 import pandas as pd
 
@@ -38,6 +40,31 @@ _CATEGORICAL_X = ("season", "year", "week", "game_month", "month", "down", "quar
                   "period", "fg_dist_bucket")
 
 _RATE_HINTS = ("pct", "rate", "percent", "share", "avg", "per_", "_per", "mean")
+
+
+# Words a column name abbreviates that a reader expects in capitals.
+_ACRONYMS = {"fg": "FG", "fgs": "FGs", "td": "TD", "tds": "TDs", "pat": "PAT", "pats": "PATs",
+             "epa": "EPA", "ypc": "YPC", "ypa": "YPA", "nfl": "NFL", "fbs": "FBS", "fcs": "FCS",
+             "id": "ID", "qb": "QB", "rb": "RB", "wr": "WR"}
+_UNITS = {"pct": "%", "yds": "yards", "secs": "seconds"}
+
+
+def label(col) -> str:
+    """A column name as a reader would write it: `conversion_rate_pct` -> "Conversion rate (%)".
+
+    Shared by the chart axes and the result table's headers, so the two name a column the
+    same way. The system prompt asks for snake_case aliases with the unit as a suffix;
+    this is the other half of that bargain.
+    """
+    words = [w for w in re.split(r"[_\s]+", str(col).strip()) if w]
+    if not words:
+        return str(col)
+    unit = ""
+    if len(words) > 1 and words[-1].lower() in _UNITS:
+        unit = f" ({_UNITS[words.pop().lower()]})"
+    out = [_ACRONYMS.get(w.lower(), w.lower()) for w in words]
+    out[0] = out[0][:1].upper() + out[0][1:]
+    return " ".join(out) + unit
 
 
 def _is_id(col) -> bool:
@@ -89,45 +116,55 @@ def pick(df: pd.DataFrame) -> alt.Chart | None:
         # touchback_rate (51.5) plots the rate as a flat line along the bottom. When the
         # result has both, chart the rates: the question was almost always about the rate,
         # which is why the model computed one.
-        measures = ([c for c in measures if _is_rate(c)] or measures)[:3]
+        # And within the rates, a PERCENTAGE does not share an axis with an average in other
+        # units: (fg_pct, avg_distance_yds) drew 40-56% and 52-53 yards as two lines on one
+        # scale, as if comparable. The prompt asks for a `_pct` suffix on every percentage,
+        # so those win when present.
+        pct = [c for c in measures if str(c).lower().endswith("_pct")]
+        measures = (pct or [c for c in measures if _is_rate(c)] or measures)[:3]
         kind = "O" if str(x).lower() in _CATEGORICAL_X else "Q"
-        long = df[[x] + measures].melt(x, var_name="measure", value_name="value")
+        long = df[[x] + measures].rename(columns={m: label(m) for m in measures})
+        long = long.melt(x, var_name="measure", value_name="value")
         long[x] = long[x].astype(str) if kind == "O" else long[x]
         return (
             alt.Chart(long)
             .mark_line(point=True, strokeWidth=2.5)
             .encode(
-                x=alt.X(f"{x}:{kind}", title=str(x).replace("_", " "),
+                x=alt.X(f"{x}:{kind}", title=label(x),
                         sort=None if kind == "Q" else "ascending",
                         axis=alt.Axis(labelAngle=0, labelOverlap=True)),
-                y=alt.Y("value:Q", title=None, scale=alt.Scale(zero=False)),
+                # One measure: name it, unit included. Several: the legend names them.
+                y=alt.Y("value:Q", title=label(measures[0]) if len(measures) == 1 else None,
+                        scale=alt.Scale(zero=False)),
                 color=alt.Color("measure:N", title=None,
                                 legend=alt.Legend(orient="top") if len(measures) > 1 else None),
-                tooltip=[alt.Tooltip(f"{x}:{kind}"), "measure:N",
-                         alt.Tooltip("value:Q", format=",.4~f")],
+                tooltip=[alt.Tooltip(f"{x}:{kind}", title=label(x)),
+                         alt.Tooltip("measure:N", title="Measure"),
+                         alt.Tooltip("value:Q", title="Value", format=",.4~f")],
             )
             .properties(height=260)
         )
 
     if len(labels) == 1 and len(df) <= 30:
-        label = labels[0]
+        name = labels[0]
         # Two people with one name would be stacked into a single bar. The table shows
         # them apart; a chart that silently merges them is the wrong chart.
-        if df[label].duplicated().any() or df[label].isna().any():
+        if df[name].duplicated().any() or df[name].isna().any():
             return None
         measure = _ranking_measure(df, numeric)
-        plot = df[[label, measure]].copy()
-        plot[label] = plot[label].astype(str)
+        plot = df[[name, measure]].copy()
+        plot[name] = plot[name].astype(str)
         return (
             alt.Chart(plot)
             .mark_bar(cornerRadiusEnd=3)
             .encode(
                 # Every label, in full: Vega's default culls overlapping labels (every
                 # other team vanished) and cuts long ones at 100px ("Jacksonville Ja…").
-                y=alt.Y(f"{label}:N", sort=None, title=None,
+                y=alt.Y(f"{name}:N", sort=None, title=None,
                         axis=alt.Axis(labelOverlap=False, labelLimit=220)),
-                x=alt.X(f"{measure}:Q", title=str(measure).replace("_", " ")),
-                tooltip=[f"{label}:N", alt.Tooltip(f"{measure}:Q", format=",.4~f")],
+                x=alt.X(f"{measure}:Q", title=label(measure)),
+                tooltip=[alt.Tooltip(f"{name}:N", title=label(name)),
+                         alt.Tooltip(f"{measure}:Q", title=label(measure), format=",.4~f")],
             )
             .properties(height=max(120, 28 * len(plot)))
         )

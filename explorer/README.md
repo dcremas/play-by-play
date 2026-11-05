@@ -111,7 +111,7 @@ and is not.
    whole -- DOMPurify's mXSS guard -- so one CSS comment naming an element unstyled the
    footer. Icons here are CSS data-URIs (`style.py`, `estate.py`) for that reason.
 6. **MCP tool results arrive as text blocks, not dicts.** `call_tool` decodes them. Before
-   it did, the Tables and Known limits tabs rendered empty in production with no error.
+   it did, the reference card's table and caveat lists rendered empty in production with no error.
 
 ## The look
 
@@ -120,6 +120,30 @@ PromptPace's (`app/static/styles.css` in the promptpace repository): the palette
 and footer, and the two must stay equal. Light or dark follows the visitor's OS.
 `charts.py` picks at most one chart per answer and documents each rule with the wrong
 chart that motivated it.
+
+## What an answer looks like
+
+The system prompt (`SYSTEM_PROMPT` in `agent.py`) fixes the shape, because a self-service
+reader scans before they read: **a bold one-sentence finding**, two to four bullets with the
+supporting numbers (every rate with its counts, changes in percentage points), a `*Basis:*`
+line saying in plain words what was counted and left out, and a `Next:` line of follow-up
+questions. `app.py` lifts that last line out of the answer and renders it as "Ask next"
+buttons that ask with the conversation as context. The same prompt shapes the query for a
+reader: rates as `_pct` columns from 0 to 100 beside their counts, rankings over a stated
+minimum sample with a league-wide benchmark column.
+
+The result table under it is formatted from the column names (`_column_config` in
+`app.py`, labels from `charts.label`): "Conversion (%)" over 51.9%, 2,598 not 2598, seasons
+without a thousands separator. Only the display changes; the CSV download is the raw data.
+
+## About the data
+
+One card, no tabs (since 2026-11-05; it was a Tables / Known limits / How it works tab set
+whose first tab listed fourteen database tables). It leads with six subject tiles sized from
+`list_schema`, then three collapsed sections: "Good to know" (per-league plain-language
+caveats in `corpus.py`, `good_to_know`), how answers are made, and for SQL readers the
+tables and the server's full `known_limits`. None of it calls the model, so it still works
+when answers are paused.
 
 ## Switching models
 
