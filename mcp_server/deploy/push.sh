@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Ship this server's code to the EC2 box and provision it. Run FROM THE MAC:
+# Ship this server's code to the EC2 box and provision it. Run FROM A DEVELOPMENT CHECKOUT:
 #
 #     bash mcp_server/deploy/push.sh
 #     bash mcp_server/deploy/push.sh --tls     # also run enable-tls.sh
 #
-# THIS IS THE CODE SYNC STORY scripts/sync_ec2.py does not have. That script
-# ships DATA and SQL -- the CSV extracts, the loaders, the grant and comment
-# files -- and deliberately knows nothing about the server. The two move on
-# different clocks: the warehouse is refreshed weekly, the server changes when
-# its code changes. Coupling them would mean an hour-long data sync to ship a
-# one-line fix.
+# THIS IS THE CODE SYNC STORY the box's daily data job does not have. pbp-daily
+# (scripts/daily_box.sh) loads DATA every morning and deliberately knows nothing
+# about the server. The two move on different clocks: the warehouse is refreshed
+# daily, the server changes when its code changes. Coupling them would mean a
+# warehouse rebuild to ship a one-line fix.
 #
 # Safe to re-run. It never touches the database and never rewrites a credential.
 set -euo pipefail

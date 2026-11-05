@@ -4,7 +4,7 @@
 #
 # Run ON THE BOX, AFTER the DNS A record resolves:
 #   sudo bash /tmp/pbp-deploy/deploy/enable-tls.sh
-# or from the Mac:  bash mcp_server/deploy/push.sh --tls
+# or from a checkout:  bash mcp_server/deploy/push.sh --tls
 #
 # SELF-REVERTING. If `nginx -t` fails with the TLS vhost in place, the previous
 # HTTP-only file is restored and nginx is left running on the working config --

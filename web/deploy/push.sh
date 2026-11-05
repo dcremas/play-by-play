@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ship the Dash instance explorer to the EC2 box and provision it. Run FROM THE MAC:
+# Ship the Dash instance explorer to the EC2 box and provision it. Run FROM A DEVELOPMENT CHECKOUT:
 #
 #     bash web/deploy/push.sh              # code only -- the usual case
 #     bash web/deploy/push.sh --data       # code AND the 331 MB snapshot

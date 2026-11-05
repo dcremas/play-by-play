@@ -2,7 +2,7 @@
 # Provision the pbp MCP server on the EC2 box, and the nginx vhost the future
 # explorer app will land on.
 #
-# Run FROM THE MAC:
+# Run FROM A DEVELOPMENT CHECKOUT:
 #   bash mcp_server/deploy/push.sh
 #
 # or by hand, ON THE BOX, as a user with sudo:

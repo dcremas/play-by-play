@@ -7,7 +7,7 @@ That was the blocker for building a text-to-SQL explorer, and this directory is
 what removed it.
 
 ```bash
-bash deploy/push.sh              # from the Mac. Idempotent. Deploys BOTH instances.
+bash deploy/push.sh              # from a checkout. Idempotent. Deploys BOTH instances.
 bash deploy/push.sh --tls        # …and issue the certificate, once DNS resolves
 ```
 

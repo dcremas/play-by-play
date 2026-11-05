@@ -15,7 +15,7 @@ a `league` argument** and no query needs one.
 | **Corpora** | college 321,126 kicks · 1,533,137 scrimmage · 10,631 games — NFL 91,635 · 451,614 · 3,327 |
 | **Role** | `pbp_ro` — this warehouse's own role, `SELECT` on the 14 tables of each serving schema, **no access to `pbp.*`**, bounded by `pg_hba.conf` to the `pbp` database alone |
 | **Deployment** | `pbp-mcp@cfb` on `127.0.0.1:8771`, `pbp-mcp@nfl` on `8772`, user `pbpmcp` |
-| **Route from the Mac** | SSH tunnel on `127.0.0.1:15432`; public 5432 is closed |
+| **Route from a development machine** | SSH tunnel on `127.0.0.1:15432`; public 5432 is closed |
 | **Sibling** | `../../ec2-nginx/weather-sql-explorer/mcp_server` — this server is built on its pattern, deliberately |
 
 The two wide tables are the intended read path, and they exist in **each** schema:
@@ -60,7 +60,7 @@ domain's traps are encoded in the tools** rather than having to be remembered:
 
 ## 2. Prerequisites — the SSH tunnel
 
-Public 5432 is closed to the internet, so from the Mac the tunnel is the **only**
+Public 5432 is closed to the internet, so from a development machine the tunnel is the **only**
 route. Nothing here works without it:
 
 ```bash
@@ -534,7 +534,7 @@ mcp_server/
                    against a fixed tuple and refuses to start on anything else
     selftest.py    live checks -- run after any change, ONCE PER CORPUS
   deploy/                       on-box deployment; see deploy/README-deploy.md
-    push.sh            FROM THE MAC: stage the code, run provision.sh
+    push.sh            FROM A CHECKOUT: stage the code, run provision.sh
     provision.sh       ON THE BOX: user, /opt tree, venv, credential, unit,
                        nginx vhost, then assert what fails silently
     enable-tls.sh      ON THE BOX: certbot + swap in the TLS vhost. Self-reverting
