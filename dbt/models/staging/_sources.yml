@@ -1,0 +1,72 @@
+version: 2
+
+sources:
+  - name: pbp
+    description: >
+      The system of record: both leagues in one schema, loaded by sql/load_league.sql from the
+      CSVs scripts/ builds out of ESPN. dbt reads it and never writes it. Team and conference
+      ids collide across leagues (team 2 is Auburn and the Buffalo Bills), so their keys
+      include `league`; venue, athlete and play ids are one id space.
+    schema: pbp
+    tables:
+      - name: dim_team
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [league, team_id]
+      - name: dim_conference
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [league, conference_id]
+      - name: dim_team_season
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [league, team_id, season]
+      - name: dim_venue
+        columns:
+          - name: venue_id
+            data_tests: [unique, not_null]
+      - name: fact_game
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [league, game_id]
+      - name: drive
+        columns:
+          - name: drive_uid
+            data_tests: [unique, not_null]
+      - name: special_teams_play
+        loaded_at_field: loaded_at
+        freshness:
+          # In season a week of quiet means the refresh stopped. Off season this warns by design.
+          warn_after: {count: 8, period: day}
+        columns:
+          - name: play_uid
+            data_tests: [unique, not_null]
+      - name: scrimmage_play
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 8, period: day}
+        columns:
+          - name: play_uid
+            data_tests: [unique, not_null]
+      - name: play_athlete
+      - name: scrimmage_athlete
+
+  - name: raw
+    description: Files this repo builds that dbt cannot read directly, loaded as text by sql/load_raw_athletes.sql.
+    schema: raw
+    tables:
+      - name: dim_athlete_league
+        description: >
+          scripts/build_dims.py's per-league athlete files (modal team, role and name votes
+          computed within one league's plays only). All columns text, cast in staging.
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 8, period: day}
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [league, athlete_id]

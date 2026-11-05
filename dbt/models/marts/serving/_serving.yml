@@ -1,0 +1,60 @@
+version: 2
+
+models:
+  - name: play_wide
+    description: >
+      THE KICKS FACT with dimensions pre-joined, one row per kick. What the apps, the MCP
+      servers and the DuckDB snapshot read. Prefer it over special_teams_play.
+    data_tests:
+      # The joins are all to unique keys, so they must not add or drop a single row.
+      - dbt_utils.equal_rowcount:
+          arguments: {compare_model: ref('special_teams_play')}
+      # Wherever there is a team id, the name and the season's conference must have resolved.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "kicking_team_id is null or (kicking_team is not null and kicking_conference is not null)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "receiving_team_id is null or (receiving_team is not null and receiving_conference is not null)"
+    columns:
+      - name: play_uid
+        data_tests: [unique, not_null]
+      - name: kicking_conference
+        description: Resolved on (kicking_team_id, season).
+      - name: fg_dist_bucket
+        description: Field goal distance in 5-yard buckets; under 20 is 15, 60 and over is 60.
+      - name: is_clutch
+        description: Fourth quarter or overtime, final five minutes of regulation, within one score (8 points).
+      - name: both_top_division
+        description: Both teams FBS (college). Always true for the NFL.
+
+  - name: scrimmage_wide
+    description: THE SCRIMMAGE FACT with dimensions pre-joined, one row per play.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments: {compare_model: ref('scrimmage_play')}
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "offense_team_id is null or (offense_team is not null and offense_conference is not null)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "defense_team_id is null or (defense_team is not null and defense_conference is not null)"
+    columns:
+      - name: play_uid
+        data_tests: [unique, not_null]
+      - name: distance_bucket
+        data_tests:
+          - accepted_values:
+              arguments: {values: [short, medium, long]}
+      - name: field_zone
+        data_tests:
+          - accepted_values:
+              arguments: {values: [red zone, opponent half, own half]}
+
+  - name: season_status
+    description: >
+      One row per season: games, kicks, last regular-season week, and whether the season is
+      in progress (a kickoff in the last 30 days).
+    columns:
+      - name: season
+        data_tests: [unique, not_null]

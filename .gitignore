@@ -25,3 +25,10 @@ scripts/usc_v_sjstate.xlsx
 
 # macOS
 .DS_Store
+
+# dbt: its own venv (Python 3.13) and everything dbt generates.
+dbt/.venv/
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/.user.yml

@@ -1,0 +1,34 @@
+version: 2
+
+# What reads the serving schema. Today they read the cfb/nfl schemas sql/split_leagues.sql
+# builds; these become dbt's consumers when the build moves over.
+exposures:
+  - name: play_explorer
+    label: Play-by-Play Explorer
+    type: application
+    url: https://pbp.dustincremascoli.com/plays/
+    description: Dash app over the DuckDB snapshot scripts/build_snapshot.py copies from the serving schema.
+    depends_on:
+      - ref('play_wide')
+      - ref('scrimmage_wide')
+      - ref('drive')
+      - ref('fact_game')
+      - ref('dim_athlete')
+      - ref('season_status')
+    owner: {name: dcremas}
+
+  - name: ask_football
+    label: Ask Football
+    type: application
+    url: https://pbp.dustincremascoli.com/
+    description: Text-to-SQL app; reaches the serving schema through the read-only pbp-cfb / pbp-nfl MCP servers.
+    depends_on:
+      - ref('play_wide')
+      - ref('scrimmage_wide')
+      - ref('drive')
+      - ref('fact_game')
+      - ref('dim_athlete')
+      - ref('dim_team')
+      - ref('dim_team_season')
+      - ref('dim_venue')
+    owner: {name: dcremas}

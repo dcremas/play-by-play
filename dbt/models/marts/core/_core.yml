@@ -1,0 +1,166 @@
+version: 2
+
+models:
+  - name: dim_team
+    description: One row per team in this league. Inside one league's schema, a team id has exactly one meaning.
+    columns:
+      - name: team_id
+        data_tests: [unique, not_null]
+
+  - name: dim_conference
+    description: One row per conference (college) or conference/league grouping (the AFC and NFC in the NFL).
+    columns:
+      - name: conference_id
+        data_tests: [unique, not_null]
+
+  - name: dim_team_season
+    description: >
+      One row per team per season, carrying that season's conference and division. Teams change
+      conferences, so conference must be resolved on (team_id, season), never on team_id alone.
+      Carries every team the conference feed knows, including FCS programmes that never played
+      an ingested game, so not every team_id is in dim_team (README.md, Integrity). What must
+      hold is the other direction: tests/invariants/assert_play_teams_resolve_to_team_season.sql.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [team_id, season]
+    columns:
+      - name: ncaa_division
+        description: FBS or FCS. College only; NULL for every NFL row.
+      - name: nfl_division
+        description: AFC East and the like. NFL only; NULL for every college row.
+
+  - name: dim_venue
+    description: Venues this league played in. Venue ids are shared with the other league.
+    columns:
+      - name: venue_id
+        data_tests: [unique, not_null]
+
+  - name: dim_athlete
+    description: >
+      One row per athlete, with career aggregates computed from THIS league's plays only. The
+      same person has an unlinked row in the other league's schema. Group by athlete_id and
+      label with known_name: 109 names are shared by different people.
+    columns:
+      - name: athlete_id
+        data_tests: [unique, not_null]
+
+  - name: fact_game
+    description: One row per game, including the games ESPN carries no play-by-play for.
+    columns:
+      - name: game_id
+        data_tests: [unique, not_null]
+      - name: season_type
+        data_tests:
+          - accepted_values:
+              arguments: {values: [regular, postseason]}
+      - name: venue_id
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_venue'), field: venue_id}
+      - name: home_team_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_team'), field: team_id}
+      - name: away_team_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_team'), field: team_id}
+
+  - name: drive
+    description: One row per drive.
+    columns:
+      - name: drive_uid
+        data_tests: [unique, not_null]
+      - name: game_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('fact_game'), field: game_id}
+
+  - name: special_teams_play
+    description: >
+      The kicks fact: kickoffs, punts, field goals and the conversion family, one row per kick.
+      Disjoint from scrimmage_play; the two share one play_uid space. NULL is meaningful on the
+      outcome flags.
+    columns:
+      - name: play_uid
+        data_tests: [unique, not_null]
+      - name: play_kind
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: [kickoff, punt, field_goal, pat, two_point, defensive_conversion]}
+      - name: game_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('fact_game'), field: game_id}
+      - name: kicking_team_id
+        description: >
+          4 college two-point conversions carry no kicking team: standalone conversion rows where
+          ESPN's start.team.id is NULL. Found by this test on 2026-11-05; README.md said zero.
+        data_tests:
+          # Ratchet: the 4 known rows warn, a fifth fails the build.
+          - not_null:
+              config: {warn_if: ">0", error_if: ">4"}
+          - relationships:
+              arguments: {to: ref('dim_team'), field: team_id}
+      - name: fg_made
+        description: TRUE made, FALSE missed, NULL negated by penalty. Never coalesce.
+      - name: returned
+        description: NULL means the play text never stated the outcome. Never coalesce.
+      - name: play_text
+        description: ESPN's text, verbatim. The audit trail; never cleaned.
+
+  - name: scrimmage_play
+    description: >
+      The scrimmage fact: rushes, passes, sacks and penalties, one row per play. down and
+      yards_gained are ESPN's structured fields, so no text parser is involved.
+    columns:
+      - name: play_uid
+        data_tests: [unique, not_null]
+      - name: play_kind
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: [rush, pass, sack, penalty, other]}
+      - name: game_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('fact_game'), field: game_id}
+      - name: offense_team_id
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_team'), field: team_id}
+      - name: defense_team_id
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_team'), field: team_id}
+
+  - name: play_athlete
+    description: Bridge from a kick to every athlete ESPN names on it, with their role.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [play_uid, role, athlete_id]
+    columns:
+      - name: play_uid
+        data_tests:
+          - relationships:
+              arguments: {to: ref('special_teams_play'), field: play_uid}
+
+  - name: scrimmage_athlete
+    description: Bridge from a scrimmage play to every athlete ESPN names on it, with their role.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [play_uid, role, athlete_id]
+    columns:
+      - name: play_uid
+        data_tests:
+          - relationships:
+              arguments: {to: ref('scrimmage_play'), field: play_uid}

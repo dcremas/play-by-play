@@ -1,0 +1,43 @@
+name: pbp
+version: "1.0.0"
+config-version: 2
+profile: pbp
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+# ONE CORPUS PER INVOCATION, exactly like sql/split_leagues.sql's `-v league=`. College football
+# and the NFL never share a serving schema, so every run names its league:
+#
+#     dbt build --vars '{league: cfb}'
+#
+# The schema the run builds is derived from it -- see macros/generate_schema_name.sql.
+vars:
+  league: null
+  # Set to an existing serving schema (cfb, nfl) to diff every mart against it; see tests/parity/.
+  parity_schema: null
+
+models:
+  pbp:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      # The read-only role the MCP servers connect as. Granted per table on every build, so a
+      # staged schema arrives readable and sql/swap_schema.sql can move it straight into
+      # place. Creating and configuring the role itself stays in mcp_server/setup_role_pbp.sql,
+      # run once by an administrator: the role that runs dbt is an owner, not a superuser.
+      +grants:
+        select: ["pbp_ro"]
+
+on-run-end:
+  - "grant usage on schema {{ generate_schema_name(none, none) }} to pbp_ro"
+
+data_tests:
+  pbp:
+    parity:
+      +enabled: "{{ var('parity_schema', none) is not none }}"
+      +tags: ["parity"]

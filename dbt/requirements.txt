@@ -1,0 +1,4 @@
+# Python 3.13, NOT the repo's 3.14: dbt's mashumaro dependency fails to import on 3.14.
+#     ~/.pyenv/versions/3.13.9/bin/python -m venv dbt/.venv && dbt/.venv/bin/pip install -r dbt/requirements.txt
+dbt-core~=1.11.0
+dbt-postgres~=1.11.0

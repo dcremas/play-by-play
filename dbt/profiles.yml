@@ -1,0 +1,17 @@
+# Local Postgres `pbp`, the system of record. Point dbt here with --profiles-dir . (or
+# DBT_PROFILES_DIR=dbt from the repo root); nothing secret lives in this file.
+pbp:
+  target: local
+  outputs:
+    local:
+      type: postgres
+      host: "{{ env_var('PBP_PGHOST', '/tmp') }}"
+      port: "{{ env_var('PBP_PGPORT', '5432') | int }}"
+      user: "{{ env_var('PBP_PGUSER', env_var('USER')) }}"
+      password: "{{ env_var('PBP_PGPASSWORD', '') }}"
+      dbname: "{{ env_var('PBP_PGDATABASE', 'pbp') }}"
+      # Required by dbt, ignored by this project: macros/generate_schema_name.sql derives
+      # every schema from the league instead.
+      schema: public
+      # 2 on the EC2 box, which has 2 vCPUs and a 40-connection server shared by every app.
+      threads: "{{ env_var('PBP_DBT_THREADS', '4') | int }}"
