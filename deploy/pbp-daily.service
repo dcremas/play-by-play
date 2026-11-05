@@ -1,0 +1,40 @@
+# Deploy to /etc/systemd/system/pbp-daily.service (deploy/provision.sh does).
+#
+# The play-by-play morning job: scripts/daily_box.sh as the unprivileged pbpetl user, then
+# one root step to hand the new snapshot to the Play Explorer.
+[Unit]
+Description=Play-by-play: load finished games, rebuild with dbt, refresh the explorer
+Wants=network-online.target
+After=network-online.target postgresql.service
+# A load against a stopped server fails late and confusingly; refuse up front instead.
+Requisite=postgresql.service
+# The box's existing alert template: emails the unit name and its journal tail.
+OnFailure=pg-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+User=pbpetl
+Group=pbpetl
+WorkingDirectory=/opt/pbp-etl
+ExecStart=/opt/pbp-etl/scripts/daily_box.sh
+# `+` runs this one step as root: pbp-web's data directory and restart are not pbpetl's.
+# ExecStartPost runs only when ExecStart exited 0, so a failed load never ships a snapshot.
+ExecStartPost=+/opt/pbp-etl/deploy/install-snapshot.sh
+
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PBP_PGHOST=/var/run/postgresql
+Environment=PBP_DBT_THREADS=2
+Environment=DBT_SEND_ANONYMOUS_USAGE_STATS=false
+# Without this DuckDB claims up to 80% of RAM. With it, DuckDB spills to data/out/.duckdb_spill;
+# the athlete build passes at 500 MB with byte-identical output (measured 2026-11-05).
+Environment=PBP_DUCKDB_MEMORY=1GB
+# Postgres reads data/out with server-side COPY as the postgres user, so files must be
+# world-readable. Nothing under data/ is private: it is ESPN's public play-by-play.
+UMask=0022
+
+# Shares 2 vCPUs and 8 GB with every site on the box; keep it from starving them, and keep
+# a runaway from taking them down with it. Peak is ~1.5 GB (the athlete build).
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=__MEMORY_MAX__
+TimeoutStartSec=2h

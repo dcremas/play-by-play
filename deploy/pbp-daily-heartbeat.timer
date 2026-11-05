@@ -1,0 +1,13 @@
+# Deploy to /etc/systemd/system/pbp-daily-heartbeat.timer (deploy/provision.sh --enable does).
+[Unit]
+Description=Publish the play-by-play job's freshness to CloudWatch hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=120
+# A missed heartbeat is not worth replaying; the next hour reports current truth.
+Persistent=false
+Unit=pbp-daily-heartbeat.service
+
+[Install]
+WantedBy=timers.target

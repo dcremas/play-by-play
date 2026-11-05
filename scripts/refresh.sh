@@ -48,6 +48,15 @@ if [[ $MODE == check ]]; then
     exec "$PY" scripts/new_games.py
 fi
 
+# Since 2026-11 the EC2 box loads the warehouse itself every morning (scripts/daily_box.sh) and
+# its Postgres is the system of record. Loading here and syncing would overwrite the box's
+# newer data with this laptop's older copy. scripts/pull_from_box.sh goes the other way.
+if [[ "${PBP_LAPTOP_LOAD:-}" != 1 ]]; then
+    echo "refused: the EC2 box is the system of record -- see scripts/pull_from_box.sh" >&2
+    echo "(PBP_LAPTOP_LOAD=1 overrides, for an emergency load from this laptop)" >&2
+    exit 1
+fi
+
 # One run at a time. Two overlapping runs would interleave DELETE+INSERTs on the same season
 # and race each other's CSVs in data/out. mkdir is atomic; the pid makes a lock left by a
 # killed run recognisable as stale rather than blocking every run after it.

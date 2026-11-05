@@ -40,6 +40,7 @@ extracts are ~940 MB with the warehouse itself on the other disk.
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
@@ -171,6 +172,13 @@ def main() -> None:
 
     leagues = args.league or ["cfb", "nfl"]
     dry = args.dry_run
+
+    # Since 2026-11 the box loads itself every morning (scripts/daily_box.sh) and its Postgres
+    # is the system of record. This script pushes the laptop's copy over it, which would now
+    # replace newer data with older. scripts/pull_from_box.sh goes the other way.
+    if not dry and os.environ.get("PBP_LAPTOP_LOAD") != "1":
+        sys.exit("refused: the EC2 box is the system of record -- see scripts/pull_from_box.sh\n"
+                 "(PBP_LAPTOP_LOAD=1 overrides, for an emergency load from this laptop)")
 
     print(f"target: {SSH_HOST}:{REMOTE_DB}  leagues: {', '.join(leagues)}"
           + (f"  season: {args.season}" if args.season else "  (whole window)"))

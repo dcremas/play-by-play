@@ -1,0 +1,15 @@
+# Deploy to /etc/systemd/system/pbp-daily.timer (deploy/provision.sh --enable does).
+[Unit]
+Description=Run the play-by-play morning job daily at 06:00 Central
+
+[Timer]
+# The last college kickoffs (Hawai'i at home) end around 02:30 Central and the NFL's Monday
+# game well before that, so every game of the previous day is final by 06:00.
+OnCalendar=*-*-* 06:00:00 America/Chicago
+RandomizedDelaySec=300
+# If the box was down at 06:00, run once at boot rather than skip the day.
+Persistent=true
+Unit=pbp-daily.service
+
+[Install]
+WantedBy=timers.target

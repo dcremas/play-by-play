@@ -19,6 +19,15 @@ PY="$REPO/.venv/bin/python"
 LOG="$REPO/data/logs/weekly_nfl_$(date +%Y%m%d_%H%M%S).log"
 
 cd "$REPO"                             # sql/load_dims.sql resolves CSV paths from here
+
+# Since 2026-11 the EC2 box loads the warehouse itself every morning (scripts/daily_box.sh) and
+# its Postgres is the system of record. Loading here and syncing would overwrite the box's
+# newer data with this laptop's older copy. scripts/pull_from_box.sh goes the other way.
+if [[ "${PBP_LAPTOP_LOAD:-}" != 1 ]]; then
+    echo "refused: the EC2 box is the system of record -- see scripts/pull_from_box.sh" >&2
+    echo "(PBP_LAPTOP_LOAD=1 overrides, for an emergency load from this laptop)" >&2
+    exit 1
+fi
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
 

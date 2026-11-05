@@ -1,0 +1,15 @@
+# Deploy to /etc/systemd/system/pbp-daily-heartbeat.service (deploy/provision.sh does).
+[Unit]
+Description=Publish the play-by-play job's freshness to CloudWatch (dead man's switch)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=pbpetl
+Group=pbpetl
+ExecStart=/opt/pbp-etl/deploy/heartbeat.sh
+Nice=10
+TimeoutStartSec=120
+# No OnFailure=: the script always exits 0, like pg-backup-heartbeat. A heartbeat that cannot
+# publish shows up as missing data, which the alarm treats as breaching.

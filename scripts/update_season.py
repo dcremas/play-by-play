@@ -221,6 +221,9 @@ def main():
                          "mid-season, so this is safe after the season's first run")
     ap.add_argument("--skip-fetch", action="store_true",
                     help="rebuild and reload from summaries already on disk")
+    ap.add_argument("--transform", choices=("split", "dbt"), default="split",
+                    help="what builds the cfb/nfl serving schemas: sql/split_leagues.sql "
+                         "(default) or the dbt/ project (what the EC2 daily job runs)")
     a = ap.parse_args()
     s = a.season
     leagues = list(dict.fromkeys(a.league))
@@ -275,13 +278,16 @@ def main():
     # The load, the dimension refresh and the game-context enrichment are all inside that
     # one transaction, which is why there is no separate enrich step here any more.
     for L in leagues:
-        psql(a.db, "-v", f"league={L}", "-v", f"season={s}", "-f", "sql/load_league.sql")
+        # root= on every loader: their default is the laptop's checkout, and server-side COPY
+        # reads that path on the database host -- which on the EC2 box is not this one.
+        psql(a.db, "-v", f"league={L}", "-v", f"season={s}", "-v", f"root={HOME}",
+             "-f", "sql/load_league.sql")
 
     # The athlete dimension is global across BOTH leagues and both facts, so it is replaced
     # wholesale from the extract build_dims just wrote. The bridge is per league and this
     # reloads both, which is correct and cheap. It puts back the athlete ids every
     # load_league.sql above just reloaded the facts without, so it follows the last of them.
-    psql(a.db, "-f", "sql/load_athletes_league.sql")
+    psql(a.db, "-v", f"root={HOME}", "-f", "sql/load_athletes_league.sql")
 
     # ---------------------------------------------------------------- serving layer
     #
@@ -339,11 +345,22 @@ def main():
     # reading DuckDB, so nothing here is serving live queries; the sequence is the same as
     # scripts/sync_ec2.py's anyway, because one path that is exercised weekly is worth more
     # than two paths that differ in a way nobody remembers.
+    #
+    # --transform dbt builds the stage with dbt/ instead of sql/split_leagues.sql. dbt
+    # applies pbp_ro's grants itself, and its tests run before the swap: a failing test
+    # stops here and the live schema keeps serving yesterday's data.
+    if a.transform == "dbt":
+        psql(a.db, "-v", f"root={HOME}", "-f", "sql/load_raw_athletes.sql")
     for one in lg.SPEC:
         stage = f"{one}_next"
-        psql(a.db, "-v", f"league={one}", "-v", f"schema={stage}",
-             "-v", f"root={HOME}", "-f", "sql/split_leagues.sql")
-        psql(a.db, "-v", f"schemas={stage}", "-f", "mcp_server/setup_role_pbp.sql")
+        if a.transform == "dbt":
+            run([f"{HOME}/dbt/.venv/bin/dbt", "build", "--vars",
+                 f"{{league: {one}, serving_schema: {stage}}}"],
+                env={"DBT_PROFILES_DIR": f"{HOME}/dbt"}, cwd=f"{HOME}/dbt")
+        else:
+            psql(a.db, "-v", f"league={one}", "-v", f"schema={stage}",
+                 "-v", f"root={HOME}", "-f", "sql/split_leagues.sql")
+            psql(a.db, "-v", f"schemas={stage}", "-f", "mcp_server/setup_role_pbp.sql")
         psql(a.db, "-v", f"schema={stage}", "-f", "mcp_server/comment_tables.sql")
         psql(a.db, "-v", f"live={one}", "-v", f"stage={stage}", "-f", "sql/swap_schema.sql")
 
